@@ -71,6 +71,7 @@ export interface SchedulerDependencies {
     proc: ChildProcess,
     containerName: string,
     groupFolder: string,
+    controls?: { clearIdleTimeout: () => void; resetIdleTimeout: () => void },
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
@@ -165,7 +166,7 @@ async function runTask(
     if (closeTimer) return; // already scheduled
     closeTimer = setTimeout(() => {
       logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
+      deps.queue.softStop(task.chat_jid);
     }, TASK_CLOSE_DELAY_MS);
   };
 
@@ -182,8 +183,8 @@ async function runTask(
         assistantName: ASSISTANT_NAME,
         script: task.script || undefined,
       },
-      (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+      (proc, containerName, controls) =>
+        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder, controls),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
@@ -199,6 +200,7 @@ async function runTask(
           error = streamedOutput.error || 'Unknown error';
         }
       },
+      () => deps.queue.softStop(task.chat_jid),
     );
 
     if (closeTimer) clearTimeout(closeTimer);

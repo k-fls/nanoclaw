@@ -10,7 +10,6 @@ import path from 'path';
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
-  CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -316,8 +315,9 @@ async function buildContainerArgs(
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
-  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onProcess: (proc: ChildProcess, containerName: string, controls: { clearIdleTimeout: () => void; resetIdleTimeout: () => void }) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onTimeout?: () => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -367,8 +367,6 @@ export async function runContainerAgent(
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-
-    onProcess(container, containerName);
 
     let stdout = '';
     let stderr = '';
@@ -459,35 +457,38 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
-    // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
-    // graceful _close sentinel has time to trigger before the hard kill fires.
-    const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+    const timeoutMs = group.containerConfig?.timeout || IDLE_TIMEOUT;
 
-    const killOnTimeout = () => {
+    const handleIdleTimeout = () => {
       timedOut = true;
-      logger.error(
-        { group: group.name, containerName },
-        'Container timeout, stopping gracefully',
-      );
-      try {
-        stopContainer(containerName);
-      } catch (err) {
-        logger.warn(
-          { group: group.name, containerName, err },
-          'Graceful stop failed, force killing',
-        );
+      logger.error({ group: group.name, containerName }, 'Idle timeout fired (stuck container)');
+      if (onTimeout) {
+        // Delegate to queue's softStop → grace timer → hardStop chain
+        onTimeout();
+      } else {
+        // Fallback when running without queue
         container.kill('SIGKILL');
       }
     };
 
-    let timeout = setTimeout(killOnTimeout, timeoutMs);
+    let timeout = setTimeout(handleIdleTimeout, timeoutMs);
 
     // Reset the timeout whenever there's activity (streaming output)
     const resetTimeout = () => {
       clearTimeout(timeout);
-      timeout = setTimeout(killOnTimeout, timeoutMs);
+      timeout = setTimeout(handleIdleTimeout, timeoutMs);
     };
+
+    const clearIdleTimeout = () => {
+      clearTimeout(timeout);
+    };
+
+    const resetIdleTimeout = () => {
+      resetTimeout();
+    };
+
+    // Register process with queue after timeout controls are available
+    onProcess(container, containerName, { clearIdleTimeout, resetIdleTimeout });
 
     container.on('close', (code) => {
       clearTimeout(timeout);
@@ -535,7 +536,7 @@ export async function runContainerAgent(
         resolve({
           status: 'error',
           result: null,
-          error: `Container timed out after ${configTimeout}ms`,
+          error: `Container timed out after ${timeoutMs}ms`,
         });
         return;
       }
