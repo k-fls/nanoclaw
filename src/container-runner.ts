@@ -13,6 +13,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  MEDIA_DIR,
   TIMEZONE,
 } from './config.js';
 import { readEnvFile } from './env.js';
@@ -159,6 +160,15 @@ function buildVolumeMounts(
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
+    readonly: false,
+  });
+
+  // Per-group media directory: agents download/upload media via MCP tools
+  const groupMediaDir = path.join(MEDIA_DIR, group.folder);
+  fs.mkdirSync(groupMediaDir, { recursive: true });
+  mounts.push({
+    hostPath: groupMediaDir,
+    containerPath: '/workspace/media',
     readonly: false,
   });
 

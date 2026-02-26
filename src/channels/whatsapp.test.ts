@@ -8,6 +8,7 @@ vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/nanoclaw-test-store',
   ASSISTANT_NAME: 'Andy',
   ASSISTANT_HAS_OWN_NUMBER: false,
+  MEDIA_DIR: '/tmp/nanoclaw-test-media',
 }));
 
 // Mock logger
@@ -18,6 +19,28 @@ vi.mock('../logger.js', () => ({
     warn: vi.fn(),
     error: vi.fn(),
   },
+}));
+
+// Mock media
+vi.mock('../media.js', () => ({
+  processInboundMedia: vi.fn((_groupFolder: string, opts: any) => {
+    const label = opts.mediaType
+      ? `[${opts.mediaType.charAt(0).toUpperCase() + opts.mediaType.slice(1)}]`
+      : '[File]';
+    const content = opts.caption || label;
+    return {
+      content,
+      attachments: [
+        {
+          id: `whatsapp:media:test-${Date.now()}`,
+          filename: opts.filename || `${opts.mediaType || 'file'}.bin`,
+          mimetype: opts.mimetype,
+          size: opts.size,
+        },
+      ],
+    };
+  }),
+  guessMimetype: vi.fn(() => 'application/octet-stream'),
 }));
 
 // Mock db
@@ -500,7 +523,12 @@ describe('WhatsAppChannel', () => {
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: 'Check this photo' }),
+        expect.objectContaining({
+          content: 'Check this photo',
+          attachments: expect.arrayContaining([
+            expect.objectContaining({ mimetype: 'image/jpeg' }),
+          ]),
+        }),
       );
     });
 
@@ -528,11 +556,16 @@ describe('WhatsAppChannel', () => {
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: 'Watch this' }),
+        expect.objectContaining({
+          content: 'Watch this',
+          attachments: expect.arrayContaining([
+            expect.objectContaining({ mimetype: 'video/mp4' }),
+          ]),
+        }),
       );
     });
 
-    it('handles message with no extractable text (e.g. voice note without caption)', async () => {
+    it('handles voice note without caption as media attachment', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
@@ -554,8 +587,16 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      // Skipped — no text content to process
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      // Now processed as media — content is [Audio] with attachment ref
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: '[Audio]',
+          attachments: expect.arrayContaining([
+            expect.objectContaining({ mimetype: 'audio/ogg; codecs=opus' }),
+          ]),
+        }),
+      );
     });
 
     it('uses sender JID when pushName is absent', async () => {

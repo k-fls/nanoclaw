@@ -5,6 +5,7 @@ import path from 'path';
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   WASocket,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
@@ -18,8 +19,11 @@ import {
 } from '../config.js';
 import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
+import { guessMimetype, processInboundMedia } from '../media.js';
 import {
   Channel,
+  MediaAttachment,
+  MediaSendOptions,
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
@@ -194,19 +198,50 @@ export class WhatsAppChannel implements Channel {
 
         // Only deliver full message for registered groups
         const groups = this.opts.registeredGroups();
-        if (groups[chatJid]) {
-          const content =
+        const group = groups[chatJid];
+        if (group) {
+          let content =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             msg.message?.imageMessage?.caption ||
             msg.message?.videoMessage?.caption ||
             '';
 
-          // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-          if (!content) continue;
-
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
+
+          // Check for media attachments (lazy — store ref only, no download)
+          let attachments: MediaAttachment[] | undefined;
+          const mediaTypes = {
+            imageMessage: 'image',
+            videoMessage: 'video',
+            audioMessage: 'audio',
+            documentMessage: 'document',
+            stickerMessage: 'sticker',
+          } as const;
+          for (const [key, mediaType] of Object.entries(mediaTypes)) {
+            const mediaMsg = (msg.message as Record<string, any>)?.[key];
+            if (!mediaMsg) continue;
+
+            const { content: mediaContent, attachments: atts } =
+              processInboundMedia(group.folder, {
+                channel: 'whatsapp',
+                mimetype: mediaMsg.mimetype || 'application/octet-stream',
+                filename: mediaMsg.fileName,
+                size: Number(mediaMsg.fileLength) || undefined,
+                sender,
+                timestamp,
+                mediaType,
+                ref: { key: msg.key, message: msg.message },
+                caption: content || undefined,
+              });
+            content = mediaContent;
+            attachments = atts;
+            break;
+          }
+
+          // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
+          if (!content) continue;
 
           const fromMe = msg.key.fromMe || false;
           // Detect bot messages: with own number, fromMe is reliable
@@ -226,6 +261,7 @@ export class WhatsAppChannel implements Channel {
             timestamp,
             is_from_me: fromMe,
             is_bot_message: isBotMessage,
+            attachments,
           });
         }
       }
@@ -282,6 +318,51 @@ export class WhatsAppChannel implements Channel {
       await this.sock.sendPresenceUpdate(status, jid);
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to update typing status');
+    }
+  }
+
+  async downloadMedia(ref: unknown): Promise<Buffer> {
+    const { key, message } = ref as {
+      key: { remoteJid: string; fromMe?: boolean; id?: string };
+      message: any;
+    };
+    const buffer = await downloadMediaMessage(
+      { key, message },
+      'buffer',
+      {},
+    );
+    return buffer as Buffer;
+  }
+
+  async sendMedia(
+    jid: string,
+    filePath: string,
+    options?: MediaSendOptions,
+  ): Promise<void> {
+    const buffer = fs.readFileSync(filePath);
+    const mimetype = options?.mimetype || guessMimetype(filePath);
+    const filename =
+      options?.filename || path.basename(filePath);
+
+    try {
+      if (mimetype.startsWith('image/')) {
+        await this.sock.sendMessage(jid, { image: buffer, caption: options?.caption });
+      } else if (mimetype.startsWith('video/')) {
+        await this.sock.sendMessage(jid, { video: buffer, caption: options?.caption });
+      } else if (mimetype.startsWith('audio/')) {
+        await this.sock.sendMessage(jid, { audio: buffer, mimetype });
+      } else {
+        await this.sock.sendMessage(jid, {
+          document: buffer,
+          mimetype,
+          fileName: filename,
+          caption: options?.caption,
+        });
+      }
+      logger.info({ jid, filename, mimetype }, 'Media sent');
+    } catch (err) {
+      logger.error({ jid, filename, err }, 'Failed to send media');
+      throw err;
     }
   }
 

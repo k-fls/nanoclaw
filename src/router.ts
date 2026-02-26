@@ -10,10 +10,16 @@ export function escapeXml(s: string): string {
 }
 
 export function formatMessages(messages: NewMessage[]): string {
-  const lines = messages.map(
-    (m) =>
-      `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
-  );
+  const lines = messages.map((m) => {
+    let inner = escapeXml(m.content);
+    if (m.attachments && m.attachments.length > 0) {
+      for (const att of m.attachments) {
+        const sizePart = att.size != null ? ` size="${att.size}"` : '';
+        inner += `\n  <attachment id="${escapeXml(att.id)}" name="${escapeXml(att.filename)}" type="${escapeXml(att.mimetype)}"${sizePart} />`;
+      }
+    }
+    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${inner}</message>`;
+  });
   return `<messages>\n${lines.join('\n')}\n</messages>`;
 }
 

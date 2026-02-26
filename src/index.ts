@@ -39,6 +39,13 @@ import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import {
+  getMediaRef,
+  getExtFromMime,
+  guessMimetype,
+  saveMediaFile,
+  resolveContainerMediaPath,
+} from './media.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -509,6 +516,28 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    sendMedia: async (jid, filePath, options) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (!channel.sendMedia) {
+        // Fallback: send filename as text if channel doesn't support media
+        return channel.sendMessage(
+          jid,
+          `[File: ${options?.filename || path.basename(filePath)}]`,
+        );
+      }
+      return channel.sendMedia(jid, filePath, options);
+    },
+    downloadMedia: async (groupFolder, mediaId) => {
+      const channelName = mediaId.split(':')[0];
+      const ref = getMediaRef(groupFolder, mediaId);
+      if (!ref) throw new Error(`Media ref not found: ${mediaId}`);
+      const channel = channels.find((c) => c.name === channelName);
+      if (!channel?.downloadMedia)
+        throw new Error(`Channel ${channelName} cannot download media`);
+      const buffer = await channel.downloadMedia(ref.ref);
+      saveMediaFile(groupFolder, mediaId, buffer, getExtFromMime(ref.mimetype));
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

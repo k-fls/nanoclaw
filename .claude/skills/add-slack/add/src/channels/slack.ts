@@ -1,12 +1,17 @@
 import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
 
+import fs from 'fs';
+
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { guessMimetype, processInboundMedia } from '../media.js';
 import {
   Channel,
+  MediaAttachment,
+  MediaSendOptions,
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
@@ -117,6 +122,42 @@ export class SlackChannel implements Channel {
         }
       }
 
+      // Check for file attachments (lazy — store ref only)
+      let attachments: MediaAttachment[] | undefined;
+      const files = (msg as any).files as
+        | Array<{
+            id: string;
+            name?: string;
+            mimetype?: string;
+            size?: number;
+            url_private_download?: string;
+          }>
+        | undefined;
+      if (files && Array.isArray(files)) {
+        const group = groups[jid];
+        if (group) {
+          attachments = [];
+          for (const file of files) {
+            if (!file.url_private_download) continue;
+            const mediaType = file.mimetype?.startsWith('image/')
+              ? 'image'
+              : 'document';
+            const { attachments: atts } = processInboundMedia(group.folder, {
+              channel: 'slack',
+              mimetype: file.mimetype || 'application/octet-stream',
+              filename: file.name,
+              size: file.size,
+              sender: msg.user || '',
+              timestamp,
+              mediaType,
+              ref: { url: file.url_private_download },
+            });
+            attachments.push(...atts);
+          }
+          if (attachments.length === 0) attachments = undefined;
+        }
+      }
+
       this.opts.onMessage(jid, {
         id: msg.ts,
         chat_jid: jid,
@@ -126,6 +167,7 @@ export class SlackChannel implements Channel {
         timestamp,
         is_from_me: isBotMessage,
         is_bot_message: isBotMessage,
+        attachments,
       });
     });
   }
@@ -208,6 +250,41 @@ export class SlackChannel implements Channel {
   // doesn't need channel-specific branching.
   async setTyping(_jid: string, _isTyping: boolean): Promise<void> {
     // no-op: Slack Bot API has no typing indicator endpoint
+  }
+
+  async downloadMedia(ref: unknown): Promise<Buffer> {
+    const { url } = ref as { url: string };
+    const env = readEnvFile(['SLACK_BOT_TOKEN']);
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}` },
+    });
+    if (!response.ok)
+      throw new Error(`Slack file download failed: ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  async sendMedia(
+    jid: string,
+    filePath: string,
+    options?: MediaSendOptions,
+  ): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+    const buffer = fs.readFileSync(filePath);
+    const filename =
+      options?.filename || filePath.split('/').pop() || 'file';
+
+    try {
+      await this.app.client.filesUploadV2({
+        channel_id: channelId,
+        file: buffer,
+        filename,
+        initial_comment: options?.caption,
+      });
+      logger.info({ jid, filename }, 'Slack media sent');
+    } catch (err) {
+      logger.error({ jid, filename, err }, 'Failed to send Slack media');
+      throw err;
+    }
   }
 
   /**

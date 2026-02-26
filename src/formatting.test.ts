@@ -7,7 +7,7 @@ import {
   formatOutbound,
   stripInternalTags,
 } from './router.js';
-import { NewMessage } from './types.js';
+import { MediaAttachment, NewMessage } from './types.js';
 
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
   return {
@@ -101,6 +101,109 @@ describe('formatMessages', () => {
   it('handles empty array', () => {
     const result = formatMessages([]);
     expect(result).toBe('<messages>\n\n</messages>');
+  });
+});
+
+// --- formatMessages with attachments ---
+
+describe('formatMessages with attachments', () => {
+  it('includes attachment element for message with media', () => {
+    const msg = makeMsg({
+      content: 'Check this out',
+      attachments: [
+        {
+          id: 'whatsapp:media:1709123456789-abc123',
+          filename: 'photo.jpg',
+          mimetype: 'image/jpeg',
+          size: 245000,
+        },
+      ],
+    });
+    const result = formatMessages([msg]);
+    expect(result).toContain('Check this out');
+    expect(result).toContain(
+      '<attachment id="whatsapp:media:1709123456789-abc123" name="photo.jpg" type="image/jpeg" size="245000" />',
+    );
+  });
+
+  it('includes multiple attachment elements', () => {
+    const msg = makeMsg({
+      content: 'Files incoming',
+      attachments: [
+        {
+          id: 'slack:media:a1',
+          filename: 'report.pdf',
+          mimetype: 'application/pdf',
+          size: 100000,
+        },
+        {
+          id: 'slack:media:a2',
+          filename: 'chart.png',
+          mimetype: 'image/png',
+          size: 50000,
+        },
+      ],
+    });
+    const result = formatMessages([msg]);
+    expect(result).toContain('name="report.pdf"');
+    expect(result).toContain('name="chart.png"');
+  });
+
+  it('omits size attribute when size is undefined', () => {
+    const msg = makeMsg({
+      content: '[Image]',
+      attachments: [
+        {
+          id: 'tg:media:b1',
+          filename: 'photo.jpg',
+          mimetype: 'image/jpeg',
+        },
+      ],
+    });
+    const result = formatMessages([msg]);
+    expect(result).toContain('type="image/jpeg" />');
+    expect(result).not.toContain('size=');
+  });
+
+  it('does not include attachment elements for messages without media', () => {
+    const result = formatMessages([makeMsg()]);
+    expect(result).not.toContain('<attachment');
+  });
+
+  it('escapes special characters in attachment attributes', () => {
+    const msg = makeMsg({
+      content: 'file',
+      attachments: [
+        {
+          id: 'wa:media:x1',
+          filename: 'file "name".jpg',
+          mimetype: 'image/jpeg',
+        },
+      ],
+    });
+    const result = formatMessages([msg]);
+    expect(result).toContain('name="file &quot;name&quot;.jpg"');
+  });
+
+  it('preserves message sequence with mixed text and media messages', () => {
+    const msgs = [
+      makeMsg({ id: '1', content: 'hello', timestamp: 't1' }),
+      makeMsg({
+        id: '2',
+        content: 'Check this photo',
+        timestamp: 't2',
+        attachments: [
+          { id: 'wa:media:p1', filename: 'pic.jpg', mimetype: 'image/jpeg' },
+        ],
+      }),
+      makeMsg({ id: '3', content: 'what do you think?', timestamp: 't3' }),
+    ];
+    const result = formatMessages(msgs);
+    const helloIdx = result.indexOf('hello');
+    const attachIdx = result.indexOf('<attachment');
+    const thinkIdx = result.indexOf('what do you think?');
+    expect(helloIdx).toBeLessThan(attachIdx);
+    expect(attachIdx).toBeLessThan(thinkIdx);
   });
 });
 
