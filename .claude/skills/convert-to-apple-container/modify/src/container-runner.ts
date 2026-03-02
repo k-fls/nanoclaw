@@ -9,6 +9,7 @@ import path from 'path';
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
+  CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -72,17 +73,6 @@ function buildVolumeMounts(
       containerPath: '/workspace/project',
       readonly: true,
     });
-
-    // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Secrets are passed via stdin instead (see readSecrets()).
-    const envFile = path.join(projectRoot, '.env');
-    if (fs.existsSync(envFile)) {
-      mounts.push({
-        hostPath: '/dev/null',
-        containerPath: '/workspace/project/.env',
-        readonly: true,
-      });
-    }
 
     // Main also gets its group folder as the working directory
     mounts.push({
@@ -214,17 +204,13 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile([
-    'CLAUDE_CODE_OAUTH_TOKEN',
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_BASE_URL',
-    'ANTHROPIC_AUTH_TOKEN',
-  ]);
+  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 }
 
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  isMain: boolean,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -237,7 +223,14 @@ function buildContainerArgs(
   const hostUid = process.getuid?.();
   const hostGid = process.getgid?.();
   if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-    args.push('--user', `${hostUid}:${hostGid}`);
+    if (isMain) {
+      // Main containers start as root so the entrypoint can mount --bind
+      // to shadow .env. Privileges are dropped via setpriv in entrypoint.sh.
+      args.push('-e', `RUN_UID=${hostUid}`);
+      args.push('-e', `RUN_GID=${hostGid}`);
+    } else {
+      args.push('--user', `${hostUid}:${hostGid}`);
+    }
     args.push('-e', 'HOME=/home/node');
   }
 
@@ -257,13 +250,8 @@ function buildContainerArgs(
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
-  onProcess: (
-    proc: ChildProcess,
-    containerName: string,
-    controls: { clearIdleTimeout: () => void; resetIdleTimeout: () => void },
-  ) => void,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-  onTimeout?: () => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -273,7 +261,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, input.isMain);
 
   logger.debug(
     {
@@ -305,6 +293,8 @@ export async function runContainerAgent(
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    onProcess(container, containerName);
 
     let stdout = '';
     let stderr = '';
@@ -399,49 +389,35 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const timeoutMs = group.containerConfig?.timeout || IDLE_TIMEOUT;
+    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+    // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
+    // graceful _close sentinel has time to trigger before the hard kill fires.
+    const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
 
-    const handleIdleTimeout = () => {
+    const killOnTimeout = () => {
       timedOut = true;
       logger.error(
         { group: group.name, containerName },
-        'Idle timeout fired (stuck container)',
+        'Container timeout, stopping gracefully',
       );
-      if (onTimeout) {
-        // Delegate to queue's softStop → grace timer → hardStop chain
-        onTimeout();
-      } else {
-        // Fallback: stop directly (e.g. when running without queue)
-        exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
-          if (err) {
-            logger.warn(
-              { group: group.name, containerName, err },
-              'Graceful stop failed, force killing',
-            );
-            container.kill('SIGKILL');
-          }
-        });
-      }
+      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
+        if (err) {
+          logger.warn(
+            { group: group.name, containerName, err },
+            'Graceful stop failed, force killing',
+          );
+          container.kill('SIGKILL');
+        }
+      });
     };
 
-    let timeout = setTimeout(handleIdleTimeout, timeoutMs);
+    let timeout = setTimeout(killOnTimeout, timeoutMs);
 
     // Reset the timeout whenever there's activity (streaming output)
     const resetTimeout = () => {
       clearTimeout(timeout);
-      timeout = setTimeout(handleIdleTimeout, timeoutMs);
+      timeout = setTimeout(killOnTimeout, timeoutMs);
     };
-
-    const clearIdleTimeout = () => {
-      clearTimeout(timeout);
-    };
-
-    const resetIdleTimeout = () => {
-      resetTimeout();
-    };
-
-    // Register process with queue after timeout controls are available
-    onProcess(container, containerName, { clearIdleTimeout, resetIdleTimeout });
 
     container.on('close', (code) => {
       clearTimeout(timeout);
@@ -489,7 +465,7 @@ export async function runContainerAgent(
         resolve({
           status: 'error',
           result: null,
-          error: `Container timed out after ${timeoutMs}ms`,
+          error: `Container timed out after ${configTimeout}ms`,
         });
         return;
       }
