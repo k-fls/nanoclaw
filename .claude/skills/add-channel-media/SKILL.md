@@ -131,6 +131,12 @@ For each applied channel skill, update its channel implementation:
 - Implement `sendMedia(jid, filePath, options)` routing by MIME type
 - Call `processInboundMedia()` in the message handler for media messages
 
+When updating channel test files for media support:
+- Add `DATA_DIR`, `MEDIA_DIR`, `MAX_MEDIA_SIZE` to the `../config.js` mock
+- Mock `../media.js` module (`processInboundMedia`) to avoid filesystem operations in tests
+- Update media handler test contexts to include media-type-specific properties (e.g., `photo` array, `video`/`voice`/`audio`/`document`/`sticker` objects on `ctx.message`)
+- Update test expectations: media messages now return `attachments` array and content comes from `processInboundMedia` (caption or `[Type]` label), not hardcoded placeholders
+
 ### Validate code changes
 
 ```bash
@@ -149,6 +155,14 @@ The container needs to be rebuilt to include the new MCP tools:
 ```
 
 If using Apple Container, use the appropriate build command.
+
+### Delete cached agent-runner source
+
+Each group caches its own copy of the agent-runner TypeScript source in `data/sessions/*/agent-runner-src/`. After rebuilding the container, these **must** be deleted so they get regenerated from the new image on the next run. If skipped, containers will keep using the old MCP tools (without `get_media`/`send_media`), and agents will fall back to Bash workarounds that don't work.
+
+```bash
+find data/sessions -name agent-runner-src -type d -exec rm -rf {} +
+```
 
 ## Phase 4: Verify
 

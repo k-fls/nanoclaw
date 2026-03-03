@@ -5,6 +5,7 @@ import path from 'path';
 // Mock config before importing media module
 vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
+  GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   MEDIA_DIR: '/tmp/nanoclaw-test-data/media',
   MAX_MEDIA_SIZE: 52428800, // 50MB
 }));
@@ -97,13 +98,25 @@ describe('resolveContainerMediaPath', () => {
     expect(result).toBe('/tmp/nanoclaw-test-data/media/main/photo.jpg');
   });
 
-  it('returns null for paths not under /workspace/media/', () => {
-    expect(resolveContainerMediaPath('/workspace/group/file.txt', 'main')).toBeNull();
-    expect(resolveContainerMediaPath('/etc/passwd', 'main')).toBeNull();
+  it('resolves /workspace/group/ paths', () => {
+    const result = resolveContainerMediaPath(
+      '/workspace/group/output.png',
+      'main',
+    );
+    expect(result).toBe('/tmp/nanoclaw-test-groups/main/output.png');
   });
 
-  it('rejects path traversal', () => {
+  it('returns null for unrecognized prefixes', () => {
+    expect(resolveContainerMediaPath('/etc/passwd', 'main')).toBeNull();
+    expect(resolveContainerMediaPath('/workspace/other/file.txt', 'main')).toBeNull();
+  });
+
+  it('rejects path traversal in media path', () => {
     expect(resolveContainerMediaPath('/workspace/media/../../../etc/passwd', 'main')).toBeNull();
+  });
+
+  it('rejects path traversal in group path', () => {
+    expect(resolveContainerMediaPath('/workspace/group/../../../etc/passwd', 'main')).toBeNull();
   });
 });
 

@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, MAX_MEDIA_SIZE, MEDIA_DIR } from './config.js';
+import { DATA_DIR, GROUPS_DIR, MAX_MEDIA_SIZE, MEDIA_DIR } from './config.js';
 import { MediaAttachment } from './types.js';
 
 export interface MediaRef {
@@ -180,15 +180,28 @@ export function resolveContainerMediaPath(
   containerPath: string,
   groupFolder: string,
 ): string | null {
-  // Container paths are under /workspace/media/
-  // Map to host path under MEDIA_DIR/{groupFolder}/
-  const prefix = '/workspace/media/';
-  if (!containerPath.startsWith(prefix)) return null;
-  const relativePath = containerPath.slice(prefix.length);
-  // Guard against path traversal
-  if (relativePath.includes('..')) return null;
-  const dir = resolveMediaDir(groupFolder);
-  return path.join(dir, relativePath);
+  // /workspace/media/ → data/media/{groupFolder}/
+  const mediaPrefix = '/workspace/media/';
+  if (containerPath.startsWith(mediaPrefix)) {
+    const rel = containerPath.slice(mediaPrefix.length);
+    const dir = resolveMediaDir(groupFolder);
+    const resolved = path.resolve(dir, rel);
+    if (!resolved.startsWith(dir + path.sep) && resolved !== dir) return null;
+    return resolved;
+  }
+
+  // /workspace/group/ → groups/{groupFolder}/
+  const groupPrefix = '/workspace/group/';
+  if (containerPath.startsWith(groupPrefix)) {
+    const rel = containerPath.slice(groupPrefix.length);
+    const groupDir = path.resolve(GROUPS_DIR, groupFolder);
+    const resolved = path.resolve(groupDir, rel);
+    if (!resolved.startsWith(groupDir + path.sep) && resolved !== groupDir)
+      return null;
+    return resolved;
+  }
+
+  return null;
 }
 
 // --- Channel helper: the ONE function channels call for inbound media ---
