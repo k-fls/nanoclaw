@@ -23,6 +23,7 @@ import type {
   AuthExecOpts,
   AuthOption,
   CredentialProvider,
+  ExecHandle,
   FlowResult,
 } from '../types.js';
 
@@ -90,15 +91,24 @@ function isExpired(expiresAt: string | null): boolean {
   return Date.now() > expiry - 5 * 60 * 1000;
 }
 
-/** Wait for a regex match in accumulating output. */
-function waitForOutput(
+/**
+ * Wait for a regex match in accumulating output.
+ * Only matches against complete lines (newline-terminated) to avoid
+ * partial matches when output arrives in multiple chunks.
+ */
+export function waitForOutput(
   outputRef: { value: string },
   pattern: RegExp,
   timeoutMs: number,
 ): Promise<RegExpMatchArray | null> {
   return new Promise((resolve) => {
     const check = setInterval(() => {
-      const match = outputRef.value.match(pattern);
+      // Only search complete lines to avoid matching partial URLs/tokens
+      // when output is split across chunks
+      const lastNewline = outputRef.value.lastIndexOf('\n');
+      if (lastNewline === -1) return; // no complete lines yet
+      const completeLines = outputRef.value.slice(0, lastNewline + 1);
+      const match = completeLines.match(pattern);
       if (match) {
         clearInterval(check);
         resolve(match);
@@ -109,6 +119,22 @@ function waitForOutput(
       resolve(null);
     }, timeoutMs);
   });
+}
+
+/**
+ * Race waitForOutput against the process exiting.
+ * Returns the match if found, null if process exits first or timeout.
+ */
+function waitForOutputOrExit(
+  outputRef: { value: string },
+  pattern: RegExp,
+  timeoutMs: number,
+  handle: ExecHandle,
+): Promise<RegExpMatchArray | null> {
+  return Promise.race([
+    waitForOutput(outputRef, pattern, timeoutMs),
+    handle.wait().then(() => null),
+  ]);
 }
 
 export const claudeProvider: CredentialProvider = {
@@ -253,13 +279,14 @@ export const claudeProvider: CredentialProvider = {
             output.value += chunk;
           });
 
-          const urlMatch = await waitForOutput(
+          const urlMatch = await waitForOutputOrExit(
             output,
             /https:\/\/console\.anthropic\.com\S+/,
             30_000,
+            handle,
           );
           if (!urlMatch) {
-            await ctx.chat.send('Timed out waiting for OAuth URL.');
+            await ctx.chat.send('Container exited or timed out before providing OAuth URL.');
             handle.kill();
             return null;
           }
@@ -316,13 +343,14 @@ export const claudeProvider: CredentialProvider = {
             output.value += chunk;
           });
 
-          const urlMatch = await waitForOutput(
+          const urlMatch = await waitForOutputOrExit(
             output,
             /https:\/\/console\.anthropic\.com\S+/,
             30_000,
+            handle,
           );
           if (!urlMatch) {
-            await ctx.chat.send('Timed out waiting for OAuth URL.');
+            await ctx.chat.send('Container exited or timed out before providing OAuth URL.');
             handle.kill();
             return null;
           }

@@ -87,6 +87,9 @@ export function execInContainer(
     stderr += data.toString();
   });
 
+  // Cache the wait promise so multiple calls don't hang
+  let waitPromise: Promise<{ exitCode: number; stdout: string; stderr: string }> | null = null;
+
   return {
     onStdout(cb: (chunk: string) => void): void {
       stdoutCallbacks.push(cb);
@@ -100,15 +103,18 @@ export function execInContainer(
       },
     },
     wait(): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-      return new Promise((resolve) => {
-        proc.on('close', (code) => {
-          resolve({ exitCode: code ?? 1, stdout, stderr });
+      if (!waitPromise) {
+        waitPromise = new Promise((resolve) => {
+          proc.on('close', (code) => {
+            resolve({ exitCode: code ?? 1, stdout, stderr });
+          });
+          proc.on('error', (err) => {
+            logger.error({ containerName, err }, 'Auth container spawn error');
+            resolve({ exitCode: 1, stdout, stderr: stderr + err.message });
+          });
         });
-        proc.on('error', (err) => {
-          logger.error({ containerName, err }, 'Auth container spawn error');
-          resolve({ exitCode: 1, stdout, stderr: stderr + err.message });
-        });
-      });
+      }
+      return waitPromise;
     },
     kill(): void {
       proc.kill();
