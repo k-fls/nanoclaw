@@ -42,16 +42,17 @@ import type { RegisteredGroup } from '../types.js';
 
 function makeGroup(
   folder: string,
-  useDefaultCredentials?: boolean,
+  opts?: { useDefaultCredentials?: boolean; isMain?: boolean },
 ): RegisteredGroup {
   return {
     name: `Group ${folder}`,
     folder,
     trigger: '@Andy',
     added_at: new Date().toISOString(),
-    containerConfig: useDefaultCredentials !== undefined
-      ? { useDefaultCredentials }
+    containerConfig: opts?.useDefaultCredentials !== undefined
+      ? { useDefaultCredentials: opts.useDefaultCredentials }
       : undefined,
+    isMain: opts?.isMain,
   };
 }
 
@@ -100,9 +101,68 @@ describe('resolveSecrets', () => {
     };
     registerProvider(provider);
 
-    const group = makeGroup('some-group', true);
+    const group = makeGroup('some-group', { useDefaultCredentials: true });
     const secrets = resolveSecrets(group);
     expect(secrets.DEF_KEY).toBe('default-value');
+  });
+
+  it('defaults to useDefaultCredentials=true for main group', () => {
+    const provider: CredentialProvider = {
+      service: 'test-main-default',
+      displayName: 'Test',
+      hasAuth: () => false,
+      provision: (scope) => {
+        if (scope === 'default') return { env: { MAIN_KEY: 'from-default' } };
+        return { env: {} as Record<string, string> };
+      },
+      storeResult: () => {},
+      authOptions: () => [],
+    };
+    registerProvider(provider);
+
+    // Main group with no containerConfig at all — should still get default creds
+    const group = makeGroup('main-group', { isMain: true });
+    const secrets = resolveSecrets(group);
+    expect(secrets.MAIN_KEY).toBe('from-default');
+  });
+
+  it('does NOT default to useDefaultCredentials=true for non-main group', () => {
+    const provider: CredentialProvider = {
+      service: 'test-nonmain-default',
+      displayName: 'Test',
+      hasAuth: () => false,
+      provision: (scope) => {
+        if (scope === 'default') return { env: { NONMAIN: 'blocked' } };
+        return { env: {} as Record<string, string> };
+      },
+      storeResult: () => {},
+      authOptions: () => [],
+    };
+    registerProvider(provider);
+
+    // Non-main group with no containerConfig — should NOT get default creds
+    const group = makeGroup('other-group');
+    const secrets = resolveSecrets(group);
+    expect(secrets.NONMAIN).toBeUndefined();
+  });
+
+  it('explicit useDefaultCredentials=false overrides isMain', () => {
+    const provider: CredentialProvider = {
+      service: 'test-main-override',
+      displayName: 'Test',
+      hasAuth: () => false,
+      provision: (scope) => {
+        if (scope === 'default') return { env: { OVERRIDE: 'blocked' } };
+        return { env: {} as Record<string, string> };
+      },
+      storeResult: () => {},
+      authOptions: () => [],
+    };
+    registerProvider(provider);
+
+    const group = makeGroup('main-locked', { isMain: true, useDefaultCredentials: false });
+    const secrets = resolveSecrets(group);
+    expect(secrets.OVERRIDE).toBeUndefined();
   });
 
   it('does NOT fall back to default when useDefaultCredentials is not set', () => {
@@ -140,7 +200,7 @@ describe('resolveSecrets', () => {
     };
     registerProvider(provider);
 
-    const group = makeGroup('locked-group', false);
+    const group = makeGroup('locked-group', { useDefaultCredentials: false });
     const secrets = resolveSecrets(group);
     expect(secrets.NOPE).toBeUndefined();
   });
@@ -160,7 +220,7 @@ describe('resolveSecrets', () => {
     };
     registerProvider(provider);
 
-    const group = makeGroup('priority-group', true);
+    const group = makeGroup('priority-group', { useDefaultCredentials: true });
     const secrets = resolveSecrets(group);
     expect(secrets.K).toBe('group');
   });

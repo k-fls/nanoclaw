@@ -23,7 +23,8 @@ export function importEnvToDefault(): void {
 export function resolveSecrets(group: RegisteredGroup): Record<string, string> {
   const env: Record<string, string> = {};
   const providers = getAllProviders();
-  const useDefault = group.containerConfig?.useDefaultCredentials === true;
+  const useDefault = group.containerConfig?.useDefaultCredentials
+    ?? (group.isMain === true);
 
   for (const provider of providers) {
     // Try group-specific scope first
