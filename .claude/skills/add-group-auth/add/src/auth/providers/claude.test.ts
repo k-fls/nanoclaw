@@ -224,27 +224,41 @@ describe('claudeProvider', () => {
 });
 
 describe('isAuthError', () => {
-  it('detects auth errors', () => {
-    expect(isAuthError('invalid token')).toBe(true);
-    expect(isAuthError('unauthorized')).toBe(true);
-    expect(isAuthError('authentication failed')).toBe(true);
-    expect(isAuthError('HTTP 401')).toBe(true);
-    expect(isAuthError('expired token')).toBe(true);
-    expect(isAuthError('invalid_grant')).toBe(true);
+  const apiError = (status: number, type: string, message: string) =>
+    `Failed to authenticate. API Error: ${status} {"type":"error","error":{"type":"${type}","message":"${message}"},"request_id":"req_test"}`;
+
+  it('detects 401 authentication_error', () => {
+    expect(isAuthError(apiError(401, 'authentication_error', 'Invalid bearer token'))).toBe(true);
   });
 
-  it('detects billing errors', () => {
-    expect(isAuthError('Credit balance is too low')).toBe(true);
-    expect(isAuthError('insufficient credits')).toBe(true);
-    expect(isAuthError('billing issue')).toBe(true);
-    expect(isAuthError('rate limit exceeded')).toBe(true);
-    expect(isAuthError('quota exceeded')).toBe(true);
+  it('detects 403 permission_error', () => {
+    expect(isAuthError(apiError(403, 'permission_error', 'Forbidden'))).toBe(true);
   });
 
-  it('returns false for non-auth errors', () => {
+  it('detects 401/403 with unknown error type', () => {
+    expect(isAuthError(apiError(401, 'some_new_error', 'whatever'))).toBe(true);
+    expect(isAuthError(apiError(403, 'some_new_error', 'whatever'))).toBe(true);
+  });
+
+  it('handles malformed JSON after status code', () => {
+    expect(isAuthError('API Error: 401 {not valid json')).toBe(true);
+    expect(isAuthError('API Error: 403 {broken')).toBe(true);
+  });
+
+  it('does not trigger on 429 or 529', () => {
+    expect(isAuthError(apiError(429, 'rate_limit_error', 'Too many requests'))).toBe(false);
+    expect(isAuthError(apiError(529, 'overloaded_error', 'Overloaded'))).toBe(false);
+  });
+
+  it('does not trigger on other status codes', () => {
+    expect(isAuthError(apiError(400, 'invalid_request_error', 'Bad request'))).toBe(false);
+    expect(isAuthError(apiError(500, 'api_error', 'Internal error'))).toBe(false);
+  });
+
+  it('returns false for non-API errors', () => {
     expect(isAuthError('timeout after 300s')).toBe(false);
     expect(isAuthError('connection refused')).toBe(false);
-    expect(isAuthError('out of memory')).toBe(false);
+    expect(isAuthError('Container exited with code 1: some stderr')).toBe(false);
     expect(isAuthError(undefined)).toBe(false);
     expect(isAuthError('')).toBe(false);
   });
@@ -536,7 +550,9 @@ describe('deliverCode', () => {
 
     const result = await deliverCode('authcode123#stateabc', { method: 'stdin' as const }, handle);
     expect(result).toBe(true);
-    expect(stdin.write).toHaveBeenCalledWith('authcode123#stateabc\n');
+    expect(stdin.write).toHaveBeenCalledTimes(2);
+    expect(stdin.write).toHaveBeenNthCalledWith(1, 'authcode123#stateabc');
+    expect(stdin.write).toHaveBeenNthCalledWith(2, '\r');
   });
 
   it('returns false for callback without hash separator', async () => {
