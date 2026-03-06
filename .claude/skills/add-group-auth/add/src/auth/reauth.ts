@@ -52,6 +52,7 @@ export async function runReauth(
     await chat.send('Timed out. Skipping authentication.');
     return false;
   }
+  chat.advanceCursor();
 
   const choice = parseInt(reply.trim(), 10);
   if (isNaN(choice) || choice < 1 || choice > allOptions.length) {
@@ -66,7 +67,7 @@ export async function runReauth(
     scope,
     exec(command: string[], opts?: AuthExecOpts): ExecHandle {
       return execInContainer(command, sessionDir, {
-        extraMounts: opts?.extraMounts,
+        mounts: opts?.mounts,
       });
     },
     chat,

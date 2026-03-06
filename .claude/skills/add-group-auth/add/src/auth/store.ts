@@ -127,6 +127,10 @@ export function decrypt(value: string): string {
   if (parts.length !== 6) throw new Error('Malformed encrypted value');
 
   const key = requireKey();
+  const storedHash = parts[2];
+  if (storedHash && storedHash !== keyHash16()) {
+    throw new Error('Encryption key mismatch — credential was encrypted with a different key');
+  }
   const iv = Buffer.from(parts[3], 'base64');
   const tag = Buffer.from(parts[4], 'base64');
   const ciphertext = Buffer.from(parts[5], 'base64');

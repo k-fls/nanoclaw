@@ -12,23 +12,33 @@ import { logger } from '../logger.js';
 import type { ExecHandle } from './types.js';
 
 export interface ExecContainerOpts {
-  /** Additional readonly bind mounts as [hostPath, containerPath] pairs. */
-  extraMounts?: Array<[string, string]>;
+  /** Provider-specific bind mounts as [hostPath, containerPath, mode?] tuples. */
+  mounts?: Array<[string, string, string?]>;
 }
+
+// Shim xdg-open: captures OAuth URL and exits non-zero so CLI falls back to console prompt.
+const XDG_OPEN_SHIM = path.join(process.cwd(), 'container', 'shims', 'xdg-open');
 
 /**
  * Spawn a command inside a nanoclaw-agent container.
  *
- * @param command - Command and args to run (e.g. ['script', '-qc', 'claude setup-token', '/dev/null'])
- * @param sessionDir - Host path mounted at /home/node/.claude
- * @param opts - Optional extra mounts
+ * Infrastructure mounts (always added):
+ *   - xdg-open shim at /usr/local/bin and /usr/bin (captures OAuth URLs)
+ *   - auth-ipc dir at /workspace/auth-ipc (shim writes .oauth-url here)
+ *
+ * Provider-specific mounts come through opts.mounts.
+ *
+ * @param command - Command and args to run
+ * @param sessionDir - Host path for this auth session (used for auth-ipc subdir)
+ * @param opts - Optional provider-specific mounts
  */
 export function execInContainer(
   command: string[],
   sessionDir: string,
   opts: ExecContainerOpts = {},
 ): ExecHandle {
-  fs.mkdirSync(sessionDir, { recursive: true });
+  const authIpcDir = path.join(sessionDir, 'auth-ipc');
+  fs.mkdirSync(authIpcDir, { recursive: true });
 
   const containerName = `nanoclaw-auth-${Date.now()}`;
   const args: string[] = [
@@ -55,13 +65,17 @@ export function execInContainer(
     args.push('-e', 'HOME=/home/node');
   }
 
-  // Mount session dir
-  args.push('-v', `${sessionDir}:/home/node/.claude`);
+  // Infrastructure mounts
+  args.push('-v', `${authIpcDir}:/workspace/auth-ipc`);
+  if (fs.existsSync(XDG_OPEN_SHIM)) {
+    args.push('-v', `${XDG_OPEN_SHIM}:/usr/local/bin/xdg-open:ro`);
+    args.push('-v', `${XDG_OPEN_SHIM}:/usr/bin/xdg-open:ro`);
+  }
 
-  // Caller-supplied extra mounts (readonly)
-  for (const [hostPath, containerPath] of opts.extraMounts ?? []) {
+  // Provider-specific mounts
+  for (const [hostPath, containerPath, mode] of opts.mounts ?? []) {
     if (fs.existsSync(hostPath)) {
-      args.push('-v', `${hostPath}:${containerPath}:ro`);
+      args.push('-v', mode ? `${hostPath}:${containerPath}:${mode}` : `${hostPath}:${containerPath}`);
     }
   }
 

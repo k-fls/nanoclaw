@@ -67,18 +67,18 @@ const ENV_FALLBACK_KEYS = [
   'ANTHROPIC_AUTH_TOKEN',
 ];
 
-// Shim xdg-open: captures the auto-redirect URL (has localhost callback port)
-// and exits non-zero so CLI falls back to "Paste code here" stdin prompt.
-const XDG_OPEN_SHIM = path.join(process.cwd(), 'container', 'shims', 'xdg-open');
-const CLAUDE_EXEC_OPTS: AuthExecOpts = {
-  extraMounts: [[XDG_OPEN_SHIM, '/usr/local/bin/xdg-open']],
-};
+/** Claude CLI session dir mount — provider-specific. */
+function claudeExecOpts(sessionDir: string): AuthExecOpts {
+  return {
+    mounts: [[sessionDir, '/home/node/.claude']],
+  };
+}
 
-/** File the xdg-open shim writes inside the session dir mount. */
+/** File the xdg-open shim writes inside the auth-ipc mount. */
 const OAUTH_URL_FILE = '.oauth-url';
 
 /** Stdin paste prompt pattern (interactive/setup-token flows). */
-const PASTE_PROMPT_RE = /Paste code here if prompted/;
+const PASTE_PROMPT_RE = /Paste\s+code\s+here\s+.*prompted/;
 
 /** How long to wait for the CLI to print the OAuth URL. */
 const URL_WAIT_MS = 60_000;
@@ -97,11 +97,11 @@ type CodeDelivery = 'stdin' | 'callback';
  */
 export function detectCodeDelivery(
   outputRef: { value: string },
-  sessionDir: string,
+  authIpcDir: string,
   timeoutMs: number,
   handle: ExecHandle,
 ): Promise<{ method: CodeDelivery; callbackPort?: number } | null> {
-  const oauthUrlPath = path.join(sessionDir, OAUTH_URL_FILE);
+  const oauthUrlPath = path.join(authIpcDir, OAUTH_URL_FILE);
   // Clean up any stale file from a previous attempt
   try { fs.unlinkSync(oauthUrlPath); } catch { /* ignore */ }
 
@@ -115,18 +115,24 @@ export function detectCodeDelivery(
       resolve(result);
     };
 
+    const pasteExtractor = new LineExtractor(PASTE_PROMPT_RE);
     const check = setInterval(() => {
       // (a) Check stdout for paste prompt
-      if (PASTE_PROMPT_RE.test(outputRef.value)) {
+      pasteExtractor.feed(outputRef.value);
+      if (pasteExtractor.result()) {
         done({ method: 'stdin' });
         return;
       }
       // (b) Check for shim-written URL file
       try {
         const url = fs.readFileSync(oauthUrlPath, 'utf-8').trim();
-        const portMatch = url.match(/localhost:(\d+)/);
-        if (portMatch) {
-          done({ method: 'callback', callbackPort: parseInt(portMatch[1], 10) });
+        if (url) {
+          const portMatch = url.match(/redirect_uri=http%3A%2F%2Flocalhost%3A(\d+)/);
+          if (portMatch) {
+            done({ method: 'callback', callbackPort: parseInt(portMatch[1], 10) });
+          } else {
+            done({ method: 'stdin' });
+          }
           return;
         }
       } catch { /* not yet */ }
@@ -195,24 +201,137 @@ function isExpired(expiresAt: string | null): boolean {
   return Date.now() > expiry - 5 * 60 * 1000;
 }
 
+/** ANSI escape sequence pattern. */
+const ANSI_RE_G = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
+
+/** Valid URL characters (RFC 3986 unreserved + reserved + percent-encoding). */
+const URL_CHAR_RE = /[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]/;
+const NON_URL_CHAR_RE = /[^A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]/;
+
+/** Common interface for output extractors. */
+export interface OutputExtractor {
+  feed(text: string): void;
+  result(): RegExpMatchArray | null;
+}
+
 /**
- * Wait for a regex match in accumulating output.
- * Only matches against complete lines (newline-terminated) to avoid
- * partial matches when output arrives in multiple chunks.
+ * Stateful URL extractor for streaming console output.
+ * Handles URLs wrapped across lines with ANSI sequences.
+ *
+ * Feed complete lines via feedLines(). Once the URL terminates
+ * (empty segment or non-URL char found inside), result() returns it.
+ * While still accumulating, result() returns null.
+ */
+export class UrlExtractor implements OutputExtractor {
+  private url = '';
+  private found = false;  // anchor found
+  private done = false;   // URL terminated
+  private processedUpTo = 0;  // how far we've consumed in the input
+
+  constructor(private pattern: RegExp) {}
+
+  /** Feed new complete lines. Call repeatedly as output grows. */
+  feed(text: string): void {
+    if (this.done) return;
+
+    let remaining = text.slice(this.processedUpTo);
+
+    // Find anchor if not yet found
+    if (!this.found) {
+      const anchor = remaining.indexOf('https://');
+      if (anchor === -1) {
+        // No anchor — advance past all complete lines
+        const lastNl = remaining.lastIndexOf('\n');
+        if (lastNl !== -1) this.processedUpTo += lastNl + 1;
+        return;
+      }
+      this.found = true;
+      remaining = remaining.slice(anchor);
+      this.processedUpTo += anchor;
+    }
+
+    // Process line by line
+    while (remaining.length > 0) {
+      const nl = remaining.indexOf('\n');
+      if (nl === -1) break; // incomplete line, wait for more
+
+      const segment = remaining.slice(0, nl);
+      remaining = remaining.slice(nl + 1);
+      this.processedUpTo += nl + 1;
+
+      // Strip ANSI, trim non-URL from both ends
+      const clean = segment.replace(ANSI_RE_G, '');
+      const trimmed = clean.replace(/^[^A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+/, '')
+                           .replace(/[^A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$/, '');
+
+      if (!trimmed) {
+        // Empty after trim — URL is complete
+        this.done = true;
+        return;
+      }
+
+      // Check for non-URL char inside
+      const nonUrl = trimmed.search(NON_URL_CHAR_RE);
+      if (nonUrl === -1) {
+        this.url += trimmed;
+      } else {
+        this.url += trimmed.slice(0, nonUrl);
+        this.done = true;
+        return;
+      }
+    }
+  }
+
+  result(): RegExpMatchArray | null {
+    if (this.done && this.url) return this.url.match(this.pattern);
+    return null;
+  }
+}
+
+/**
+ * Stateful single-line pattern extractor for streaming console output.
+ * Strips ANSI sequences and matches pattern against each complete line.
+ */
+export class LineExtractor implements OutputExtractor {
+  private processedUpTo = 0;
+  private match: RegExpMatchArray | null = null;
+
+  constructor(private pattern: RegExp) {}
+
+  feed(text: string): void {
+    if (this.match) return;
+    let remaining = text.slice(this.processedUpTo);
+    while (remaining.length > 0) {
+      const nl = remaining.indexOf('\n');
+      if (nl === -1) break;
+      const line = remaining.slice(0, nl).replace(ANSI_RE_G, ' ');
+      remaining = remaining.slice(nl + 1);
+      this.processedUpTo += nl + 1;
+      const m = line.match(this.pattern);
+      if (m) {
+        this.match = m;
+        return;
+      }
+    }
+  }
+
+  result(): RegExpMatchArray | null {
+    return this.match;
+  }
+}
+
+/**
+ * Wait for an extractor to produce a match in accumulating output.
  */
 export function waitForOutput(
   outputRef: { value: string },
-  pattern: RegExp,
+  extractor: OutputExtractor,
   timeoutMs: number,
 ): Promise<RegExpMatchArray | null> {
   return new Promise((resolve) => {
     const check = setInterval(() => {
-      // Only search complete lines to avoid matching partial URLs/tokens
-      // when output is split across chunks
-      const lastNewline = outputRef.value.lastIndexOf('\n');
-      if (lastNewline === -1) return; // no complete lines yet
-      const completeLines = outputRef.value.slice(0, lastNewline + 1);
-      const match = completeLines.match(pattern);
+      extractor.feed(outputRef.value);
+      const match = extractor.result();
       if (match) {
         clearInterval(check);
         resolve(match);
@@ -231,12 +350,12 @@ export function waitForOutput(
  */
 function waitForOutputOrExit(
   outputRef: { value: string },
-  pattern: RegExp,
+  extractor: OutputExtractor,
   timeoutMs: number,
   handle: ExecHandle,
 ): Promise<RegExpMatchArray | null> {
   return Promise.race([
-    waitForOutput(outputRef, pattern, timeoutMs),
+    waitForOutput(outputRef, extractor, timeoutMs),
     handle.wait().then(() => null),
   ]);
 }
@@ -393,9 +512,10 @@ export const claudeProvider: CredentialProvider = {
           );
 
           const sessionDir = authSessionDir(ctx.scope);
+          const authIpcDir = path.join(sessionDir, 'auth-ipc');
           const handle = ctx.exec(
             ['script', '-qc', 'claude setup-token', '/dev/null'],
-            CLAUDE_EXEC_OPTS,
+            claudeExecOpts(sessionDir),
           );
 
           const output = { value: '' };
@@ -406,7 +526,7 @@ export const claudeProvider: CredentialProvider = {
           // Wait for the manual OAuth URL in stdout
           const urlMatch = await waitForOutputOrExit(
             output,
-            /https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com)\S+/,
+            new UrlExtractor(/https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com)\S+/),
             URL_WAIT_MS,
             handle,
           );
@@ -418,7 +538,7 @@ export const claudeProvider: CredentialProvider = {
 
           // Detect how the CLI will accept the code
           const delivery = await detectCodeDelivery(
-            output, sessionDir, DELIVERY_DETECT_MS, handle,
+            output, authIpcDir, DELIVERY_DETECT_MS, handle,
           );
           if (!delivery) {
             await ctx.chat.send('Could not detect auth input method. Container may have exited.');
@@ -445,7 +565,7 @@ export const claudeProvider: CredentialProvider = {
           }
 
           const result = await handle.wait();
-          const allOutput = output.value + result.stdout;
+          const allOutput = (output.value + result.stdout).replace(ANSI_RE_G, ' ');
 
           const tokenMatch = allOutput.match(/sk-ant-oat01-\S+/);
           if (!tokenMatch) {
@@ -474,9 +594,10 @@ export const claudeProvider: CredentialProvider = {
           );
 
           const sessionDir = authSessionDir(ctx.scope);
+          const authIpcDir = path.join(sessionDir, 'auth-ipc');
           const handle = ctx.exec(
             ['script', '-qc', 'claude auth login', '/dev/null'],
-            CLAUDE_EXEC_OPTS,
+            claudeExecOpts(sessionDir),
           );
 
           const output = { value: '' };
@@ -487,7 +608,7 @@ export const claudeProvider: CredentialProvider = {
           // Wait for the manual OAuth URL in stdout
           const urlMatch = await waitForOutputOrExit(
             output,
-            /https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com)\S+/,
+            new UrlExtractor(/https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com)\S+/),
             URL_WAIT_MS,
             handle,
           );
@@ -499,7 +620,7 @@ export const claudeProvider: CredentialProvider = {
 
           // Detect how the CLI will accept the code
           const delivery = await detectCodeDelivery(
-            output, sessionDir, DELIVERY_DETECT_MS, handle,
+            output, authIpcDir, DELIVERY_DETECT_MS, handle,
           );
           if (!delivery) {
             await ctx.chat.send('Could not detect auth input method. Container may have exited.');

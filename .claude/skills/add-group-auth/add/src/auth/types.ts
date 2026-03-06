@@ -48,8 +48,8 @@ export interface AuthOption {
 
 /** Options for exec() in auth context. */
 export interface AuthExecOpts {
-  /** Additional readonly bind mounts as [hostPath, containerPath] pairs. */
-  extraMounts?: Array<[string, string]>;
+  /** Provider-specific bind mounts as [hostPath, containerPath, mode?] tuples. */
+  mounts?: Array<[string, string, string?]>;
 }
 
 /** Context passed to auth option run(). */
@@ -71,6 +71,8 @@ export interface ChatIO {
   send(text: string): Promise<void>;
   /** Polls main group messages. Returns null on timeout. */
   receive(timeoutMs?: number): Promise<string | null>;
+  /** Advance the message cursor past all current messages so the agent won't re-see them. */
+  advanceCursor(): void;
 }
 
 /** Handle to a spawned container process. */

@@ -68,6 +68,19 @@ describe('CredentialStore', () => {
       expect(parts[1]).toBe('aes-256-gcm');
       expect(parts[2]).toHaveLength(16); // keyHash16
     });
+
+    it('decrypt throws on key mismatch', () => {
+      const encrypted = encrypt('secret');
+      // Tamper the key hash to simulate a different key
+      const parts = encrypted.split(':');
+      parts[2] = 'deadbeefdeadbeef';
+      const tampered = parts.join(':');
+      expect(() => decrypt(tampered)).toThrow('Encryption key mismatch');
+    });
+
+    it('decrypt throws malformed when wrong number of parts', () => {
+      expect(() => decrypt('enc:too:few')).toThrow('Malformed');
+    });
   });
 
   describe('CRUD', () => {

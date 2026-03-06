@@ -149,6 +149,7 @@ export function _setRegisteredGroups(
 
 /** Create a ChatIO that routes through the normal channel messaging. */
 function createChatIO(channel: Channel, chatJid: string): ChatIO {
+  let lastReceivedTs: string | null = null;
   return {
     async send(text: string): Promise<void> {
       await channel.sendMessage(chatJid, text);
@@ -160,9 +161,18 @@ function createChatIO(channel: Channel, chatJid: string): ChatIO {
       while (Date.now() - start < timeoutMs) {
         await new Promise((r) => setTimeout(r, 2000));
         const newer = getMessagesSince(chatJid, lastTs, ASSISTANT_NAME);
-        if (newer.length > 0) return newer[0].content;
+        if (newer.length > 0) {
+          lastReceivedTs = newer[0].timestamp;
+          return newer[0].content;
+        }
       }
       return null;
+    },
+    advanceCursor(): void {
+      if (lastReceivedTs) {
+        lastAgentTimestamp[chatJid] = lastReceivedTs;
+        saveState();
+      }
     },
   };
 }
@@ -189,7 +199,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     logger.warn({ group: group.name }, 'No credentials available, starting reauth');
     const chat = createChatIO(channel, chatJid);
     const ok = await runReauth(group.folder, chat, 'No credentials configured');
-    if (!ok) return false;
+    if (!ok) return true; // Don't retry — reauth was cancelled or failed
   }
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
@@ -217,8 +227,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
-  lastAgentTimestamp[chatJid] =
-    missedMessages[missedMessages.length - 1].timestamp;
+  const lastOriginalTs = missedMessages[missedMessages.length - 1].timestamp;
+  lastAgentTimestamp[chatJid] = lastOriginalTs;
   saveState();
 
   logger.info(
@@ -279,7 +289,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (isAuthError(agentResult.error) && !outputSentToUser) {
       logger.warn({ group: group.name }, 'Auth error detected, starting reauth');
       const chat = createChatIO(channel, chatJid);
-      await runReauth(group.folder, chat, `Agent failed: ${agentResult.error}`);
+      const ok = await runReauth(group.folder, chat, `Agent failed: ${agentResult.error}`);
+      if (!ok) return true; // Reauth failed/cancelled — stop retrying
+      // Snapshot cursor before reauth was taken at line 220 (last original msg).
+      // If reauth was invasive, advanceCursor moved it further — nothing to retry.
+      // If transparent, cursor is unchanged — roll back and retry.
+      const cursorAfterReauth = lastAgentTimestamp[chatJid];
+      if (cursorAfterReauth !== lastOriginalTs) return true;
+      lastAgentTimestamp[chatJid] = previousCursor;
+      saveState();
+      return false;
     }
 
     // If we already sent output to the user, don't roll back the cursor —

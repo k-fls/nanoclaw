@@ -46,7 +46,7 @@ vi.mock('../exec.js', () => ({
 }));
 
 // Import after mocks
-const { claudeProvider, isAuthError, waitForOutput, detectCodeDelivery, deliverCode } = await import(
+const { claudeProvider, isAuthError, waitForOutput, UrlExtractor, LineExtractor, detectCodeDelivery, deliverCode } = await import(
   './claude.js'
 );
 
@@ -255,7 +255,7 @@ describe('waitForOutput', () => {
     const output = { value: '' };
     const promise = waitForOutput(
       output,
-      /https:\/\/console\.anthropic\.com\S+/,
+      new UrlExtractor(/https:\/\/console\.anthropic\.com\S+/),
       5000,
     );
 
@@ -273,7 +273,7 @@ describe('waitForOutput', () => {
     const output = { value: '' };
     const promise = waitForOutput(
       output,
-      /https:\/\/console\.anthropic\.com\S+/,
+      new UrlExtractor(/https:\/\/console\.anthropic\.com\S+/),
       3000,
     );
 
@@ -297,7 +297,7 @@ describe('waitForOutput', () => {
     const output = { value: 'no url here\n' };
     const match = await waitForOutput(
       output,
-      /https:\/\/console\.anthropic\.com\S+/,
+      new UrlExtractor(/https:\/\/console\.anthropic\.com\S+/),
       500,
     );
     expect(match).toBeNull();
@@ -307,7 +307,7 @@ describe('waitForOutput', () => {
     const output = { value: '' };
     const promise = waitForOutput(
       output,
-      /sk-ant-oat01-\S+/,
+      new LineExtractor(/sk-ant-oat01-\S+/),
       3000,
     );
 
@@ -328,7 +328,7 @@ describe('waitForOutput', () => {
     const output = { value: '' };
     const promise = waitForOutput(
       output,
-      /https:\/\/console\.anthropic\.com\S+/,
+      new UrlExtractor(/https:\/\/console\.anthropic\.com\S+/),
       3000,
     );
 
@@ -341,6 +341,70 @@ describe('waitForOutput', () => {
     expect(match![0]).toBe(
       'https://console.anthropic.com/oauth/authorize?id=full',
     );
+  });
+});
+
+describe('UrlExtractor', () => {
+  it('extracts URL split across lines with ANSI sequences', () => {
+    const extractor = new UrlExtractor(/https:\/\/console\.anthropic\.com\S+/);
+    extractor.feed(
+      'Open this link:\n' +
+      'https://console.anthropic.com/oauth/authorize?client_id=abc&\x1b[1C\n' +
+      'redirect_uri=http%3A%2F%2Flocalhost%3A9876\n' +
+      '\n',
+    );
+    const match = extractor.result();
+    expect(match).not.toBeNull();
+    expect(match![0]).toContain('client_id=abc');
+    expect(match![0]).toContain('redirect_uri=');
+  });
+
+  it('stops at empty line after URL', () => {
+    const extractor = new UrlExtractor(/https:\/\/example\.com\S+/);
+    extractor.feed('https://example.com/path?q=1\n\nother stuff\n');
+    const match = extractor.result();
+    expect(match).not.toBeNull();
+    expect(match![0]).toBe('https://example.com/path?q=1');
+  });
+
+  it('returns null while URL is still accumulating', () => {
+    const extractor = new UrlExtractor(/https:\/\/example\.com\S+/);
+    extractor.feed('https://example.com/path');
+    expect(extractor.result()).toBeNull();
+    // Complete the line
+    extractor.feed('https://example.com/path?q=1\n\n');
+    expect(extractor.result()).not.toBeNull();
+  });
+
+  it('strips ANSI from URL fragments', () => {
+    const extractor = new UrlExtractor(/https:\/\/example\.com\S+/);
+    extractor.feed('https://example.com/\x1b[0mpath\n\n');
+    const match = extractor.result();
+    expect(match).not.toBeNull();
+    expect(match![0]).toBe('https://example.com/path');
+  });
+});
+
+describe('LineExtractor', () => {
+  it('matches pattern on a complete line with ANSI stripped', () => {
+    const extractor = new LineExtractor(/Paste\s+code\s+here/);
+    extractor.feed('some output\n\x1b[1CPaste\x1b[1C code here\n');
+    expect(extractor.result()).not.toBeNull();
+  });
+
+  it('returns null on partial line', () => {
+    const extractor = new LineExtractor(/Paste\s+code/);
+    extractor.feed('Paste code');
+    expect(extractor.result()).toBeNull();
+  });
+
+  it('does not re-process already consumed lines', () => {
+    const extractor = new LineExtractor(/token: (\S+)/);
+    extractor.feed('line1\n');
+    extractor.feed('line1\ntoken: abc123\n');
+    const match = extractor.result();
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe('abc123');
   });
 });
 
