@@ -1,3 +1,6 @@
-#!/bin/bash
-# Block browser opening so Claude CLI falls back to console-friendly OAuth flow.
+#!/bin/sh
+# Shim replacing xdg-open inside auth containers.
+# Captures the OAuth URL for the auth flow, then exits non-zero
+# so the CLI falls back to the console prompt.
+echo "$1" > /workspace/auth-ipc/.oauth-url
 exit 1

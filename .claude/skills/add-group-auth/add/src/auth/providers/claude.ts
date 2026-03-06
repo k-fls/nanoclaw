@@ -32,31 +32,50 @@ import type {
 
 const SERVICE = 'claude_auth';
 
-/** Error patterns that indicate credentials should be replaced. */
-const AUTH_ERROR_PATTERNS = [
-  /invalid.*token/i,
-  /unauthorized/i,
-  /authentication.*failed/i,
-  /401/,
-  /expired.*token/i,
-  /invalid_grant/i,
-  /credit.*balance.*low/i,
-  /insufficient.*credits/i,
-  /billing/i,
-  /rate.*limit.*exceeded/i,
-  /quota.*exceeded/i,
-];
+export interface AuthErrorInfo {
+  /** HTTP status code (401, 403, 429, 529) or 0 for pattern-matched errors. */
+  code: number;
+  message: string;
+}
+
+/**
+ * Extract HTTP status code from structured SDK error:
+ *   Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token"},"request_id":"req_..."}
+ */
+const API_ERROR_RE = /API Error:\s*(\d{3})\s*(\{.+)/;
+
+/** Auth-related HTTP status codes. */
+const AUTH_STATUS_CODES = new Set([401, 403]);
+
+function parseApiError(error: string): AuthErrorInfo | null {
+  const m = API_ERROR_RE.exec(error);
+  if (!m) return null;
+  const code = parseInt(m[1], 10);
+  if (!AUTH_STATUS_CODES.has(code)) return null;
+  let message = `HTTP ${code}`;
+  try {
+    const body = JSON.parse(m[2]);
+    const errMsg: string = body?.error?.message;
+    if (errMsg) message = errMsg;
+  } catch { /* use default message */ }
+  return { code, message };
+}
+
+/** Classify a container error. Returns null if not auth-related. */
+export function classifyAuthError(error?: string): AuthErrorInfo | null {
+  if (!error) return null;
+  return parseApiError(error);
+}
+
+/** Check if a container error indicates credentials should be replaced. */
+export function isAuthError(error?: string): boolean {
+  return classifyAuthError(error) !== null;
+}
 
 /** Check if a user reply is a cancel/decline. */
 function isCancelReply(reply: string): boolean {
   const lower = reply.trim().toLowerCase();
   return ['cancel', 'abort', 'no', 'skip', 'quit', 'exit'].includes(lower);
-}
-
-/** Check if a container error indicates a Claude auth failure. */
-export function isAuthError(error?: string): boolean {
-  if (!error) return false;
-  return AUTH_ERROR_PATTERNS.some((p) => p.test(error));
 }
 
 /** .env keys this provider can import into the default scope. */
@@ -154,7 +173,14 @@ export async function deliverCode(
   handle: ExecHandle,
 ): Promise<boolean> {
   if (delivery.method === 'stdin') {
-    handle.stdin.write(codeState.trim() + '\n');
+    // Ink (React terminal UI used by Claude CLI) processes keystrokes
+    // asynchronously. When text and Enter arrive in the same buffer, Ink
+    // doesn't have time to buffer the characters before onSubmit fires —
+    // so it submits empty/partial text. Write the code first, wait for
+    // Ink to process it, then send \r (Enter) separately.
+    handle.stdin.write(codeState.trim());
+    await new Promise((r) => setTimeout(r, 200));
+    handle.stdin.write('\r');
     return true;
   }
 
@@ -549,7 +575,7 @@ export const claudeProvider: CredentialProvider = {
           }
 
           const result = await handle.wait();
-          const allOutput = (output.value + result.stdout).replace(ANSI_RE_G, ' ');
+          const allOutput = (output.value + result.stdout).replace(ANSI_RE_G, '');
 
           const tokenMatch = allOutput.match(/sk-ant-\S+/);
           if (!tokenMatch) {
@@ -570,7 +596,7 @@ export const claudeProvider: CredentialProvider = {
 
       // --- Auth login (auto-refreshes, requires browser) ---
       {
-        label: 'Auth login (safest, auto-refreshes, requires subscription)',
+        label: 'Auth login (safest, requires subscription)',
         provider: this,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           await ctx.chat.send(
