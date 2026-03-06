@@ -569,7 +569,9 @@ export const claudeProvider: CredentialProvider = {
           }
 
           const result = await handle.wait();
-          const allOutput = (output.value + result.stdout).replace(ANSI_RE_G, '');
+          const allOutput = (output.value + result.stdout)
+            .replace(ANSI_RE_G, '')
+            .replace(/[\x00-\x1f\x7f-\x9f]/g, '');
 
           const tokenMatch = allOutput.match(/sk-ant-\S+/);
           if (!tokenMatch) {
