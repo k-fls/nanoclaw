@@ -503,8 +503,8 @@ export const claudeProvider: CredentialProvider = {
     return [
       // --- Setup token (long-lived, requires browser) ---
       {
-        label: 'Setup token (1 year, requires subscription)',
-        description: 'Generates a long-lived OAuth token via `claude setup-token`. Opens a browser for one-time authorization. Token is valid for ~1 year.',
+        label: 'Setup token (requires Claude subscription)',
+        description: 'Generates a long-lived OAuth token via `claude setup-token`. Token is valid for ~1 year.',
         provider: this,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           await ctx.chat.send(
@@ -582,8 +582,8 @@ export const claudeProvider: CredentialProvider = {
 
       // --- Auth login (auto-refreshes, requires browser) ---
       {
-        label: 'Auth login (safest, requires subscription)',
-        description: 'Standard OAuth login via `claude auth login`. Stores refreshable credentials. Safest option — tokens auto-refresh and can be revoked.',
+        label: 'Auth login (requires Claude subscription)',
+        description: 'Standard OAuth login via `claude auth login`. Does not expose long-term refresh key to agent. Access keys are refreshed automatically.',
         provider: this,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           await ctx.chat.send(
@@ -678,8 +678,8 @@ export const claudeProvider: CredentialProvider = {
 
       // --- API key (GPG-encrypted only) ---
       {
-        label: 'API key (GPG-encrypted)',
-        description: 'Paste a GPG-encrypted Anthropic API key. Requires GPG on the server. The key never appears in chat history.',
+        label: 'API key (GPG-encryption required)',
+        description: 'Requires use of a GPG tool to pass the key in chat safely.',
         provider: this,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           if (!isGpgAvailable()) {
@@ -705,17 +705,28 @@ export const claudeProvider: CredentialProvider = {
             return RESELECT;
           }
 
+          // Send public key first as a separate message so it's easy to copy
+          await ctx.chat.send(pubKey);
+
           await ctx.chat.send(
             'Paste a GPG-encrypted Anthropic API key.\n\n' +
-            '1. Import this public key:\n' +
+            '*Step 1.* Import the public key above.\n\n' +
+            'With local GPG:\n' +
             '```\n' +
-            pubKey + '\n' +
+            'gpg --import <<\'EOF\'\n' +
+            '... (paste the key) ...\n' +
+            'EOF\n' +
             '```\n\n' +
-            '2. Encrypt your key:\n' +
+            '*Step 2.* Encrypt your API key:\n' +
             '```\n' +
             'echo "sk-ant-api..." | gpg --encrypt --armor --recipient nanoclaw\n' +
             '```\n\n' +
-            '3. Paste the encrypted output here. Reply "cancel" to abort.',
+            'If you don\'t have GPG installed locally, you can use an online PGP tool ' +
+            '(import the public key, encrypt your API key, copy the armored output):\n' +
+            '• https://www.devglan.com/online-tools/pgp-encryption-decryption\n' +
+            '• https://keychainpgp.github.io/\n' +
+            '⚠️ Online tools see your key in plaintext — use only if you trust the site.\n\n' +
+            '*Step 3.* Paste the encrypted output here. Reply "cancel" to abort.',
           );
 
           const reply = await ctx.chat.receive(IDLE_TIMEOUT - 30_000);
