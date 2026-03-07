@@ -124,7 +124,14 @@ const URL_WAIT_MS = 60_000;
 /** How long to wait for the code delivery mechanism to become available. */
 const DELIVERY_DETECT_MS = 30_000;
 
-type CodeDelivery = 'stdin' | 'callback';
+interface CodeDeliveryHandler {
+  /** OAuth URL to show the user. */
+  oauthUrl: string;
+  /** User-facing instructions for completing the auth flow. */
+  instructions: string;
+  /** Deliver the user's response (code or redirect URL) to the CLI. */
+  deliver(userInput: string): Promise<{ ok: boolean; error?: string }>;
+}
 
 /** ANSI escape sequence pattern. */
 const ANSI_RE_G = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
@@ -215,33 +222,29 @@ function waitForPatternOrExit(
 const OAUTH_URL_RE = /https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com)\S+/;
 
 /**
- * Detect how the CLI is ready to receive the auth code.
+ * Detect how the CLI is ready to receive the auth code and return a handler.
+ *
  * Races two signals in parallel:
- *   (a) stdout matches pastePrompt pattern → stdin
- *   (b) shim wrote .oauth-url with localhost callback URL → check port →
- *       open: callback, closed: stdin fallback
+ *   (a) stdout matches pastePrompt pattern → stdin handler
+ *   (b) shim wrote .oauth-url with localhost callback URL → callback handler
  *
- * The xdg-open shim exits 0, so the CLI thinks a browser opened and waits
- * for the localhost callback. auth-login won't show a paste prompt at all;
- * setup-token may still show one.
- *
- * @param pastePrompt  Pattern to detect stdin readiness. Pass null to
- *                     disable stdin detection (e.g. for auth-login).
+ * @param stdoutOauthUrl  OAuth URL already matched from stdout (used for stdin handler).
+ * @param pastePrompt     Pattern to detect stdin readiness. Pass null to
+ *                        disable stdin detection (e.g. for auth-login).
  */
 export function detectCodeDelivery(
   outputRef: { value: string },
   authIpcDir: string,
   timeoutMs: number,
   handle: ExecHandle,
+  stdoutOauthUrl: string,
   pastePrompt: RegExp | null = DEFAULT_PASTE_PROMPT_RE,
-): Promise<{ method: CodeDelivery; callbackPort?: number } | null> {
+): Promise<CodeDeliveryHandler | null> {
   const oauthUrlPath = path.join(authIpcDir, OAUTH_URL_FILE);
-  // Clean up any stale file from a previous attempt
-  try { fs.unlinkSync(oauthUrlPath); } catch { /* ignore */ }
 
   return new Promise((resolve) => {
     let resolved = false;
-    const done = (result: { method: CodeDelivery; callbackPort?: number } | null) => {
+    const done = (result: CodeDeliveryHandler | null) => {
       if (resolved) return;
       resolved = true;
       clearInterval(check);
@@ -250,27 +253,23 @@ export function detectCodeDelivery(
     };
 
     const check = setInterval(() => {
-      // (a) Check stdout for paste prompt (if pattern provided)
+      // Check stdout for paste prompt (only if pattern provided)
       if (pastePrompt && pastePrompt.test(stripAnsi(outputRef.value))) {
-        done({ method: 'stdin' });
+        done(stdinHandler(stdoutOauthUrl, handle));
         return;
       }
-      // (b) Check for shim-written URL file
+      // Check for shim-written URL file (callback path)
       try {
         const url = fs.readFileSync(oauthUrlPath, 'utf-8').trim();
         if (url) {
           const portMatch = url.match(/redirect_uri=http%3A%2F%2Flocalhost%3A(\d+)/);
           if (portMatch) {
             const port = parseInt(portMatch[1], 10);
-            // Verify the CLI's callback server is actually listening.
-            // Small delay: the CLI may need a moment to bind the port.
             isPortOpen(port, 5000).then((open) => {
-              done(open
-                ? { method: 'callback', callbackPort: port }
-                : { method: 'stdin' });
+              done(open ? callbackHandler(url, port) : null);
             });
           } else {
-            done({ method: 'stdin' });
+            done(null);
           }
           return;
         }
@@ -282,63 +281,60 @@ export function detectCodeDelivery(
   });
 }
 
-/**
- * Deliver the auth code to the CLI.
- *
- * Stdin path: user provides the code string, written to stdin directly.
- * Callback path: user provides the full redirect URL from their browser's
- *   address bar (the page that failed to load). We parse code & state from
- *   the URL, verify the port matches, and HTTP GET the CLI's callback server.
- */
-export async function deliverCode(
-  userInput: string,
-  delivery: { method: CodeDelivery; callbackPort?: number },
-  handle: ExecHandle,
-): Promise<{ ok: boolean; error?: string }> {
-  if (delivery.method === 'stdin') {
-    // If the user pasted a callback URL instead of a raw code, extract
-    // code#state from it so it still works.
-    const fromUrl = parseCallbackUrl(userInput);
-    const code = fromUrl ? `${fromUrl.code}#${fromUrl.state}` : userInput.trim();
+function stdinHandler(oauthUrl: string, handle: ExecHandle): CodeDeliveryHandler {
+  return {
+    oauthUrl,
+    instructions:
+      'After authorizing, the website will display a code. ' +
+      'Copy and paste that code here (or reply "cancel" to abort):',
+    async deliver(userInput: string) {
+      // If the user pasted a callback URL instead of a raw code, extract
+      // code#state from it so it still works.
+      const fromUrl = parseCallbackUrl(userInput);
+      const code = fromUrl ? `${fromUrl.code}#${fromUrl.state}` : userInput.trim();
 
-    // Ink (React terminal UI used by Claude CLI) processes keystrokes
-    // asynchronously. When text and Enter arrive in the same buffer, Ink
-    // doesn't have time to buffer the characters before onSubmit fires —
-    // so it submits empty/partial text. Write the code first, wait for
-    // Ink to process it, then send \r (Enter) separately.
-    handle.stdin.write(code);
-    await new Promise((r) => setTimeout(r, 200));
-    handle.stdin.write('\r');
-    return { ok: true };
-  }
+      // Ink processes keystrokes asynchronously. Write the code first,
+      // wait for Ink to process it, then send \r (Enter) separately.
+      handle.stdin.write(code);
+      await new Promise((r) => setTimeout(r, 200));
+      handle.stdin.write('\r');
+      return { ok: true };
+    },
+  };
+}
 
-  // callback: parse the redirect URL the user copied from their browser
-  const port = delivery.callbackPort;
-  if (!port) return { ok: false, error: 'No callback port configured.' };
-
-  const parsed = parseCallbackUrl(userInput);
-  if (!parsed) {
-    return {
-      ok: false,
-      error: 'Could not parse the URL. Expected a URL like http://localhost:PORT/callback?code=...&state=...',
-    };
-  }
-
-  if (parsed.port !== port) {
-    return {
-      ok: false,
-      error: `Port mismatch: URL has port ${parsed.port} but expected ${port}. Make sure you copied the correct URL.`,
-    };
-  }
-
-  const callbackUrl = `http://localhost:${port}/callback?code=${encodeURIComponent(parsed.code)}&state=${encodeURIComponent(parsed.state)}`;
-  try {
-    await fetch(callbackUrl);
-    return { ok: true };
-  } catch (err) {
-    logger.warn({ callbackUrl, err }, 'Callback delivery failed');
-    return { ok: false, error: 'Failed to deliver code to the CLI callback server.' };
-  }
+function callbackHandler(oauthUrl: string, port: number): CodeDeliveryHandler {
+  return {
+    oauthUrl,
+    instructions:
+      'After authorizing, your browser will redirect to a localhost URL ' +
+      'that will fail to load (you\'ll see a "connection refused" or similar error page). ' +
+      'Copy the full URL from your browser\'s address bar and paste it here ' +
+      '(or reply "cancel" to abort):',
+    async deliver(userInput: string) {
+      const parsed = parseCallbackUrl(userInput);
+      if (!parsed) {
+        return {
+          ok: false,
+          error: 'Could not parse the URL. Expected a URL like http://localhost:PORT/callback?code=...&state=...',
+        };
+      }
+      if (parsed.port !== port) {
+        return {
+          ok: false,
+          error: `Port mismatch: URL has port ${parsed.port} but expected ${port}. Make sure you copied the correct URL.`,
+        };
+      }
+      const callbackUrl = `http://localhost:${port}/callback?code=${encodeURIComponent(parsed.code)}&state=${encodeURIComponent(parsed.state)}`;
+      try {
+        await fetch(callbackUrl);
+        return { ok: true };
+      } catch (err) {
+        logger.warn({ callbackUrl, err }, 'Callback delivery failed');
+        return { ok: false, error: 'Failed to deliver code to the CLI callback server.' };
+      }
+    },
+  };
 }
 
 /** Parse .credentials.json content to extract accessToken and expiry. */
@@ -380,31 +376,6 @@ function receiveOrContainerExit(
     chat.receive(IDLE_TIMEOUT - 30_000), // expire before container kill so we can notify user
     handle.wait().then(() => null),
   ]);
-}
-
-/** Build user-facing instructions based on the detected code delivery method. */
-function oauthInstructions(
-  oauthUrl: string,
-  delivery: { method: CodeDelivery; callbackPort?: number },
-): string {
-  const header = `Open this URL and authorize:\n${oauthUrl}`;
-
-  if (delivery.method === 'stdin') {
-    return (
-      header +
-      '\n\nAfter authorizing, the website will display a code. ' +
-      'Copy and paste that code here (or reply "cancel" to abort):'
-    );
-  }
-
-  // callback — the user's browser will redirect to localhost which won't load
-  return (
-    header +
-    '\n\nAfter authorizing, your browser will redirect to a localhost URL ' +
-    'that will fail to load (you\'ll see a "connection refused" or similar error page). ' +
-    'Copy the full URL from your browser\'s address bar and paste it here ' +
-    '(or reply "cancel" to abort):'
-  );
 }
 
 export const claudeProvider: CredentialProvider = {
@@ -519,6 +490,8 @@ export const claudeProvider: CredentialProvider = {
 
           const sessionDir = authSessionDir(ctx.scope);
           const authIpcDir = path.join(sessionDir, 'auth-ipc');
+          // Remove stale .oauth-url from previous attempts before container starts
+          try { fs.unlinkSync(path.join(authIpcDir, OAUTH_URL_FILE)); } catch { /* ignore */ }
           const handle = ctx.exec(
             // Wide PTY so Ink doesn't wrap the token at 80 cols (\r overwrites corrupt it)
             ['script', '-qc', 'stty columns 500 && claude setup-token', '/dev/null'],
@@ -542,7 +515,7 @@ export const claudeProvider: CredentialProvider = {
 
           // Detect how the CLI will accept the code
           const delivery = await detectCodeDelivery(
-            output, authIpcDir, DELIVERY_DETECT_MS, handle,
+            output, authIpcDir, DELIVERY_DETECT_MS, handle, urlMatch[0],
           );
           if (!delivery) {
             await ctx.chat.send('Could not detect auth input method. Container may have exited.');
@@ -550,7 +523,7 @@ export const claudeProvider: CredentialProvider = {
             return null;
           }
 
-          await ctx.chat.send(oauthInstructions(urlMatch[0], delivery));
+          await ctx.chat.send(`Open this URL and authorize:\n${delivery.oauthUrl}\n\n${delivery.instructions}`);
 
           const userInput = await receiveOrContainerExit(ctx.chat, handle);
           if (!userInput || isCancelReply(userInput)) {
@@ -559,7 +532,7 @@ export const claudeProvider: CredentialProvider = {
             return null;
           }
 
-          const delivered = await deliverCode(userInput, delivery, handle);
+          const delivered = await delivery.deliver(userInput);
           if (!delivered.ok) {
             await ctx.chat.send(`Failed to deliver auth code. ${delivered.error ?? ''}`);
             handle.kill();
@@ -598,6 +571,8 @@ export const claudeProvider: CredentialProvider = {
 
           const sessionDir = authSessionDir(ctx.scope);
           const authIpcDir = path.join(sessionDir, 'auth-ipc');
+          // Remove stale .oauth-url from previous attempts before container starts
+          try { fs.unlinkSync(path.join(authIpcDir, OAUTH_URL_FILE)); } catch { /* ignore */ }
           const handle = ctx.exec(
             // Wide PTY so Ink doesn't wrap long OAuth URLs (\r overwrites corrupt them)
             ['script', '-qc', 'stty columns 500 && claude auth login', '/dev/null'],
@@ -623,7 +598,7 @@ export const claudeProvider: CredentialProvider = {
           // auth-login with xdg-open returning 0 won't show a paste prompt,
           // so disable stdin detection (null pastePrompt) — callback only.
           const delivery = await detectCodeDelivery(
-            output, authIpcDir, DELIVERY_DETECT_MS, handle, null,
+            output, authIpcDir, DELIVERY_DETECT_MS, handle, urlMatch[0], null,
           );
           if (!delivery) {
             await ctx.chat.send('Could not detect auth input method. Container may have exited.');
@@ -631,7 +606,7 @@ export const claudeProvider: CredentialProvider = {
             return null;
           }
 
-          await ctx.chat.send(oauthInstructions(urlMatch[0], delivery));
+          await ctx.chat.send(`Open this URL and authorize:\n${delivery.oauthUrl}\n\n${delivery.instructions}`);
 
           const userInput = await receiveOrContainerExit(ctx.chat, handle);
           if (!userInput || isCancelReply(userInput)) {
@@ -640,7 +615,7 @@ export const claudeProvider: CredentialProvider = {
             return null;
           }
 
-          const delivered = await deliverCode(userInput, delivery, handle);
+          const delivered = await delivery.deliver(userInput);
           if (!delivered.ok) {
             await ctx.chat.send(`Failed to deliver auth code. ${delivered.error ?? ''}`);
             handle.kill();
