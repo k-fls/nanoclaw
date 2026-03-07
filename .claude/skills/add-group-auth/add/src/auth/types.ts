@@ -25,8 +25,11 @@ export interface CredentialProvider {
   /** After flow completes, parse raw result and save to store. */
   storeResult(scope: string, result: FlowResult): void;
 
-  /** Refresh expired credentials (e.g. spawn container to let CLI refresh OAuth). */
-  refresh?(scope: string): Promise<boolean>;
+  /**
+   * Refresh credentials if needed. Returns true if credentials are usable.
+   * @param force - skip expiry check and always attempt refresh (e.g. after auth error).
+   */
+  refresh?(scope: string, force?: boolean): Promise<boolean>;
 
   /** Auth options for the reauth menu. */
   authOptions(scope: string): AuthOption[];

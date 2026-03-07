@@ -63,8 +63,8 @@ describe('resolveSecrets', () => {
 
   it('returns empty when no credentials exist and default not allowed', () => {
     const group = makeGroup('no-creds');
-    const secrets = resolveSecrets(group);
-    expect(secrets).toEqual({});
+    const env = resolveSecrets(group);
+    expect(env).toEqual({});
   });
 
   it('returns group-specific credentials', () => {
@@ -83,8 +83,8 @@ describe('resolveSecrets', () => {
     registerProvider(provider);
 
     const group = makeGroup('my-group');
-    const secrets = resolveSecrets(group);
-    expect(secrets.MY_KEY).toBe('group-value');
+    const env = resolveSecrets(group);
+    expect(env.MY_KEY).toBe('group-value');
   });
 
   it('falls back to default scope when useDefaultCredentials is true', () => {
@@ -102,8 +102,8 @@ describe('resolveSecrets', () => {
     registerProvider(provider);
 
     const group = makeGroup('some-group', { useDefaultCredentials: true });
-    const secrets = resolveSecrets(group);
-    expect(secrets.DEF_KEY).toBe('default-value');
+    const env = resolveSecrets(group);
+    expect(env.DEF_KEY).toBe('default-value');
   });
 
   it('defaults to useDefaultCredentials=true for main group', () => {
@@ -122,8 +122,8 @@ describe('resolveSecrets', () => {
 
     // Main group with no containerConfig at all — should still get default creds
     const group = makeGroup('main-group', { isMain: true });
-    const secrets = resolveSecrets(group);
-    expect(secrets.MAIN_KEY).toBe('from-default');
+    const env = resolveSecrets(group);
+    expect(env.MAIN_KEY).toBe('from-default');
   });
 
   it('does NOT default to useDefaultCredentials=true for non-main group', () => {
@@ -142,8 +142,8 @@ describe('resolveSecrets', () => {
 
     // Non-main group with no containerConfig — should NOT get default creds
     const group = makeGroup('other-group');
-    const secrets = resolveSecrets(group);
-    expect(secrets.NONMAIN).toBeUndefined();
+    const env = resolveSecrets(group);
+    expect(env.NONMAIN).toBeUndefined();
   });
 
   it('explicit useDefaultCredentials=false overrides isMain', () => {
@@ -161,8 +161,8 @@ describe('resolveSecrets', () => {
     registerProvider(provider);
 
     const group = makeGroup('main-locked', { isMain: true, useDefaultCredentials: false });
-    const secrets = resolveSecrets(group);
-    expect(secrets.OVERRIDE).toBeUndefined();
+    const env = resolveSecrets(group);
+    expect(env.OVERRIDE).toBeUndefined();
   });
 
   it('does NOT fall back to default when useDefaultCredentials is not set', () => {
@@ -181,8 +181,8 @@ describe('resolveSecrets', () => {
     registerProvider(provider);
 
     const group = makeGroup('isolated-group');
-    const secrets = resolveSecrets(group);
-    expect(secrets.BLOCKED_KEY).toBeUndefined();
+    const env = resolveSecrets(group);
+    expect(env.BLOCKED_KEY).toBeUndefined();
   });
 
   it('does NOT fall back to default when useDefaultCredentials is false', () => {
@@ -201,8 +201,8 @@ describe('resolveSecrets', () => {
     registerProvider(provider);
 
     const group = makeGroup('locked-group', { useDefaultCredentials: false });
-    const secrets = resolveSecrets(group);
-    expect(secrets.NOPE).toBeUndefined();
+    const env = resolveSecrets(group);
+    expect(env.NOPE).toBeUndefined();
   });
 
   it('group scope takes precedence over default', () => {
@@ -221,8 +221,8 @@ describe('resolveSecrets', () => {
     registerProvider(provider);
 
     const group = makeGroup('priority-group', { useDefaultCredentials: true });
-    const secrets = resolveSecrets(group);
-    expect(secrets.K).toBe('group');
+    const env = resolveSecrets(group);
+    expect(env.K).toBe('group');
   });
 });
 

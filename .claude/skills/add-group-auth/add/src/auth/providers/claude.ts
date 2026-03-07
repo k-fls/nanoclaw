@@ -17,7 +17,7 @@ import {
   loadCredential,
   saveCredential,
 } from '../store.js';
-import { authSessionDir } from '../exec.js';
+import { authSessionDir, execInContainer } from '../exec.js';
 import {
   ensureGpgKey,
   exportPublicKey,
@@ -534,17 +534,66 @@ export const claudeProvider: CredentialProvider = {
     });
   },
 
-  async refresh(scope: string): Promise<boolean> {
+  async refresh(scope: string, force?: boolean): Promise<boolean> {
     const cred = loadCredential(scope, SERVICE);
     if (!cred || cred.auth_type !== 'auth_login') return false;
 
     const plaintext = decrypt(cred.token);
     const parsed = parseCredentialsJson(plaintext);
     if (!parsed) return false;
-    if (!isExpired(parsed.expiresAt)) return true; // still valid
+    if (!force && !isExpired(parsed.expiresAt)) return true; // still valid
 
-    logger.info({ scope }, 'Claude access token needs refresh');
-    return false;
+    logger.info({ scope }, 'Claude access token expired, attempting refresh');
+
+    const sessionDir = authSessionDir(scope);
+    const credsPath = path.join(sessionDir, '.credentials.json');
+
+    // Write stored credentials so the CLI can use the refresh token
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(credsPath, plaintext, 'utf-8');
+
+    // Run a minimal CLI invocation to trigger OAuth token refresh
+    const handle = execInContainer(
+      ['claude', '-p', 'ping', '--max-turns', '1', '--model', 'haiku'],
+      sessionDir,
+      { mounts: [[sessionDir, '/home/node/.claude']] },
+    );
+
+    const result = await handle.wait();
+
+    // Read back potentially refreshed credentials and clean up plaintext
+    let updatedCreds: string | null = null;
+    try {
+      updatedCreds = fs.readFileSync(credsPath, 'utf-8');
+    } catch { /* not found */ }
+    try { fs.unlinkSync(credsPath); } catch { /* ignore */ }
+
+    if (!updatedCreds) {
+      logger.warn({ scope }, 'Refresh: .credentials.json missing after container run');
+      return false;
+    }
+
+    const updatedParsed = parseCredentialsJson(updatedCreds);
+    if (!updatedParsed) {
+      logger.warn({ scope }, 'Refresh: invalid .credentials.json after container run');
+      return false;
+    }
+
+    if (isExpired(updatedParsed.expiresAt)) {
+      logger.warn({ scope, exitCode: result.exitCode }, 'Refresh: token still expired after container run');
+      return false;
+    }
+
+    // Store the refreshed credentials
+    saveCredential(scope, SERVICE, {
+      auth_type: 'auth_login',
+      token: encrypt(updatedCreds),
+      expires_at: updatedParsed.expiresAt,
+      updated_at: new Date().toISOString(),
+    });
+
+    logger.info({ scope }, 'Claude access token refreshed successfully');
+    return true;
   },
 
   authOptions(_scope: string): AuthOption[] {

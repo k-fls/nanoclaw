@@ -20,27 +20,29 @@ export function importEnvToDefault(): void {
   }
 }
 
-export function resolveSecrets(group: RegisteredGroup): Record<string, string> {
-  const env: Record<string, string> = {};
+/** Resolve which scope holds credentials for this group. */
+export function resolveScope(group: RegisteredGroup): string {
   const providers = getAllProviders();
   const useDefault = group.containerConfig?.useDefaultCredentials
     ?? (group.isMain === true);
 
-  for (const provider of providers) {
-    // Try group-specific scope first
-    let result = provider.provision(group.folder);
+  // Group scope wins if any provider has credentials there
+  if (providers.some(p => p.hasAuth(group.folder))) return group.folder;
+  if (useDefault && providers.some(p => p.hasAuth('default'))) return 'default';
+  return group.folder;
+}
 
-    // Fall back to default scope if allowed
-    if (useDefault && Object.keys(result.env).length === 0) {
-      result = provider.provision('default');
-    }
+export function resolveSecrets(group: RegisteredGroup): Record<string, string> {
+  const scope = resolveScope(group);
+  const env: Record<string, string> = {};
 
-    Object.assign(env, result.env);
+  for (const provider of getAllProviders()) {
+    Object.assign(env, provider.provision(scope).env);
   }
 
   if (Object.keys(env).length > 0) {
     logger.debug(
-      { group: group.name, keys: Object.keys(env) },
+      { group: group.name, scope, keys: Object.keys(env) },
       'Resolved secrets from credential store',
     );
   }

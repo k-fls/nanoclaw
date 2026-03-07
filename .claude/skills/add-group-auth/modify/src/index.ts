@@ -9,6 +9,7 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import { initCredentialStore, importEnvToDefault, createAuthGuard } from './auth/index.js';
+import { claudeProvider } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
 import './channels/index.js';
 import {
@@ -195,6 +196,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     group,
     () => createChatIO(channel, chatJid),
     () => queue.closeStdin(chatJid),
+    claudeProvider,
   );
   const credentialsOk = await guard.preCheck();
 

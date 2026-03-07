@@ -3,28 +3,55 @@
  * Encapsulates credential checking, stream auth error detection, and reauth triggering.
  */
 import type { RegisteredGroup } from '../types.js';
-import type { ChatIO } from './types.js';
+import type { ChatIO, CredentialProvider } from './types.js';
 import { isAuthError } from './providers/claude.js';
-import { resolveSecrets } from './provision.js';
+import { resolveScope } from './provision.js';
 import { runReauth } from './reauth.js';
 import { logger } from '../logger.js';
+
+/**
+ * Try to refresh the given provider's credentials for this group.
+ * Returns true if credentials are now available.
+ */
+async function tryRefreshProvider(
+  group: RegisteredGroup,
+  provider: CredentialProvider,
+  scope: string,
+  force?: boolean,
+): Promise<boolean> {
+  if (!provider.refresh) return false;
+
+  logger.info({ group: group.name, provider: provider.service, scope, force }, 'Attempting credential refresh');
+  try {
+    return await provider.refresh(scope, force);
+  } catch (err) {
+    logger.warn({ group: group.name, provider: provider.service, scope, err }, 'Credential refresh threw');
+  }
+  return false;
+}
 
 export function createAuthGuard(
   group: RegisteredGroup,
   createChat: () => ChatIO,
   closeStdin: () => void,
+  /** The provider whose credentials power the session. */
+  provider: CredentialProvider,
 ) {
   let streamedAuthError: string | null = null;
 
   return {
     /** Check credentials before agent run. Returns false if reauth failed. */
     async preCheck(): Promise<boolean> {
-      const secrets = resolveSecrets(group);
-      if (Object.keys(secrets).length === 0) {
-        logger.warn({ group: group.name }, 'No credentials available, starting reauth');
-        return runReauth(group.folder, createChat(), 'No credentials configured');
-      }
-      return true;
+      const scope = resolveScope(group);
+
+      // Check if provider can serve usable credentials
+      if (Object.keys(provider.provision(scope).env).length > 0) return true;
+
+      // Credentials missing or expired — try refresh
+      if (await tryRefreshProvider(group, provider, scope)) return true;
+
+      logger.warn({ group: group.name }, 'No credentials available, starting reauth');
+      return runReauth(group.folder, createChat(), 'No credentials configured');
     },
 
     /** Call from streaming callback. Detects auth errors and kills container. */
@@ -32,7 +59,6 @@ export function createAuthGuard(
       if (typeof result.error === 'string' && isAuthError(result.error)) {
         streamedAuthError = result.error;
       } else if (typeof result.result === 'string' && isAuthError(result.result)) {
-        // Claude doesn't always mark errors in stream
         streamedAuthError = result.result;
       }
       if (streamedAuthError) {
@@ -52,6 +78,12 @@ export function createAuthGuard(
 
       const reason = streamedAuthError;
       streamedAuthError = null;
+
+      if (await tryRefreshProvider(group, provider, resolveScope(group), true)) {
+        logger.info({ group: group.name }, 'Credential refresh succeeded, skipping reauth');
+        return 'reauth-ok';
+      }
+
       logger.warn({ group: group.name }, 'Auth error detected, starting reauth');
       const ok = await runReauth(group.folder, createChat(), `Agent failed: ${reason}`);
       return ok ? 'reauth-ok' : 'reauth-failed';
