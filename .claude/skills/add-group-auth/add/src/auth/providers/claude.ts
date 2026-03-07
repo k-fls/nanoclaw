@@ -307,10 +307,12 @@ function callbackHandler(oauthUrl: string, port: number): CodeDeliveryHandler {
   return {
     oauthUrl,
     instructions:
-      'After authorizing, your browser will redirect to a localhost URL ' +
-      'that will fail to load (you\'ll see a "connection refused" or similar error page). ' +
-      'Copy the full URL from your browser\'s address bar and paste it here ' +
-      '(or reply "cancel" to abort):',
+      'After authorizing, your browser will redirect to a localhost URL.\n\n' +
+      '‼️ *The page will show an error* ("connection refused", "unable to connect", or similar) — ' +
+      'this is expected! Do NOT close the tab.\n\n' +
+      'Copy the full URL from your browser\'s *address bar* (it will look like ' +
+      `\`http://localhost:${port}/callback?code=...\`) ` +
+      'and paste it here (or reply "cancel" to abort):',
     async deliver(userInput: string) {
       const parsed = parseCallbackUrl(userInput);
       if (!parsed) {
@@ -343,10 +345,12 @@ function parseCredentialsJson(
 ): { accessToken: string; expiresAt: string | null } | null {
   try {
     const data = JSON.parse(json);
-    if (data.accessToken) {
+    // credentials.json may have token at top level or nested under claudeAiOauth
+    const creds = data.claudeAiOauth ?? data;
+    if (creds.accessToken) {
       return {
-        accessToken: data.accessToken,
-        expiresAt: data.expiresAt ?? null,
+        accessToken: creds.accessToken,
+        expiresAt: creds.expiresAt ?? null,
       };
     }
     return null;

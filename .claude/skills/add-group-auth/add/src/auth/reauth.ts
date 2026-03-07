@@ -111,6 +111,9 @@ async function showMenuAndRun(
 
   try {
     const result = await selected.run(ctx);
+    // Advance cursor past any messages the provider read (OAuth code, etc.)
+    // so they don't leak to the agent as regular messages.
+    chat.advanceCursor();
     if (result === RESELECT) return 'reselect';
     if (!result) {
       await chat.send(`${REAUTH_PREFIX} Auth flow cancelled or failed.`);
@@ -125,6 +128,8 @@ async function showMenuAndRun(
     );
     return true;
   } catch (err) {
+    // Advance cursor even on error to prevent message leakage
+    chat.advanceCursor();
     logger.error(
       { scope, provider: selected.provider.service, err },
       'Reauth flow error',

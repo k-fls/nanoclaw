@@ -195,11 +195,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Check if credentials are available before processing
   const secrets = resolveSecrets(group);
+  let reauthFailed = false;
   if (Object.keys(secrets).length === 0) {
     logger.warn({ group: group.name }, 'No credentials available, starting reauth');
     const chat = createChatIO(channel, chatJid);
     const ok = await runReauth(group.folder, chat, 'No credentials configured');
-    if (!ok) return true; // Don't retry — reauth was cancelled or failed
+    if (!ok) reauthFailed = true;
   }
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
@@ -210,6 +211,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   if (missedMessages.length === 0) return true;
+
+  // Advance cursor past trigger messages so they don't re-trigger reauth
+  if (reauthFailed) {
+    lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+    saveState();
+    return true;
+  }
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
