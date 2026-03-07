@@ -7,6 +7,7 @@ import { logger } from '../logger.js';
 import { getAllProviders } from './registry.js';
 import { execInContainer, authSessionDir } from './exec.js';
 import type { AuthContext, AuthExecOpts, AuthOption, ChatIO, ExecHandle } from './types.js';
+import { RESELECT } from './types.js';
 
 /** Prefix for all scripted reauth messages. */
 const REAUTH_PREFIX = '🔑🤖';
@@ -32,6 +33,23 @@ export async function runReauth(
     return false;
   }
 
+  // Loop: providers can return RESELECT to restart the menu
+  // (e.g. missing prerequisite). The menu has Cancel + timeout to exit.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const result = await showMenuAndRun(scope, chat, reason, allOptions);
+    if (result === 'reselect') continue;
+    return result;
+  }
+}
+
+/** Show the menu, run the selected option. Returns true/false or 'reselect' to restart. */
+async function showMenuAndRun(
+  scope: string,
+  chat: ChatIO,
+  reason: string,
+  allOptions: AuthOption[],
+): Promise<boolean | 'reselect'> {
   // Build numbered menu — each option separated by blank line
   const optionBlocks: string[] = [];
   for (let i = 0; i < allOptions.length; i++) {
@@ -93,6 +111,7 @@ export async function runReauth(
 
   try {
     const result = await selected.run(ctx);
+    if (result === RESELECT) return 'reselect';
     if (!result) {
       await chat.send(`${REAUTH_PREFIX} Auth flow cancelled or failed.`);
       return false;

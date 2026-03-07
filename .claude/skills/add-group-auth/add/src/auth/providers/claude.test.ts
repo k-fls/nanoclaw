@@ -214,12 +214,15 @@ describe('claudeProvider', () => {
   });
 
   describe('authOptions', () => {
-    it('returns 3 options', () => {
+    it('returns 3 options with descriptions', () => {
       const options = claudeProvider.authOptions('test');
       expect(options).toHaveLength(3);
       expect(options[0].label).toContain('Setup token');
       expect(options[1].label).toContain('Auth login');
       expect(options[2].label).toContain('API key');
+      for (const opt of options) {
+        expect(opt.description).toBeTruthy();
+      }
     });
   });
 });

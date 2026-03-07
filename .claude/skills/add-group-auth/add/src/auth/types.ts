@@ -91,3 +91,12 @@ export interface FlowResult {
   token: string; // plaintext — store will encrypt
   expires_at?: string | null;
 }
+
+/**
+ * Sentinel value returned by an auth option's run() to signal that the
+ * reauth menu should be shown again (e.g. when a prerequisite is missing).
+ */
+export const RESELECT: FlowResult = Object.freeze({
+  auth_type: '__reselect__',
+  token: '',
+});

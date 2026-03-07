@@ -18,17 +18,25 @@ import {
   saveCredential,
 } from '../store.js';
 import { authSessionDir } from '../exec.js';
+import {
+  ensureGpgKey,
+  exportPublicKey,
+  gpgDecrypt,
+  isGpgAvailable,
+  isPgpMessage,
+} from '../gpg.js';
 import { IDLE_TIMEOUT } from '../../config.js';
 import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
-import type {
-  AuthContext,
-  AuthExecOpts,
-  AuthOption,
-  ChatIO,
-  CredentialProvider,
-  ExecHandle,
-  FlowResult,
+import {
+  RESELECT,
+  type AuthContext,
+  type AuthExecOpts,
+  type AuthOption,
+  type ChatIO,
+  type CredentialProvider,
+  type ExecHandle,
+  type FlowResult,
 } from '../types.js';
 
 const SERVICE = 'claude_auth';
@@ -668,30 +676,79 @@ export const claudeProvider: CredentialProvider = {
         },
       },
 
-      // --- API key (simplest, no container, but leaks because of chat channel) ---
+      // --- API key (GPG-encrypted only) ---
       {
-        label: 'API key (not recommended, unsafe to share in chat)',
-        description: 'Paste an Anthropic API key (sk-ant-api...) directly. Simplest but least secure — the key is visible in chat history to anyone in the group.',
+        label: 'API key (GPG-encrypted)',
+        description: 'Paste a GPG-encrypted Anthropic API key. Requires GPG on the server. The key never appears in chat history.',
         provider: this,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
-          await ctx.chat.send(
-            'Paste your Anthropic API key (starts with sk-ant-api).\n\n' +
-            '⚠️ Sending API keys via messaging channels may be insecure — ' +
-            'messages could be logged or visible to other group members. ' +
-            'Consider using other options instead.',
-          );
-          const key = await ctx.chat.receive(IDLE_TIMEOUT - 30_000);
-          if (!key || isCancelReply(key)) return null;
-
-          const trimmed = key.trim();
-          if (!trimmed.startsWith('sk-ant-api')) {
+          if (!isGpgAvailable()) {
             await ctx.chat.send(
-              'Invalid key format — expected sk-ant-api prefix.',
+              'GPG is not installed on the server. ' +
+              'Install it (`apt install gnupg` or `brew install gnupg`) and try again.\n\n' +
+              'Returning to auth method selection...',
+            );
+            return RESELECT;
+          }
+
+          let pubKey: string;
+          try {
+            ensureGpgKey(ctx.scope);
+            pubKey = exportPublicKey(ctx.scope);
+          } catch (err) {
+            logger.warn({ err }, 'GPG key setup failed');
+            await ctx.chat.send(
+              'Failed to initialize GPG keypair: ' +
+              `${err instanceof Error ? err.message : String(err)}\n\n` +
+              'Returning to auth method selection...',
+            );
+            return RESELECT;
+          }
+
+          await ctx.chat.send(
+            'Paste a GPG-encrypted Anthropic API key.\n\n' +
+            '1. Import this public key:\n' +
+            '```\n' +
+            pubKey + '\n' +
+            '```\n\n' +
+            '2. Encrypt your key:\n' +
+            '```\n' +
+            'echo "sk-ant-api..." | gpg --encrypt --armor --recipient nanoclaw\n' +
+            '```\n\n' +
+            '3. Paste the encrypted output here. Reply "cancel" to abort.',
+          );
+
+          const reply = await ctx.chat.receive(IDLE_TIMEOUT - 30_000);
+          if (!reply || isCancelReply(reply)) return null;
+
+          if (!isPgpMessage(reply)) {
+            await ctx.chat.send(
+              'Expected a GPG-encrypted message (-----BEGIN PGP MESSAGE-----).\n' +
+              'Plaintext keys are not accepted for security reasons.\n\n' +
+              'Returning to auth method selection...',
+            );
+            return RESELECT;
+          }
+
+          let apiKey: string;
+          try {
+            apiKey = gpgDecrypt(ctx.scope, reply.trim());
+          } catch (err) {
+            await ctx.chat.send(
+              'Failed to decrypt PGP message. Make sure you encrypted with the public key shown above.',
+            );
+            logger.error({ scope: ctx.scope, err }, 'GPG decrypt failed');
+            return null;
+          }
+
+          if (!apiKey.startsWith('sk-ant-api')) {
+            await ctx.chat.send(
+              'Invalid key format — expected sk-ant-api prefix after decryption.',
             );
             return null;
           }
 
-          return { auth_type: 'api_key', token: trimmed, expires_at: null };
+          return { auth_type: 'api_key', token: apiKey, expires_at: null };
         },
       },
     ];
