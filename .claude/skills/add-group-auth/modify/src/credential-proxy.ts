@@ -48,10 +48,10 @@ export function setCredentialResolver(resolver: CredentialResolver): void {
   credentialResolver = resolver;
 }
 
-/** Parse /scope/<id>/ prefix from URL. Returns { scope, path }. */
-function parseScopedUrl(url: string): { scope: string | null; path: string } {
+/** Parse /scope/<id>/ prefix from URL. Returns { scope, path } or null if no prefix. */
+function parseScopedUrl(url: string): { scope: string; path: string } | null {
   const match = url.match(/^\/scope\/([^/]+)(\/.*)?$/);
-  if (!match) return { scope: null, path: url };
+  if (!match) return null;
   return { scope: decodeURIComponent(match[1]), path: match[2] || '/' };
 }
 
@@ -74,11 +74,17 @@ export function startCredentialProxy(
       req.on('end', () => {
         const body = Buffer.concat(chunks);
 
-        // Extract group scope from URL prefix
-        const { scope, path: upstreamPath } = parseScopedUrl(req.url || '/');
+        // Extract group scope from URL prefix — reject requests without it
+        const parsed = parseScopedUrl(req.url || '/');
+        if (!parsed) {
+          res.writeHead(400);
+          res.end('Bad Request: missing /scope/<group>/ prefix');
+          return;
+        }
+        const { scope, path: upstreamPath } = parsed;
 
-        // Resolve credentials for this scope (or default)
-        const secrets = credentialResolver(scope || 'default');
+        // Resolve credentials for this scope
+        const secrets = credentialResolver(scope);
         const authMode: AuthMode = secrets.ANTHROPIC_API_KEY
           ? 'api-key'
           : 'oauth';
@@ -154,7 +160,7 @@ export function startCredentialProxy(
 }
 
 /** Detect which auth mode is configured for a given scope. */
-export function detectAuthMode(scope = 'default'): AuthMode {
+export function detectAuthMode(scope: string): AuthMode {
   const secrets = credentialResolver(scope);
   return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
 }

@@ -40,17 +40,19 @@ npx tsx scripts/apply-skill.ts .claude/skills/add-group-auth
 ```
 
 This deterministically:
-- Adds `src/auth/` module (types, store, registry, exec, provision, reauth, providers)
+- Adds `src/auth/` module (types, store, registry, exec, gpg, guard, provision, reauth, providers)
 - Adds `container/shims/xdg-open` (blocks browser opening for console-friendly OAuth)
 - Modifies `src/config.ts` to read `NEW_GROUPS_USE_DEFAULT_CREDENTIALS`
-- Modifies `src/container-runner.ts` to use the new credential store instead of `readSecrets()`
-- Modifies `src/index.ts` to integrate auth checks, reauth, and initialization
+- Modifies `src/credential-proxy.ts` to make the proxy group-aware (scope from URL prefix, pluggable credential resolver)
+- Modifies `src/container-runner.ts` to pass group scope in `ANTHROPIC_BASE_URL` path prefix
+- Modifies `src/index.ts` to integrate auth checks, reauth, credential resolver wiring, and initialization
 - Modifies `src/types.ts` to add `useDefaultCredentials` to `ContainerConfig`
 - Adds `NEW_GROUPS_USE_DEFAULT_CREDENTIALS` to `.env.example`
 
 If merge conflicts occur, read the intent files:
 - `modify/src/config.ts.intent.md`
 - `modify/src/container-runner.ts.intent.md`
+- `modify/src/credential-proxy.ts.intent.md`
 - `modify/src/index.ts.intent.md`
 - `modify/src/types.ts.intent.md`
 
@@ -112,11 +114,13 @@ NEW_GROUPS_USE_DEFAULT_CREDENTIALS=false
 
 ## How It Works
 
+**Credential proxy**: Containers route all API traffic through a host-side HTTP proxy. Each container's `ANTHROPIC_BASE_URL` includes a `/scope/<group-folder>/` prefix. The proxy strips the prefix, resolves credentials for that group from the encrypted store (falling back to `.env`-imported defaults), and injects them into the upstream request. Containers never see real credentials.
+
 **Credential scoping**: Each group's scope is its folder name (e.g., `whatsapp_main`). The `default` scope holds credentials imported from `.env`. Resolution: group-specific → default (if allowed).
 
 **Encryption**: AES-256-GCM with a machine-local key at `~/.config/nanoclaw/encryption-key`. Auto-generated on first run (256-bit, hex, mode 0600).
 
-**Reauth flow**: When credentials are missing or an auth error is detected, a numbered menu is sent to the user through the messaging channel. Options: API key (paste), Setup token (OAuth), Auth login (OAuth).
+**Reauth flow**: When credentials are missing or an auth error is detected, a numbered menu is sent to the user through the messaging channel. Options: API key (GPG-encrypted), Setup token (OAuth), Auth login (OAuth).
 
 ## Troubleshooting
 

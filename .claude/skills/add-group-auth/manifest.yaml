@@ -10,9 +10,13 @@ adds:
   - src/auth/registry.ts
   - src/auth/registry.test.ts
   - src/auth/exec.ts
+  - src/auth/gpg.ts
+  - src/auth/gpg.test.ts
+  - src/auth/guard.ts
   - src/auth/provision.ts
   - src/auth/provision.test.ts
   - src/auth/reauth.ts
+  - src/auth/reauth.test.ts
   - src/auth/index.ts
   - src/auth/providers/claude.ts
   - src/auth/providers/claude.test.ts

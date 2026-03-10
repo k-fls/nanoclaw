@@ -91,7 +91,7 @@ describe('resolveSecrets', () => {
     const provider: CredentialProvider = {
       service: 'test-default',
       displayName: 'Test',
-      hasAuth: () => false,
+      hasAuth: (scope) => scope === 'default',
       provision: (scope) => {
         if (scope === 'default') return { env: { DEF_KEY: 'default-value' } };
         return { env: {} as Record<string, string> };
@@ -110,7 +110,7 @@ describe('resolveSecrets', () => {
     const provider: CredentialProvider = {
       service: 'test-main-default',
       displayName: 'Test',
-      hasAuth: () => false,
+      hasAuth: (scope) => scope === 'default',
       provision: (scope) => {
         if (scope === 'default') return { env: { MAIN_KEY: 'from-default' } };
         return { env: {} as Record<string, string> };
