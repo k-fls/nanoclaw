@@ -30,6 +30,7 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  useDefaultCredentials?: boolean; // Default: true — allow fallback to default scope credentials
 }
 
 export interface RegisteredGroup {
@@ -51,6 +52,20 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  attachments?: MediaAttachment[];
+}
+
+export interface MediaAttachment {
+  id: string;
+  filename: string;
+  mimetype: string;
+  size?: number;
+}
+
+export interface MediaSendOptions {
+  caption?: string;
+  filename?: string;
+  mimetype?: string;
 }
 
 export interface ScheduledTask {
@@ -90,6 +105,9 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: media support
+  sendMedia?(jid: string, filePath: string, options?: MediaSendOptions): Promise<void>;
+  downloadMedia?(ref: unknown): Promise<Buffer>;
 }
 
 // Callback type that channels use to deliver inbound messages

@@ -5,11 +5,17 @@ import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
+  MAX_MEDIA_SIZE,
+  NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { startCredentialProxy } from './credential-proxy.js';
+import { initCredentialStore, importEnvToDefault, createAuthGuard } from './auth/index.js';
+import { resolveSecrets } from './auth/provision.js';
+import { claudeProvider } from './auth/providers/claude.js';
+import type { ChatIO } from './auth/types.js';
+import { startCredentialProxy, setCredentialResolver } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -33,7 +39,6 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
-  getRegisteredGroup,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
@@ -45,6 +50,13 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import {
+  getExtFromMime,
+  getMediaRef,
+  isMediaDownloaded,
+  saveMediaFile,
+  writeDownloadError,
+} from './media.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   isSenderAllowed,
@@ -102,6 +114,14 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     return;
   }
 
+  // Apply global default for useDefaultCredentials if not explicitly set
+  if (group.containerConfig?.useDefaultCredentials === undefined) {
+    group.containerConfig = {
+      ...group.containerConfig,
+      useDefaultCredentials: NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
+    };
+  }
+
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
 
@@ -139,6 +159,39 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+/** Create a ChatIO that routes through the normal channel messaging. */
+function createChatIO(channel: Channel, chatJid: string): ChatIO {
+  let lastReceivedTs: string | null = null;
+  return {
+    async send(text: string): Promise<void> {
+      await channel.sendMessage(chatJid, text);
+    },
+    async sendRaw(text: string): Promise<void> {
+      await channel.sendMessage(chatJid, text);
+    },
+    async receive(timeoutMs = 120_000): Promise<string | null> {
+      const start = Date.now();
+      const cursor = getMessagesSince(chatJid, '', ASSISTANT_NAME);
+      const lastTs = cursor.length > 0 ? cursor[cursor.length - 1].timestamp : '';
+      while (Date.now() - start < timeoutMs) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const newer = getMessagesSince(chatJid, lastTs, ASSISTANT_NAME);
+        if (newer.length > 0) {
+          lastReceivedTs = newer[0].timestamp;
+          return newer[0].content;
+        }
+      }
+      return null;
+    },
+    advanceCursor(): void {
+      if (lastReceivedTs) {
+        lastAgentTimestamp[chatJid] = lastReceivedTs;
+        saveState();
+      }
+    },
+  };
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -155,6 +208,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
+  const guard = createAuthGuard(
+    group,
+    () => createChatIO(channel, chatJid),
+    () => queue.closeStdin(chatJid),
+    claudeProvider,
+  );
+  const credentialsOk = await guard.preCheck();
+
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
     chatJid,
@@ -163,6 +224,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   if (missedMessages.length === 0) return true;
+
+  // If reauth failed, advance cursor so trigger messages don't re-trigger
+  if (!credentialsOk) {
+    lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+    saveState();
+    return true;
+  }
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
@@ -180,8 +248,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
-  lastAgentTimestamp[chatJid] =
-    missedMessages[missedMessages.length - 1].timestamp;
+  const lastOriginalTs = missedMessages[missedMessages.length - 1].timestamp;
+  lastAgentTimestamp[chatJid] = lastOriginalTs;
   saveState();
 
   logger.info(
@@ -207,7 +275,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const agentResult = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -225,19 +293,27 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       resetIdleTimer();
     }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
-
+    queue.notifyIdle(chatJid);
     if (result.status === 'error') {
       hadError = true;
     }
+    guard.onStreamResult(result);
   });
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
-  if (output === 'error' || hadError) {
+  if (agentResult.status === 'error' || hadError) {
+    const authResult = await guard.handleAuthError(agentResult.error);
+    if (authResult === 'reauth-failed') return true;
+    if (authResult === 'reauth-ok') {
+      // If reauth consumed messages (advanceCursor moved past original), don't retry
+      if (lastAgentTimestamp[chatJid] !== lastOriginalTs) return true;
+      lastAgentTimestamp[chatJid] = previousCursor;
+      saveState();
+      return false;
+    }
+
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -265,7 +341,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-): Promise<'success' | 'error'> {
+): Promise<{ status: 'success' | 'error'; error?: string }> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
@@ -331,13 +407,13 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
-      return 'error';
+      return { status: 'error', error: output.error };
     }
 
-    return 'success';
+    return { status: 'success' };
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
-    return 'error';
+    return { status: 'error', error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -467,6 +543,18 @@ function ensureContainerSystemRunning(): void {
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
+  initCredentialStore();
+  importEnvToDefault();
+
+  // Wire per-group credential resolution into the proxy.
+  // The proxy calls this on every request to resolve the group's credentials.
+  // Scope is the group folder name (from the URL prefix set by container-runner).
+  setCredentialResolver((scope) => {
+    const group = Object.values(registeredGroups).find(g => g.folder === scope)
+      || { name: scope, folder: scope, trigger: '', added_at: '' };
+    return resolveSecrets(group);
+  });
+
   initDatabase();
   logger.info('Database initialized');
   loadState();
@@ -562,6 +650,33 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
+    },
+    sendMedia: async (jid, filePath, options) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (channel.sendMedia) {
+        await channel.sendMedia(jid, filePath, options);
+      } else {
+        const text = options?.caption || options?.filename || 'Sent a file';
+        await channel.sendMessage(jid, text);
+      }
+    },
+    downloadMedia: async (groupFolder, mediaId) => {
+      if (isMediaDownloaded(groupFolder, mediaId)) return;
+      const ref = getMediaRef(groupFolder, mediaId);
+      if (!ref) throw new Error(`No media ref for ${mediaId}`);
+      const channelName = mediaId.split(':')[0];
+      const channel = channels.find((c) => c.name === channelName);
+      if (!channel?.downloadMedia) {
+        throw new Error(`Channel ${channelName} does not support media download`);
+      }
+      const buffer = await channel.downloadMedia(ref.ref);
+      if (buffer.length > MAX_MEDIA_SIZE) {
+        writeDownloadError(groupFolder, mediaId, `File too large: ${buffer.length} bytes (max ${MAX_MEDIA_SIZE})`);
+        throw new Error(`Media ${mediaId} exceeds MAX_MEDIA_SIZE`);
+      }
+      const ext = getExtFromMime(ref.mimetype);
+      saveMediaFile(groupFolder, mediaId, buffer, ext);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

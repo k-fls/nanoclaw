@@ -8,10 +8,13 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { isMediaDownloaded, resolveContainerMediaPath, writeDownloadError } from './media.js';
+import { MediaSendOptions, RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMedia: (jid: string, filePath: string, options?: MediaSendOptions) => Promise<void>;
+  downloadMedia: (groupFolder: string, mediaId: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -171,6 +174,11 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For media
+    mediaId?: string;
+    containerFilePath?: string;
+    caption?: string;
+    filename?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -446,6 +454,74 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'media_download':
+      if (data.mediaId) {
+        if (isMediaDownloaded(sourceGroup, data.mediaId)) {
+          logger.debug(
+            { mediaId: data.mediaId, sourceGroup },
+            'Media already downloaded, skipping',
+          );
+          break;
+        }
+        try {
+          await deps.downloadMedia(sourceGroup, data.mediaId);
+          logger.info(
+            { mediaId: data.mediaId, sourceGroup },
+            'Media downloaded via IPC',
+          );
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          writeDownloadError(sourceGroup, data.mediaId, errMsg);
+          logger.error(
+            { mediaId: data.mediaId, sourceGroup, err },
+            'Media download failed',
+          );
+        }
+      }
+      break;
+
+    case 'media_message':
+      if (data.containerFilePath && data.chatJid) {
+        const targetGroup = registeredGroups[data.chatJid];
+        if (
+          isMain ||
+          (targetGroup && targetGroup.folder === sourceGroup)
+        ) {
+          const hostPath = resolveContainerMediaPath(
+            data.containerFilePath,
+            sourceGroup,
+          );
+          if (hostPath && fs.existsSync(hostPath)) {
+            try {
+              await deps.sendMedia(data.chatJid, hostPath, {
+                caption: data.caption,
+                filename: data.filename,
+              });
+              logger.info(
+                { chatJid: data.chatJid, sourceGroup },
+                'Media sent via IPC',
+              );
+            } catch (err) {
+              logger.error(
+                { chatJid: data.chatJid, sourceGroup, err },
+                'Media send failed',
+              );
+            }
+          } else {
+            logger.warn(
+              { containerFilePath: data.containerFilePath, sourceGroup },
+              'Media file not found or invalid path',
+            );
+          }
+        } else {
+          logger.warn(
+            { chatJid: data.chatJid, sourceGroup },
+            'Unauthorized media send attempt blocked',
+          );
+        }
       }
       break;
 

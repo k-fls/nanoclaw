@@ -3,7 +3,13 @@
  * Containers connect here instead of directly to the Anthropic API.
  * The proxy injects real credentials so containers never see them.
  *
- * Two auth modes:
+ * Group-aware: containers set ANTHROPIC_BASE_URL to
+ *   http://host:3001/scope/<group-folder>/
+ * The proxy strips the /scope/<id>/ prefix, resolves credentials for
+ * that group via the credential store (with fallback to .env), and
+ * forwards to the real upstream.
+ *
+ * Two auth modes (resolved per-request from the group's credentials):
  *   API key:  Proxy injects x-api-key on every request.
  *   OAuth:    Container CLI exchanges its placeholder token for a temp
  *             API key via /api/oauth/claude_cli/create_api_key.
@@ -23,23 +29,40 @@ export interface ProxyConfig {
   authMode: AuthMode;
 }
 
-export function startCredentialProxy(
-  port: number,
-  host = '127.0.0.1',
-): Promise<Server> {
-  const secrets = readEnvFile([
+/** Pluggable credential resolver. Default reads .env; per-group-auth skill replaces this. */
+export type CredentialResolver = (scope: string) => Record<string, string>;
+
+let credentialResolver: CredentialResolver = defaultResolver;
+
+function defaultResolver(_scope: string): Record<string, string> {
+  return readEnvFile([
     'ANTHROPIC_API_KEY',
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_AUTH_TOKEN',
     'ANTHROPIC_BASE_URL',
   ]);
+}
 
-  const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
-  const oauthToken =
-    secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
+/** Replace the credential resolver (called by per-group-auth skill at startup). */
+export function setCredentialResolver(resolver: CredentialResolver): void {
+  credentialResolver = resolver;
+}
 
+/** Parse /scope/<id>/ prefix from URL. Returns { scope, path }. */
+function parseScopedUrl(url: string): { scope: string | null; path: string } {
+  const match = url.match(/^\/scope\/([^/]+)(\/.*)?$/);
+  if (!match) return { scope: null, path: url };
+  return { scope: decodeURIComponent(match[1]), path: match[2] || '/' };
+}
+
+export function startCredentialProxy(
+  port: number,
+  host = '127.0.0.1',
+): Promise<Server> {
+  // Read upstream URL once (not credential-dependent)
+  const envConfig = readEnvFile(['ANTHROPIC_BASE_URL']);
   const upstreamUrl = new URL(
-    secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
+    envConfig.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
   );
   const isHttps = upstreamUrl.protocol === 'https:';
   const makeRequest = isHttps ? httpsRequest : httpRequest;
@@ -50,6 +73,18 @@ export function startCredentialProxy(
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
         const body = Buffer.concat(chunks);
+
+        // Extract group scope from URL prefix
+        const { scope, path: upstreamPath } = parseScopedUrl(req.url || '/');
+
+        // Resolve credentials for this scope (or default)
+        const secrets = credentialResolver(scope || 'default');
+        const authMode: AuthMode = secrets.ANTHROPIC_API_KEY
+          ? 'api-key'
+          : 'oauth';
+        const oauthToken =
+          secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
+
         const headers: Record<string, string | number | string[] | undefined> =
           {
             ...(req.headers as Record<string, string>),
@@ -83,7 +118,7 @@ export function startCredentialProxy(
           {
             hostname: upstreamUrl.hostname,
             port: upstreamUrl.port || (isHttps ? 443 : 80),
-            path: req.url,
+            path: upstreamPath,
             method: req.method,
             headers,
           } as RequestOptions,
@@ -95,7 +130,7 @@ export function startCredentialProxy(
 
         upstream.on('error', (err) => {
           logger.error(
-            { err, url: req.url },
+            { err, url: req.url, scope },
             'Credential proxy upstream error',
           );
           if (!res.headersSent) {
@@ -110,7 +145,7 @@ export function startCredentialProxy(
     });
 
     server.listen(port, host, () => {
-      logger.info({ port, host, authMode }, 'Credential proxy started');
+      logger.info({ port, host }, 'Credential proxy started');
       resolve(server);
     });
 
@@ -118,8 +153,8 @@ export function startCredentialProxy(
   });
 }
 
-/** Detect which auth mode the host is configured for. */
-export function detectAuthMode(): AuthMode {
-  const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
+/** Detect which auth mode is configured for a given scope. */
+export function detectAuthMode(scope = 'default'): AuthMode {
+  const secrets = credentialResolver(scope);
   return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
 }
