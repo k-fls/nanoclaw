@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, exec, execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -25,9 +25,26 @@ import {
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
-import { detectAuthMode } from './credential-proxy.js';
+import {
+  detectAuthMode,
+  registerContainerIP,
+  unregisterContainerIP,
+} from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+
+/** Query a running container's bridge IP via docker inspect. */
+function getContainerIP(containerName: string): string | null {
+  try {
+    const ip = execSync(
+      `${CONTAINER_RUNTIME_BIN} inspect --format '{{.NetworkSettings.IPAddress}}' ${containerName}`,
+      { encoding: 'utf-8', timeout: 5000 },
+    ).trim().replace(/^'|'$/g, '');
+    return ip || null;
+  } catch {
+    return null;
+  }
+}
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -215,23 +232,25 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  groupFolder: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Route API traffic through the credential proxy (containers never see real secrets)
+  // Route API traffic through the credential proxy (containers never see real secrets).
+  // /claude prefix identifies the service; container IP identifies the group.
   args.push(
     '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/claude`,
   );
 
-  // Mirror the host's auth method with a placeholder value.
+  // Mirror the group's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
   // OAuth mode:   SDK exchanges placeholder token for temp API key,
   //               proxy injects real OAuth token on that exchange request.
-  const authMode = detectAuthMode();
+  const authMode = detectAuthMode(groupFolder);
   if (authMode === 'api-key') {
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
@@ -278,7 +297,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, group.folder);
 
   logger.debug(
     {
@@ -312,6 +331,20 @@ export async function runContainerAgent(
     });
 
     onProcess(container, containerName);
+
+    // Register this container's bridge IP so the credential proxy can
+    // identify it and inject the correct group's credentials.
+    // Docker assigns the IP at container creation (before the process starts),
+    // so it's available immediately after spawn.
+    let containerIP = getContainerIP(containerName);
+    if (containerIP) {
+      registerContainerIP(containerIP, group.folder);
+    } else {
+      logger.warn(
+        { group: group.name, containerName },
+        'Could not determine container IP — proxy will use default credentials',
+      );
+    }
 
     let stdout = '';
     let stderr = '';
@@ -434,6 +467,10 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
+      // Unregister container IP mapping
+      if (containerIP) {
+        unregisterContainerIP(containerIP);
+      }
       const duration = Date.now() - startTime;
 
       if (timedOut) {
@@ -629,6 +666,9 @@ export async function runContainerAgent(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
+      if (containerIP) {
+        unregisterContainerIP(containerIP);
+      }
       logger.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',

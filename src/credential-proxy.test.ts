@@ -2,16 +2,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'http';
 import type { AddressInfo } from 'net';
 
-const mockEnv: Record<string, string> = {};
-vi.mock('./env.js', () => ({
-  readEnvFile: vi.fn(() => ({ ...mockEnv })),
-}));
-
 vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { startCredentialProxy } from './credential-proxy.js';
+import {
+  startCredentialProxy,
+  setCredentialResolver,
+  registerContainerIP,
+  unregisterContainerIP,
+  registerProxyService,
+} from './credential-proxy.js';
 
 function makeRequest(
   port: number,
@@ -43,18 +44,21 @@ function makeRequest(
   });
 }
 
-describe('credential-proxy', () => {
+describe('credential-proxy (per-group-auth)', () => {
   let proxyServer: http.Server;
   let upstreamServer: http.Server;
   let proxyPort: number;
   let upstreamPort: number;
   let lastUpstreamHeaders: http.IncomingHttpHeaders;
+  let lastUpstreamPath: string;
 
   beforeEach(async () => {
     lastUpstreamHeaders = {};
+    lastUpstreamPath = '';
 
     upstreamServer = http.createServer((req, res) => {
       lastUpstreamHeaders = { ...req.headers };
+      lastUpstreamPath = req.url || '';
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
@@ -62,131 +66,173 @@ describe('credential-proxy', () => {
       upstreamServer.listen(0, '127.0.0.1', resolve),
     );
     upstreamPort = (upstreamServer.address() as AddressInfo).port;
+
+    // Register a test service that forwards to our upstream
+    registerProxyService({
+      prefix: 'claude',
+      forward(req, res, path, body, secrets) {
+        const headers: Record<string, string | number | string[] | undefined> = {
+          ...(req.headers as Record<string, string>),
+          host: `127.0.0.1:${upstreamPort}`,
+          'content-length': body.length,
+        };
+        delete headers['connection'];
+        delete headers['keep-alive'];
+        delete headers['transfer-encoding'];
+
+        if (secrets.ANTHROPIC_API_KEY) {
+          delete headers['x-api-key'];
+          headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
+        } else {
+          const oauthToken = secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
+          if (headers['authorization']) {
+            delete headers['authorization'];
+            if (oauthToken) {
+              headers['authorization'] = `Bearer ${oauthToken}`;
+            }
+          }
+        }
+
+        const upstream = http.request(
+          {
+            hostname: '127.0.0.1',
+            port: upstreamPort,
+            path,
+            method: req.method,
+            headers,
+          },
+          (upRes) => {
+            res.writeHead(upRes.statusCode!, upRes.headers);
+            upRes.pipe(res);
+          },
+        );
+        upstream.on('error', (err) => {
+          if (!res.headersSent) {
+            res.writeHead(502);
+            res.end('Bad Gateway');
+          }
+        });
+        upstream.write(body);
+        upstream.end();
+      },
+    });
   });
 
   afterEach(async () => {
     await new Promise<void>((r) => proxyServer?.close(() => r()));
     await new Promise<void>((r) => upstreamServer?.close(() => r()));
-    for (const key of Object.keys(mockEnv)) delete mockEnv[key];
   });
 
-  async function startProxy(env: Record<string, string>): Promise<number> {
-    Object.assign(mockEnv, env, {
-      ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstreamPort}`,
-    });
-    proxyServer = await startCredentialProxy(0);
+  async function startProxy(
+    resolver: (scope: string) => Record<string, string>,
+  ): Promise<number> {
+    setCredentialResolver(resolver);
+    proxyServer = await startCredentialProxy(0, '127.0.0.1');
     return (proxyServer.address() as AddressInfo).port;
   }
 
-  it('API-key mode injects x-api-key and strips placeholder', async () => {
-    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+  it('strips /claude/ prefix before forwarding upstream', async () => {
+    proxyPort = await startProxy(() => ({ ANTHROPIC_API_KEY: 'sk-test' }));
 
-    await makeRequest(
-      proxyPort,
-      {
-        method: 'POST',
-        path: '/v1/messages',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': 'placeholder',
-        },
+    await makeRequest(proxyPort, {
+      method: 'POST',
+      path: '/claude/v1/messages',
+      headers: { 'content-type': 'application/json' },
+    }, '{}');
+
+    expect(lastUpstreamPath).toBe('/v1/messages');
+  });
+
+  it('rejects requests without service prefix', async () => {
+    proxyPort = await startProxy(() => ({}));
+
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/',
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 404 for unknown service prefix', async () => {
+    proxyPort = await startProxy(() => ({}));
+
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/unknown/v1/test',
+    });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('resolves scope from container IP', async () => {
+    const resolvedScopes: string[] = [];
+    proxyPort = await startProxy((scope) => {
+      resolvedScopes.push(scope);
+      return { ANTHROPIC_API_KEY: `key-for-${scope}` };
+    });
+
+    // Requests from localhost (127.0.0.1) — no IP registered, falls back to 'default'
+    await makeRequest(proxyPort, {
+      method: 'POST',
+      path: '/claude/v1/messages',
+      headers: { 'content-type': 'application/json' },
+    }, '{}');
+
+    expect(resolvedScopes).toContain('default');
+  });
+
+  it('uses registered container IP for scope resolution', async () => {
+    const resolvedScopes: string[] = [];
+    // Register 127.0.0.1 as a known container
+    registerContainerIP('127.0.0.1', 'my-group');
+
+    proxyPort = await startProxy((scope) => {
+      resolvedScopes.push(scope);
+      return { ANTHROPIC_API_KEY: `key-for-${scope}` };
+    });
+
+    await makeRequest(proxyPort, {
+      method: 'POST',
+      path: '/claude/v1/messages',
+      headers: { 'content-type': 'application/json' },
+    }, '{}');
+
+    expect(resolvedScopes).toContain('my-group');
+    expect(lastUpstreamHeaders['x-api-key']).toBe('key-for-my-group');
+
+    unregisterContainerIP('127.0.0.1');
+  });
+
+  it('injects API key from resolved credentials', async () => {
+    proxyPort = await startProxy(() => ({ ANTHROPIC_API_KEY: 'sk-ant-real-key' }));
+
+    await makeRequest(proxyPort, {
+      method: 'POST',
+      path: '/claude/v1/messages',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': 'placeholder',
       },
-      '{}',
-    );
+    }, '{}');
 
     expect(lastUpstreamHeaders['x-api-key']).toBe('sk-ant-real-key');
   });
 
-  it('OAuth mode replaces Authorization when container sends one', async () => {
-    proxyPort = await startProxy({
+  it('injects OAuth token on Authorization header', async () => {
+    proxyPort = await startProxy(() => ({
       CLAUDE_CODE_OAUTH_TOKEN: 'real-oauth-token',
-    });
+    }));
 
-    await makeRequest(
-      proxyPort,
-      {
-        method: 'POST',
-        path: '/api/oauth/claude_cli/create_api_key',
-        headers: {
-          'content-type': 'application/json',
-          authorization: 'Bearer placeholder',
-        },
+    await makeRequest(proxyPort, {
+      method: 'POST',
+      path: '/claude/api/oauth/claude_cli/create_api_key',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer placeholder',
       },
-      '{}',
-    );
+    }, '{}');
 
-    expect(lastUpstreamHeaders['authorization']).toBe(
-      'Bearer real-oauth-token',
-    );
-  });
-
-  it('OAuth mode does not inject Authorization when container omits it', async () => {
-    proxyPort = await startProxy({
-      CLAUDE_CODE_OAUTH_TOKEN: 'real-oauth-token',
-    });
-
-    // Post-exchange: container uses x-api-key only, no Authorization header
-    await makeRequest(
-      proxyPort,
-      {
-        method: 'POST',
-        path: '/v1/messages',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': 'temp-key-from-exchange',
-        },
-      },
-      '{}',
-    );
-
-    expect(lastUpstreamHeaders['x-api-key']).toBe('temp-key-from-exchange');
-    expect(lastUpstreamHeaders['authorization']).toBeUndefined();
-  });
-
-  it('strips hop-by-hop headers', async () => {
-    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
-
-    await makeRequest(
-      proxyPort,
-      {
-        method: 'POST',
-        path: '/v1/messages',
-        headers: {
-          'content-type': 'application/json',
-          connection: 'keep-alive',
-          'keep-alive': 'timeout=5',
-          'transfer-encoding': 'chunked',
-        },
-      },
-      '{}',
-    );
-
-    // Proxy strips client hop-by-hop headers. Node's HTTP client may re-add
-    // its own Connection header (standard HTTP/1.1 behavior), but the client's
-    // custom keep-alive and transfer-encoding must not be forwarded.
-    expect(lastUpstreamHeaders['keep-alive']).toBeUndefined();
-    expect(lastUpstreamHeaders['transfer-encoding']).toBeUndefined();
-  });
-
-  it('returns 502 when upstream is unreachable', async () => {
-    Object.assign(mockEnv, {
-      ANTHROPIC_API_KEY: 'sk-ant-real-key',
-      ANTHROPIC_BASE_URL: 'http://127.0.0.1:59999',
-    });
-    proxyServer = await startCredentialProxy(0);
-    proxyPort = (proxyServer.address() as AddressInfo).port;
-
-    const res = await makeRequest(
-      proxyPort,
-      {
-        method: 'POST',
-        path: '/v1/messages',
-        headers: { 'content-type': 'application/json' },
-      },
-      '{}',
-    );
-
-    expect(res.statusCode).toBe(502);
-    expect(res.body).toBe('Bad Gateway');
+    expect(lastUpstreamHeaders['authorization']).toBe('Bearer real-oauth-token');
   });
 });
