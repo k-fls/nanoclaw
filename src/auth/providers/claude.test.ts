@@ -84,7 +84,7 @@ describe('claudeProvider', () => {
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-test');
     });
 
-    it('provisions auth_login by extracting accessToken', () => {
+    it('provisions auth_login with accessToken and refreshToken', () => {
       const credsJson = JSON.stringify({
         accessToken: 'access-123',
         refreshToken: 'refresh-456',
@@ -99,12 +99,33 @@ describe('claudeProvider', () => {
 
       const result = claudeProvider.provision('test');
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('access-123');
+      expect(result.env.CLAUDE_REFRESH_TOKEN).toBe('refresh-456');
     });
 
-    it('returns empty env for expired auth_login', () => {
+    it('handles epoch ms expiresAt from CLI format', () => {
+      const credsJson = JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'access-epoch',
+          refreshToken: 'refresh-epoch',
+          expiresAt: Date.now() + 3600_000,
+        },
+      });
+
+      claudeProvider.storeResult('test', {
+        auth_type: 'auth_login',
+        token: credsJson,
+        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+      });
+
+      const result = claudeProvider.provision('test');
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('access-epoch');
+      expect(result.env.CLAUDE_REFRESH_TOKEN).toBe('refresh-epoch');
+    });
+
+    it('provisions expired auth_login with refresh token for in-band refresh', () => {
       const credsJson = JSON.stringify({
         accessToken: 'expired-access',
-        refreshToken: 'refresh',
+        refreshToken: 'refresh-456',
         expiresAt: new Date(Date.now() - 3600_000).toISOString(),
       });
 
@@ -115,7 +136,8 @@ describe('claudeProvider', () => {
       });
 
       const result = claudeProvider.provision('test');
-      expect(result.env).toEqual({});
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('expired-access');
+      expect(result.env.CLAUDE_REFRESH_TOKEN).toBe('refresh-456');
     });
 
     it('provisions env_fallback by parsing stored JSON', () => {
@@ -176,12 +198,9 @@ describe('claudeProvider', () => {
 
   describe('importEnv', () => {
     it('imports .env values into scope', () => {
-      // First call is from initUpstream() inside importEnv, second is the actual import
-      vi.mocked(readEnvFile)
-        .mockReturnValueOnce({})
-        .mockReturnValueOnce({
-          ANTHROPIC_API_KEY: 'sk-ant-api03-from-env',
-        });
+      vi.mocked(readEnvFile).mockReturnValueOnce({
+        ANTHROPIC_API_KEY: 'sk-ant-api03-from-env',
+      });
 
       claudeProvider.importEnv!('default');
       expect(claudeProvider.hasAuth('default')).toBe(true);

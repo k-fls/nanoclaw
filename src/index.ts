@@ -10,11 +10,11 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { initCredentialStore, importEnvToDefault, createAuthGuard } from './auth/index.js';
+import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders } from './auth/index.js';
 import { resolveSecrets } from './auth/provision.js';
-import { claudeProvider } from './auth/providers/claude.js';
+import { claudeProvider, handleApiHost } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
-import { startCredentialProxy, setCredentialResolver } from './credential-proxy.js';
+import { CredentialProxy, setProxyInstance } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -538,10 +538,16 @@ async function main(): Promise<void> {
   initCredentialStore();
   importEnvToDefault();
 
+  // Create and initialize the credential proxy instance.
+  // Must happen before registerProvider() calls so providers can register host rules.
+  const proxy = new CredentialProxy();
+  setProxyInstance(proxy);
+
+  // Register built-in auth providers (must be after setProxyInstance)
+  registerBuiltinProviders();
+
   // Wire per-group credential resolution into the proxy.
-  // The proxy calls this on every request to resolve the group's credentials.
-  // Scope is the group folder name (from the URL prefix set by container-runner).
-  setCredentialResolver((scope) => {
+  proxy.setCredentialResolver((scope) => {
     const group = Object.values(registeredGroups).find(g => g.folder === scope)
       || { name: scope, folder: scope, trigger: '', added_at: '' };
     return resolveSecrets(group);
@@ -551,11 +557,24 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
-  // Start credential proxy (containers route API calls through this)
-  const proxyServer = await startCredentialProxy(
-    CREDENTIAL_PROXY_PORT,
-    PROXY_BIND_HOST,
-  );
+  // Register additional Claude hosts from ANTHROPIC_BASE_URL if configured
+  const envVars = await import('./env.js').then(m => m.readEnvFile(['ANTHROPIC_BASE_URL']));
+  if (envVars.ANTHROPIC_BASE_URL) {
+    try {
+      const customHost = new URL(envVars.ANTHROPIC_BASE_URL).hostname;
+      if (customHost && customHost !== 'api.anthropic.com') {
+        proxy.registerProviderHost(new RegExp(`^${customHost.replace(/\./g, '\\.')}$`), /^\//, handleApiHost);
+      }
+    } catch { /* invalid URL, ignore */ }
+  }
+
+  // Start credential proxy — handles transparent TLS (iptables redirect),
+  // explicit HTTP/HTTPS proxy (CONNECT), and internal endpoints.
+  const proxyServer = await proxy.start({
+    port: CREDENTIAL_PROXY_PORT,
+    host: PROXY_BIND_HOST,
+    enableTransparent: true,
+  });
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {

@@ -1,16 +1,20 @@
 /**
  * Credential provider registry — same pattern as channels/registry.ts.
- * When a provider has a proxyService, it's also registered with the credential proxy.
+ * When a provider has hostRules, they're registered with the credential proxy.
  */
 import type { CredentialProvider } from './types.js';
-import { registerProxyService } from '../credential-proxy.js';
+import { getProxy } from '../credential-proxy.js';
 
 const registry = new Map<string, CredentialProvider>();
 
 export function registerProvider(provider: CredentialProvider): void {
   registry.set(provider.service, provider);
-  if (provider.proxyService) {
-    registerProxyService(provider.proxyService);
+  // Register host rules for transparent proxy routing
+  if (provider.hostRules) {
+    const proxy = getProxy();
+    for (const rule of provider.hostRules) {
+      proxy.registerProviderHost(rule.hostPattern, rule.pathPattern, rule.handler);
+    }
   }
 }
 

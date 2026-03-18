@@ -211,6 +211,118 @@ function generateHostCert(
 }
 
 // ---------------------------------------------------------------------------
+// Shared MITM context (used by credential-proxy for transparent mode)
+// ---------------------------------------------------------------------------
+
+export interface MitmContext {
+  /** Get or generate a TLS cert for a hostname (LRU-cached). */
+  getHostCert(hostname: string): { keyPem: string; certPem: string };
+  /** CA cert PEM (for mounting into containers). */
+  caCertPem: string;
+}
+
+/**
+ * Create a MITM context with CA and cert cache, without starting a server.
+ * Used by credential-proxy.ts to handle transparent TLS connections.
+ */
+export function createMitmContext(caDir?: string, certCacheSize = 100): MitmContext {
+  const ca = loadOrCreateCa(caDir || getDefaultCaDir());
+  const certCache = new CertLruCache(certCacheSize);
+
+  return {
+    getHostCert(hostname: string) {
+      let cached = certCache.get(hostname);
+      if (!cached) {
+        cached = generateHostCert(hostname, ca);
+        certCache.set(hostname, cached);
+        logger.debug({ hostname, cacheSize: certCache.size }, 'Generated host cert');
+      }
+      return cached;
+    },
+    caCertPem: ca.certPem,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SNI parsing for transparent mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the Server Name Indication (SNI) from a TLS ClientHello message.
+ * Returns the hostname or null if not found / not a TLS handshake.
+ */
+export function parseSni(buf: Buffer): string | null {
+  // Minimum TLS record: type(1) + version(2) + length(2) + handshake_type(1) = 6
+  if (buf.length < 6) return null;
+  // ContentType: Handshake = 0x16
+  if (buf[0] !== 0x16) return null;
+
+  // Record length
+  const recordLen = buf.readUInt16BE(3);
+  if (buf.length < 5 + recordLen) return null;
+
+  // HandshakeType: ClientHello = 0x01
+  if (buf[5] !== 0x01) return null;
+
+  // Skip: handshake_type(1) + length(3) + client_version(2) + random(32) = 38
+  let offset = 5 + 1 + 3 + 2 + 32;
+  if (offset + 1 > buf.length) return null;
+
+  // Session ID (variable length)
+  const sessionIdLen = buf[offset];
+  offset += 1 + sessionIdLen;
+  if (offset + 2 > buf.length) return null;
+
+  // Cipher suites (variable length)
+  const cipherSuitesLen = buf.readUInt16BE(offset);
+  offset += 2 + cipherSuitesLen;
+  if (offset + 1 > buf.length) return null;
+
+  // Compression methods (variable length)
+  const compressionLen = buf[offset];
+  offset += 1 + compressionLen;
+  if (offset + 2 > buf.length) return null;
+
+  // Extensions length
+  const extensionsLen = buf.readUInt16BE(offset);
+  offset += 2;
+  const extensionsEnd = offset + extensionsLen;
+  if (extensionsEnd > buf.length) return null;
+
+  // Walk extensions
+  while (offset + 4 <= extensionsEnd) {
+    const extType = buf.readUInt16BE(offset);
+    const extLen = buf.readUInt16BE(offset + 2);
+    offset += 4;
+    if (offset + extLen > extensionsEnd) return null;
+
+    if (extType === 0x0000) {
+      // SNI extension — server_name_list
+      if (extLen < 2) return null;
+      const listLen = buf.readUInt16BE(offset);
+      let pos = offset + 2;
+      const listEnd = offset + 2 + listLen;
+      while (pos + 3 <= listEnd) {
+        const nameType = buf[pos];
+        const nameLen = buf.readUInt16BE(pos + 1);
+        pos += 3;
+        if (pos + nameLen > listEnd) return null;
+        if (nameType === 0) {
+          // host_name type
+          return buf.subarray(pos, pos + nameLen).toString('ascii');
+        }
+        pos += nameLen;
+      }
+      return null;
+    }
+
+    offset += extLen;
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Static rule forwarding (legacy path — no OAuth)
 // ---------------------------------------------------------------------------
 

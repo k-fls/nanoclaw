@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, execSync, spawn } from 'child_process';
+import { ChildProcess, exec, execFileSync, execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -25,21 +25,20 @@ import {
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
-import {
-  detectAuthMode,
-  registerContainerIP,
-  unregisterContainerIP,
-} from './credential-proxy.js';
+import { getProxy } from './credential-proxy.js';
+import { getMitmCaCertPath } from './mitm-proxy.js';
+import { PLACEHOLDER_API_KEY, PLACEHOLDER_ACCESS_TOKEN, PLACEHOLDER_REFRESH_TOKEN } from './auth/providers/claude.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 /** Query a running container's bridge IP via docker inspect. */
 function getContainerIP(containerName: string): string | null {
   try {
-    const ip = execSync(
-      `${CONTAINER_RUNTIME_BIN} inspect --format '{{.NetworkSettings.IPAddress}}' ${containerName}`,
+    const ip = execFileSync(
+      CONTAINER_RUNTIME_BIN,
+      ['inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', containerName],
       { encoding: 'utf-8', timeout: 5000 },
-    ).trim().replace(/^'|'$/g, '');
+    ).trim();
     return ip || null;
   } catch {
     return null;
@@ -216,6 +215,17 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount entrypoint read-only so changes don't require image rebuild.
+  // Runs as root before setpriv — read-only prevents agent tampering.
+  const entrypointPath = path.join(projectRoot, 'container', 'entrypoint.sh');
+  if (fs.existsSync(entrypointPath)) {
+    mounts.push({
+      hostPath: entrypointPath,
+      containerPath: '/app/entrypoint.sh',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -239,22 +249,62 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Route API traffic through the credential proxy (containers never see real secrets).
-  // /claude prefix identifies the service; container IP identifies the group.
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/claude`,
-  );
+  // Transparent proxy mode: iptables in entrypoint redirects :443 → credential proxy.
+  // The proxy TLS-terminates, injects credentials, and pipes to upstream.
+  // No ANTHROPIC_BASE_URL override needed — apps connect to real hostnames.
+  const mitmCtx = getProxy().getMitmContext();
+  if (mitmCtx) {
+    // NET_ADMIN for iptables in entrypoint (dropped by setpriv before agent runs).
+    // no-new-privileges prevents re-escalation via setuid binaries after privilege drop.
+    args.push('--cap-add=NET_ADMIN');
+    args.push('--security-opt=no-new-privileges');
+    args.push('-e', `PROXY_HOST=${CONTAINER_HOST_GATEWAY}`);
+    args.push('-e', `PROXY_PORT=${CREDENTIAL_PROXY_PORT}`);
 
-  // Mirror the group's auth method with a placeholder value.
-  // API key mode: SDK sends x-api-key, proxy replaces with real key.
-  // OAuth mode:   SDK exchanges placeholder token for temp API key,
-  //               proxy injects real OAuth token on that exchange request.
-  const authMode = detectAuthMode(groupFolder);
-  if (authMode === 'api-key') {
-    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    // Mount MITM CA cert so system CA store trusts our forged certs
+    const caCertPath = getMitmCaCertPath();
+    args.push('-v', `${caCertPath}:/usr/local/share/ca-certificates/nanoclaw-mitm.crt:ro`);
+    // Also set NODE_EXTRA_CA_CERTS for Node.js apps that don't use system store
+    args.push('-e', 'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/nanoclaw-mitm.crt');
+
+    // Mirror the group's auth method with a placeholder value.
+    // The transparent proxy replaces these with real credentials.
+    const authMode = getProxy().detectAuthMode(groupFolder);
+    if (authMode === 'api-key') {
+      args.push('-e', `ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`);
+    } else {
+      args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${PLACEHOLDER_ACCESS_TOKEN}`);
+
+      // Ensure placeholder .credentials.json exists so the CLI attempts
+      // in-band token refresh via console.anthropic.com (intercepted by proxy).
+      // All values are placeholders — no real secrets leave the host.
+      const sessionsDir = path.join(DATA_DIR, 'sessions', groupFolder, '.claude');
+      const credsPath = path.join(sessionsDir, '.credentials.json');
+      if (!fs.existsSync(credsPath)) {
+        fs.writeFileSync(credsPath, JSON.stringify({
+          claudeAiOauth: {
+            accessToken: PLACEHOLDER_ACCESS_TOKEN,
+            refreshToken: PLACEHOLDER_REFRESH_TOKEN,
+            expiresAt: 0,
+          },
+        }));
+      }
+    }
   } else {
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+    // Non-transparent mode: containers use the proxy as a standard HTTPS proxy.
+    // Set http_proxy/https_proxy so apps route traffic through the credential proxy,
+    // which will CONNECT-tunnel to upstream (with MITM for registered hosts).
+    const proxyUrl = `http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`;
+    args.push('-e', `http_proxy=${proxyUrl}`);
+    args.push('-e', `https_proxy=${proxyUrl}`);
+
+    // Mirror the group's auth method with a placeholder value.
+    const authMode = getProxy().detectAuthMode(groupFolder);
+    if (authMode === 'api-key') {
+      args.push('-e', `ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`);
+    } else {
+      args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${PLACEHOLDER_ACCESS_TOKEN}`);
+    }
   }
 
   // Runtime-specific args for host gateway resolution
@@ -338,7 +388,7 @@ export async function runContainerAgent(
     // so it's available immediately after spawn.
     let containerIP = getContainerIP(containerName);
     if (containerIP) {
-      registerContainerIP(containerIP, group.folder);
+      getProxy().registerContainerIP(containerIP, group.folder);
     } else {
       logger.warn(
         { group: group.name, containerName },
@@ -469,7 +519,7 @@ export async function runContainerAgent(
       clearTimeout(timeout);
       // Unregister container IP mapping
       if (containerIP) {
-        unregisterContainerIP(containerIP);
+        getProxy().unregisterContainerIP(containerIP);
       }
       const duration = Date.now() - startTime;
 
@@ -667,7 +717,7 @@ export async function runContainerAgent(
     container.on('error', (err) => {
       clearTimeout(timeout);
       if (containerIP) {
-        unregisterContainerIP(containerIP);
+        getProxy().unregisterContainerIP(containerIP);
       }
       logger.error(
         { group: group.name, containerName, error: err },

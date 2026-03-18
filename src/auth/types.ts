@@ -10,8 +10,8 @@ export interface StoredCredential {
   updated_at: string;
 }
 
-/** Re-export ProxyService so providers can reference it without importing credential-proxy directly. */
-export type { ProxyService } from '../credential-proxy.js';
+/** Re-export HostHandler so providers can reference it without importing credential-proxy directly. */
+export type { HostHandler } from '../credential-proxy.js';
 
 /** Pluggable per-service credential provider. */
 export interface CredentialProvider {
@@ -20,11 +20,15 @@ export interface CredentialProvider {
   displayName: string;
 
   /**
-   * Proxy service this provider supplies credentials for.
-   * When the provider is registered, its proxyService is also registered
-   * with the credential proxy so it can handle requests at /<prefix>/.
+   * Host rules for transparent proxy routing.
+   * @param host — matched against hostname at connection time (TLS termination).
+   * @param pattern — matched against "host/path" at request time (handler selection).
    */
-  proxyService?: import('../credential-proxy.js').ProxyService;
+  hostRules?: Array<{
+    hostPattern: RegExp;
+    pathPattern: RegExp;
+    handler: import('../credential-proxy.js').HostHandler;
+  }>;
 
   /** Does this scope have usable credentials? */
   hasAuth(scope: string): boolean;

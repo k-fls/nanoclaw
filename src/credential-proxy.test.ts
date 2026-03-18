@@ -6,13 +6,7 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import {
-  startCredentialProxy,
-  setCredentialResolver,
-  registerContainerIP,
-  unregisterContainerIP,
-  registerProxyService,
-} from './credential-proxy.js';
+import { CredentialProxy } from './credential-proxy.js';
 
 function makeRequest(
   port: number,
@@ -44,8 +38,106 @@ function makeRequest(
   });
 }
 
-describe('credential-proxy (per-group-auth)', () => {
-  let proxyServer: http.Server;
+// ---------------------------------------------------------------------------
+// Class unit tests — no server needed
+// ---------------------------------------------------------------------------
+
+describe('CredentialProxy class', () => {
+  let proxy: CredentialProxy;
+
+  beforeEach(() => {
+    proxy = new CredentialProxy();
+  });
+
+  describe('shouldIntercept', () => {
+    it('matches registered hostnames', () => {
+      proxy.registerProviderHost(/^api\.anthropic\.com$/, /^\//, async () => {});
+      proxy.registerProviderHost(/^console\.anthropic\.com$/, /^\/api\/oauth\/token/, async () => {});
+
+      expect(proxy.shouldIntercept('api.anthropic.com')).toBe(true);
+      expect(proxy.shouldIntercept('console.anthropic.com')).toBe(true);
+    });
+
+    it('does not match unregistered hostnames', () => {
+      proxy.registerProviderHost(/^api\.anthropic\.com$/, /^\//, async () => {});
+
+      expect(proxy.shouldIntercept('github.com')).toBe(false);
+      expect(proxy.shouldIntercept('example.com')).toBe(false);
+    });
+
+    it('does not partial-match hostnames', () => {
+      proxy.registerProviderHost(/^api\.anthropic\.com$/, /^\//, async () => {});
+
+      expect(proxy.shouldIntercept('evil-api.anthropic.com')).toBe(false);
+      expect(proxy.shouldIntercept('api.anthropic.com.evil.com')).toBe(false);
+    });
+  });
+
+  describe('matchHostRule', () => {
+    it('matches host + path', () => {
+      proxy.registerProviderHost(/^api\.anthropic\.com$/, /^\//, async () => {});
+      proxy.registerProviderHost(/^console\.anthropic\.com$/, /^\/api\/oauth\/token/, async () => {});
+
+      expect(proxy.matchHostRule('api.anthropic.com', '/v1/messages')).not.toBeNull();
+      expect(proxy.matchHostRule('console.anthropic.com', '/api/oauth/token')).not.toBeNull();
+    });
+
+    it('does not match console.anthropic.com for non-token paths', () => {
+      proxy.registerProviderHost(/^console\.anthropic\.com$/, /^\/api\/oauth\/token/, async () => {});
+
+      expect(proxy.matchHostRule('console.anthropic.com', '/dashboard')).toBeNull();
+      expect(proxy.matchHostRule('console.anthropic.com', '/')).toBeNull();
+    });
+
+    it('returns null for unregistered hosts', () => {
+      expect(proxy.matchHostRule('github.com', '/api/v3')).toBeNull();
+    });
+  });
+
+  describe('resolveScope', () => {
+    it('returns null for unknown IPs', () => {
+      expect(proxy.resolveScope('10.99.99.99')).toBeNull();
+    });
+
+    it('returns registered scope', () => {
+      proxy.registerContainerIP('172.17.0.5', 'test-group');
+      expect(proxy.resolveScope('172.17.0.5')).toBe('test-group');
+    });
+
+    it('normalizes IPv4-mapped IPv6', () => {
+      proxy.registerContainerIP('172.17.0.6', 'ipv6-group');
+      expect(proxy.resolveScope('::ffff:172.17.0.6')).toBe('ipv6-group');
+    });
+  });
+
+  describe('detectAuthMode', () => {
+    it('returns api-key when ANTHROPIC_API_KEY present', () => {
+      proxy.setCredentialResolver(() => ({ ANTHROPIC_API_KEY: 'sk-test' }));
+      expect(proxy.detectAuthMode('any')).toBe('api-key');
+    });
+
+    it('returns oauth when no API key', () => {
+      proxy.setCredentialResolver(() => ({ CLAUDE_CODE_OAUTH_TOKEN: 'token' }));
+      expect(proxy.detectAuthMode('any')).toBe('oauth');
+    });
+  });
+
+  describe('unregisterContainerIP', () => {
+    it('removes the mapping', () => {
+      proxy.registerContainerIP('172.17.0.7', 'temp');
+      proxy.unregisterContainerIP('172.17.0.7');
+      expect(proxy.resolveScope('172.17.0.7')).toBeNull();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTTP proxy integration tests
+// ---------------------------------------------------------------------------
+
+describe('credential-proxy HTTP server', () => {
+  let proxy: CredentialProxy;
+  let proxyServer: import('net').Server;
   let upstreamServer: http.Server;
   let proxyPort: number;
   let upstreamPort: number;
@@ -53,6 +145,7 @@ describe('credential-proxy (per-group-auth)', () => {
   let lastUpstreamPath: string;
 
   beforeEach(async () => {
+    proxy = new CredentialProxy();
     lastUpstreamHeaders = {};
     lastUpstreamPath = '';
 
@@ -66,56 +159,6 @@ describe('credential-proxy (per-group-auth)', () => {
       upstreamServer.listen(0, '127.0.0.1', resolve),
     );
     upstreamPort = (upstreamServer.address() as AddressInfo).port;
-
-    // Register a test service that forwards to our upstream
-    registerProxyService({
-      prefix: 'claude',
-      forward(req, res, path, body, secrets) {
-        const headers: Record<string, string | number | string[] | undefined> = {
-          ...(req.headers as Record<string, string>),
-          host: `127.0.0.1:${upstreamPort}`,
-          'content-length': body.length,
-        };
-        delete headers['connection'];
-        delete headers['keep-alive'];
-        delete headers['transfer-encoding'];
-
-        if (secrets.ANTHROPIC_API_KEY) {
-          delete headers['x-api-key'];
-          headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
-        } else {
-          const oauthToken = secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
-          if (headers['authorization']) {
-            delete headers['authorization'];
-            if (oauthToken) {
-              headers['authorization'] = `Bearer ${oauthToken}`;
-            }
-          }
-        }
-
-        const upstream = http.request(
-          {
-            hostname: '127.0.0.1',
-            port: upstreamPort,
-            path,
-            method: req.method,
-            headers,
-          },
-          (upRes) => {
-            res.writeHead(upRes.statusCode!, upRes.headers);
-            upRes.pipe(res);
-          },
-        );
-        upstream.on('error', (err) => {
-          if (!res.headersSent) {
-            res.writeHead(502);
-            res.end('Bad Gateway');
-          }
-        });
-        upstream.write(body);
-        upstream.end();
-      },
-    });
   });
 
   afterEach(async () => {
@@ -123,116 +166,56 @@ describe('credential-proxy (per-group-auth)', () => {
     await new Promise<void>((r) => upstreamServer?.close(() => r()));
   });
 
-  async function startProxy(
-    resolver: (scope: string) => Record<string, string>,
-  ): Promise<number> {
-    setCredentialResolver(resolver);
-    proxyServer = await startCredentialProxy(0, '127.0.0.1');
-    return (proxyServer.address() as AddressInfo).port;
-  }
+  it('serves /health without caller validation', async () => {
+    proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
+    proxyPort = (proxyServer.address() as AddressInfo).port;
 
-  it('strips /claude/ prefix before forwarding upstream', async () => {
-    proxyPort = await startProxy(() => ({ ANTHROPIC_API_KEY: 'sk-test' }));
+    const res = await makeRequest(proxyPort, { method: 'GET', path: '/health' });
 
-    await makeRequest(proxyPort, {
-      method: 'POST',
-      path: '/claude/v1/messages',
-      headers: { 'content-type': 'application/json' },
-    }, '{}');
-
-    expect(lastUpstreamPath).toBe('/v1/messages');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true });
   });
 
-  it('rejects requests without service prefix', async () => {
-    proxyPort = await startProxy(() => ({}));
+  it('rejects HTTP proxy requests from unknown container IP with 403', async () => {
+    // 127.0.0.1 is NOT registered as a container IP
+    proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
+    proxyPort = (proxyServer.address() as AddressInfo).port;
 
     const res = await makeRequest(proxyPort, {
       method: 'GET',
-      path: '/',
+      path: `http://127.0.0.1:${upstreamPort}/v1/test`,
     });
 
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(403);
   });
 
-  it('returns 404 for unknown service prefix', async () => {
-    proxyPort = await startProxy(() => ({}));
+  it('forwards HTTP proxy requests from known container IP', async () => {
+    proxy.registerContainerIP('127.0.0.1', 'my-group');
+    proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
+    proxyPort = (proxyServer.address() as AddressInfo).port;
 
     const res = await makeRequest(proxyPort, {
       method: 'GET',
-      path: '/unknown/v1/test',
+      path: `http://127.0.0.1:${upstreamPort}/v1/test`,
     });
 
-    expect(res.statusCode).toBe(404);
+    expect(res.statusCode).toBe(200);
+    expect(lastUpstreamPath).toBe('/v1/test');
   });
 
-  it('resolves scope from container IP', async () => {
-    const resolvedScopes: string[] = [];
-    proxyPort = await startProxy((scope) => {
-      resolvedScopes.push(scope);
-      return { ANTHROPIC_API_KEY: `key-for-${scope}` };
+  it('does not inject credentials on HTTP proxy requests', async () => {
+    proxy.registerContainerIP('127.0.0.1', 'my-group');
+    proxy.setCredentialResolver(() => ({ ANTHROPIC_API_KEY: 'real-key' }));
+    proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
+    proxyPort = (proxyServer.address() as AddressInfo).port;
+
+    await makeRequest(proxyPort, {
+      method: 'GET',
+      path: `http://127.0.0.1:${upstreamPort}/v1/test`,
+      headers: { 'x-api-key': 'placeholder' },
     });
 
-    // Requests from localhost (127.0.0.1) — no IP registered, falls back to 'default'
-    await makeRequest(proxyPort, {
-      method: 'POST',
-      path: '/claude/v1/messages',
-      headers: { 'content-type': 'application/json' },
-    }, '{}');
-
-    expect(resolvedScopes).toContain('default');
-  });
-
-  it('uses registered container IP for scope resolution', async () => {
-    const resolvedScopes: string[] = [];
-    // Register 127.0.0.1 as a known container
-    registerContainerIP('127.0.0.1', 'my-group');
-
-    proxyPort = await startProxy((scope) => {
-      resolvedScopes.push(scope);
-      return { ANTHROPIC_API_KEY: `key-for-${scope}` };
-    });
-
-    await makeRequest(proxyPort, {
-      method: 'POST',
-      path: '/claude/v1/messages',
-      headers: { 'content-type': 'application/json' },
-    }, '{}');
-
-    expect(resolvedScopes).toContain('my-group');
-    expect(lastUpstreamHeaders['x-api-key']).toBe('key-for-my-group');
-
-    unregisterContainerIP('127.0.0.1');
-  });
-
-  it('injects API key from resolved credentials', async () => {
-    proxyPort = await startProxy(() => ({ ANTHROPIC_API_KEY: 'sk-ant-real-key' }));
-
-    await makeRequest(proxyPort, {
-      method: 'POST',
-      path: '/claude/v1/messages',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': 'placeholder',
-      },
-    }, '{}');
-
-    expect(lastUpstreamHeaders['x-api-key']).toBe('sk-ant-real-key');
-  });
-
-  it('injects OAuth token on Authorization header', async () => {
-    proxyPort = await startProxy(() => ({
-      CLAUDE_CODE_OAUTH_TOKEN: 'real-oauth-token',
-    }));
-
-    await makeRequest(proxyPort, {
-      method: 'POST',
-      path: '/claude/api/oauth/claude_cli/create_api_key',
-      headers: {
-        'content-type': 'application/json',
-        authorization: 'Bearer placeholder',
-      },
-    }, '{}');
-
-    expect(lastUpstreamHeaders['authorization']).toBe('Bearer real-oauth-token');
+    // HTTP proxy is transparent — no credential injection
+    expect(lastUpstreamHeaders['x-api-key']).toBe('placeholder');
   });
 });

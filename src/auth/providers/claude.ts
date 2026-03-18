@@ -10,8 +10,7 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 
-import { request as httpsRequest } from 'https';
-import { request as httpRequest, IncomingMessage, RequestOptions, ServerResponse } from 'http';
+import type { IncomingMessage, ServerResponse } from 'http';
 
 import {
   decrypt,
@@ -31,6 +30,8 @@ import {
 import { IDLE_TIMEOUT } from '../../config.js';
 import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
+import { proxyPipe, proxyBuffered, getProxy } from '../../credential-proxy.js';
+import { replaceJsonStringValue } from '../../oauth-interceptor.js';
 import {
   RESELECT,
   type AuthContext,
@@ -43,6 +44,11 @@ import {
 } from '../types.js';
 
 const SERVICE = 'claude_auth';
+
+/** Substitute tokens injected into containers — never real credentials. */
+export const PLACEHOLDER_API_KEY = 'sk-ant-api00-placeholder-nanoclaw';
+export const PLACEHOLDER_ACCESS_TOKEN = 'sk-ant-oat01-placeholder-nanoclaw';
+export const PLACEHOLDER_REFRESH_TOKEN = 'sk-ant-ort01-placeholder-nanoclaw';
 
 export interface AuthErrorInfo {
   /** HTTP status code (401, 403) extracted from the API error. */
@@ -342,18 +348,26 @@ function callbackHandler(oauthUrl: string, port: number): CodeDeliveryHandler {
   };
 }
 
-/** Parse .credentials.json content to extract accessToken and expiry. */
+/** Parse .credentials.json content to extract tokens and expiry. */
 function parseCredentialsJson(
   json: string,
-): { accessToken: string; expiresAt: string | null } | null {
+): { accessToken: string; refreshToken?: string; expiresAt: string | null } | null {
   try {
     const data = JSON.parse(json);
     // credentials.json may have token at top level or nested under claudeAiOauth
     const creds = data.claudeAiOauth ?? data;
     if (creds.accessToken) {
+      // CLI stores expiresAt as epoch ms (number); normalize to ISO string
+      let expiresAt: string | null = null;
+      if (typeof creds.expiresAt === 'number') {
+        expiresAt = new Date(creds.expiresAt).toISOString();
+      } else if (typeof creds.expiresAt === 'string') {
+        expiresAt = creds.expiresAt;
+      }
       return {
         accessToken: creds.accessToken,
-        expiresAt: creds.expiresAt ?? null,
+        refreshToken: creds.refreshToken,
+        expiresAt,
       };
     }
     return null;
@@ -452,78 +466,114 @@ async function runOAuthFlow(
   return { handle, output, sessionDir };
 }
 
-// ── Proxy service: handles /claude/* requests ───────────────────────
+// ── Credential injection ─────────────────────────────────────────────
 
-// Upstream config — initialized in importEnv(), not at module load.
-let upstreamUrl: URL;
-
-function initUpstream(): void {
-  if (upstreamUrl) return;
-  const env = readEnvFile(['ANTHROPIC_BASE_URL']);
-  upstreamUrl = new URL(env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com');
-}
-
-function forwardToClaude(
-  req: IncomingMessage,
-  res: ServerResponse,
-  path: string,
-  body: Buffer,
+/**
+ * Inject Claude credentials into request headers.
+ * Mutates headers in place.
+ *
+ * The request determines which credential to inject — not the secrets:
+ *   x-api-key header present → replace with real API key
+ *   Authorization header present → replace with real OAuth token
+ * Both checks are independent so the logic works regardless of auth mode.
+ */
+export function injectClaudeCredentials(
+  headers: Record<string, string | number | string[] | undefined>,
   secrets: Record<string, string>,
 ): void {
-  const headers: Record<string, string | number | string[] | undefined> = {
-    ...(req.headers as Record<string, string>),
-    host: upstreamUrl.host,
-    'content-length': body.length,
-  };
-
-  // Strip hop-by-hop headers that must not be forwarded by proxies
-  delete headers['connection'];
-  delete headers['keep-alive'];
-  delete headers['transfer-encoding'];
-
-  // Inject credentials
-  if (secrets.ANTHROPIC_API_KEY) {
-    delete headers['x-api-key'];
+  if (headers['x-api-key'] && secrets.ANTHROPIC_API_KEY) {
     headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
-  } else {
-    // OAuth mode: replace placeholder Bearer token with the real one
-    // only when the container actually sends an Authorization header
-    // (exchange request + auth probes). Post-exchange requests use
-    // x-api-key only, so they pass through without token injection.
-    const oauthToken = secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
-    if (headers['authorization']) {
-      delete headers['authorization'];
-      if (oauthToken) {
-        headers['authorization'] = `Bearer ${oauthToken}`;
-      }
-    }
   }
+  if (headers['authorization'] && secrets.CLAUDE_CODE_OAUTH_TOKEN) {
+    headers['authorization'] = `Bearer ${secrets.CLAUDE_CODE_OAUTH_TOKEN}`;
+  } else if (headers['authorization'] && secrets.ANTHROPIC_AUTH_TOKEN) {
+    headers['authorization'] = `Bearer ${secrets.ANTHROPIC_AUTH_TOKEN}`;
+  }
+}
 
-  const isHttps = upstreamUrl.protocol === 'https:';
-  const upstream = (isHttps ? httpsRequest : httpRequest)(
-    {
-      hostname: upstreamUrl.hostname,
-      port: upstreamUrl.port || (isHttps ? 443 : 80),
-      path,
-      method: req.method,
-      headers,
-    } as RequestOptions,
-    (upRes) => {
-      res.writeHead(upRes.statusCode!, upRes.headers);
-      upRes.pipe(res);
+// ── Host handlers (transparent proxy) ────────────────────────────────
+
+/**
+ * Handle requests to api.anthropic.com — header-only credential swap.
+ */
+export async function handleApiHost(
+  clientReq: import('http').IncomingMessage,
+  clientRes: import('http').ServerResponse,
+  targetHost: string,
+  targetPort: number,
+  scope: string,
+): Promise<void> {
+  const secrets = claudeProvider.provision(scope).env;
+  proxyPipe(clientReq, clientRes, targetHost, targetPort, (headers) => {
+    injectClaudeCredentials(headers, secrets);
+  }, scope);
+}
+
+/**
+ * Handle OAuth token refresh at console.anthropic.com/api/oauth/token.
+ * Buffers body both directions: swaps placeholder refresh_token outbound,
+ * captures real tokens inbound and returns placeholders to the container.
+ */
+async function handleOAuthTokenExchange(
+  clientReq: import('http').IncomingMessage,
+  clientRes: import('http').ServerResponse,
+  targetHost: string,
+  targetPort: number,
+  scope: string,
+): Promise<void> {
+  const secrets = claudeProvider.provision(scope).env;
+  await proxyBuffered(
+    clientReq, clientRes, targetHost, targetPort,
+    (headers) => { injectClaudeCredentials(headers, secrets); },
+    // Outbound: swap placeholder refresh_token → real
+    (body) => {
+      if (!secrets.CLAUDE_REFRESH_TOKEN) return body;
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.grant_type === 'refresh_token' && parsed.refresh_token) {
+          return replaceJsonStringValue(body, 'refresh_token', secrets.CLAUDE_REFRESH_TOKEN);
+        }
+      } catch { /* not JSON or no grant_type — pass through */ }
+      return body;
+    },
+    // Inbound: capture new real tokens, store them, return substitutes
+    (body, _status) => {
+      try {
+        const tokens = JSON.parse(body);
+        if (!tokens.access_token) return body;
+
+        // Store the new tokens in the credential store
+        const credsJson = JSON.stringify({
+          claudeAiOauth: {
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            expiresAt: tokens.expires_in
+              ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+              : null,
+          },
+        });
+        saveCredential(scope, SERVICE, {
+          auth_type: 'auth_login',
+          token: encrypt(credsJson),
+          expires_at: tokens.expires_in
+            ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+            : null,
+          updated_at: new Date().toISOString(),
+        });
+        logger.info({ scope }, 'OAuth tokens refreshed via transparent proxy');
+
+        // Return substitute tokens to the container
+        let result = replaceJsonStringValue(body, 'access_token', PLACEHOLDER_ACCESS_TOKEN);
+        if (tokens.refresh_token) {
+          result = replaceJsonStringValue(result, 'refresh_token', PLACEHOLDER_REFRESH_TOKEN);
+        }
+        return result;
+      } catch (err) {
+        logger.error({ err }, 'Failed to process OAuth token response');
+        return body;
+      }
     },
   );
-
-  upstream.on('error', (err) => {
-    logger.error({ err, path }, 'Claude proxy upstream error');
-    if (!res.headersSent) {
-      res.writeHead(502);
-      res.end('Bad Gateway');
-    }
-  });
-
-  upstream.write(body);
-  upstream.end();
 }
 
 // ── Provider ────────────────────────────────────────────────────────
@@ -532,19 +582,16 @@ export const claudeProvider: CredentialProvider = {
   service: SERVICE,
   displayName: 'Claude',
 
-  proxyService: {
-    prefix: 'claude',
-    forward: forwardToClaude,
-  },
+  hostRules: [
+    { hostPattern: /^console\.anthropic\.com$/, pathPattern: /^\/api\/oauth\/token/, handler: handleOAuthTokenExchange },
+    { hostPattern: /^api\.anthropic\.com$/, pathPattern: /^\//, handler: handleApiHost },
+  ],
 
   hasAuth(scope: string): boolean {
     return hasCredential(scope, SERVICE);
   },
 
   importEnv(scope: string): void {
-    // Initialize upstream URL config on first call (env is available now).
-    initUpstream();
-
     if (hasCredential(scope, SERVICE)) return;
 
     const envVars = readEnvFile(ENV_FALLBACK_KEYS);
@@ -585,11 +632,10 @@ export const claudeProvider: CredentialProvider = {
           logger.warn({ scope }, 'Failed to parse stored .credentials.json');
           return { env: {} };
         }
-        if (isExpired(parsed.expiresAt)) {
-          logger.debug({ scope }, 'Claude access token expired');
-          return { env: {} };
-        }
         env.CLAUDE_CODE_OAUTH_TOKEN = parsed.accessToken;
+        if (parsed.refreshToken) {
+          env.CLAUDE_REFRESH_TOKEN = parsed.refreshToken;
+        }
         break;
       }
 

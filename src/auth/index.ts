@@ -7,8 +7,11 @@ export { importEnvToDefault } from './provision.js';
 export { createAuthGuard } from './guard.js';
 export { registerProvider, getProvider, getAllProviders } from './registry.js';
 
-// Register built-in providers
+// Register built-in providers — must be called after setProxyInstance()
+// since registerProvider() registers host rules on the proxy.
 import { registerProvider } from './registry.js';
 import { claudeProvider } from './providers/claude.js';
 
-registerProvider(claudeProvider);
+export function registerBuiltinProviders(): void {
+  registerProvider(claudeProvider);
+}
