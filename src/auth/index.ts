@@ -5,7 +5,7 @@ export { initCredentialStore } from './store.js';
 export { resolveSecrets } from './provision.js';
 export { importEnvToDefault } from './provision.js';
 export { createAuthGuard } from './guard.js';
-export { registerProvider, getProvider, getAllProviders } from './registry.js';
+export { registerProvider, getProvider, getAllProviders, registerDiscoveryProviders, getTokenEngine, getTokenResolver } from './registry.js';
 
 // Register built-in providers — must be called after setProxyInstance()
 // since registerProvider() registers host rules on the proxy.

@@ -10,7 +10,7 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders } from './auth/index.js';
+import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders } from './auth/index.js';
 import { resolveSecrets } from './auth/provision.js';
 import { claudeProvider, handleApiHost } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
@@ -543,8 +543,10 @@ async function main(): Promise<void> {
   const proxy = new CredentialProxy();
   setProxyInstance(proxy);
 
-  // Register built-in auth providers (must be after setProxyInstance)
+  // Register built-in auth providers first (takes priority in first-match dispatch),
+  // then discovery-file providers to fill gaps for other OAuth services.
   registerBuiltinProviders();
+  registerDiscoveryProviders();
 
   // Wire per-group credential resolution into the proxy.
   proxy.setCredentialResolver((scope) => {

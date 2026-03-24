@@ -248,7 +248,12 @@ export async function proxyBuffered(
 // ── CredentialProxy class ───────────────────────────────────────────
 
 export class CredentialProxy {
-  private hostRules: HostRule[] = [];
+  /**
+   * Anchor-indexed rules: domain suffix → rules for that anchor.
+   * Lookup walks domain parts from 2-part suffix upward:
+   *   "myco.auth0.com" → tries "auth0.com", then "myco.auth0.com"
+   */
+  private anchorRules = new Map<string, HostRule[]>();
   private containerIpToScope = new Map<string, string>();
   private _credentialResolver: CredentialResolver = () => ({});
   private _mitmCtx: MitmContext | null = null;
@@ -306,22 +311,72 @@ export class CredentialProxy {
 
   /**
    * Register a host rule with its request handler.
-   * More specific rules should be registered first.
+   * Derives the anchor from the hostPattern source (strips regex anchors/escapes
+   * to extract the domain). For exact-host patterns like /^api\.anthropic\.com$/,
+   * the anchor is the hostname itself.
    */
   registerProviderHost(
     hostPattern: RegExp,
     pathPattern: RegExp,
     handler: HostHandler,
   ): void {
-    this.hostRules.push({ hostPattern, pathPattern, handler });
-    logger.debug({ hostPattern: hostPattern.source, pathPattern: pathPattern.source }, 'Registered provider host rule');
+    // Derive anchor from regex source: strip ^, $, unescape dots
+    const anchor = hostPattern.source
+      .replace(/^\^/, '')
+      .replace(/\$$/, '')
+      .replace(/\\\./g, '.');
+    this.registerAnchoredRule(anchor, hostPattern, pathPattern, handler);
+  }
+
+  /**
+   * Register a host rule under a domain anchor for fast lookup.
+   * The anchor is a domain suffix (e.g. "auth0.com" for "*.auth0.com")
+   * or an exact host (e.g. "api.anthropic.com").
+   */
+  registerAnchoredRule(
+    anchor: string,
+    hostPattern: RegExp,
+    pathPattern: RegExp,
+    handler: HostHandler,
+  ): void {
+    let rules = this.anchorRules.get(anchor);
+    if (!rules) {
+      rules = [];
+      this.anchorRules.set(anchor, rules);
+    }
+    rules.push({ hostPattern, pathPattern, handler });
+    logger.debug(
+      { anchor, hostPattern: hostPattern.source, pathPattern: pathPattern.source },
+      'Registered anchored host rule',
+    );
   }
 
   // ── Queries ─────────────────────────────────────────────────────
 
-  /** Should this hostname be TLS-terminated? */
+  /**
+   * Find the matching anchor for a hostname by walking domain parts.
+   * "myco.auth0.com" → tries "auth0.com", then "myco.auth0.com".
+   * Returns the rules array if found, null otherwise.
+   */
+  private findAnchorRules(targetHost: string): HostRule[] | null {
+    // Exact match first
+    const exact = this.anchorRules.get(targetHost);
+    if (exact) return exact;
+
+    // Walk domain parts from 2-part suffix upward
+    const parts = targetHost.split('.');
+    for (let i = parts.length - 2; i >= 1; i--) {
+      const suffix = parts.slice(i).join('.');
+      const rules = this.anchorRules.get(suffix);
+      if (rules) return rules;
+    }
+
+    return null;
+  }
+
+  /** Should this hostname be TLS-terminated? O(parts) domain walk. */
   shouldIntercept(targetHost: string): boolean {
-    return this.hostRules.some(r => r.hostPattern.test(targetHost));
+    return this.findAnchorRules(targetHost) !== null;
   }
 
   /**
@@ -340,10 +395,13 @@ export class CredentialProxy {
 
   /**
    * Find the handler for a request by matching host + path against rules.
+   * Uses anchor lookup (O(1) domain-part walk) then regex match within the bucket.
    * Returns null if no rule matches.
    */
   matchHostRule(targetHost: string, urlPath: string): HostHandler | null {
-    const rule = this.hostRules.find(r => r.hostPattern.test(targetHost) && r.pathPattern.test(urlPath));
+    const rules = this.findAnchorRules(targetHost);
+    if (!rules) return null;
+    const rule = rules.find(r => r.hostPattern.test(targetHost) && r.pathPattern.test(urlPath));
     return rule?.handler ?? null;
   }
 
@@ -490,7 +548,7 @@ export class CredentialProxy {
     return new Promise((resolve, reject) => {
       if (!enableTransparent) {
         httpServer.listen(port, bindHost, () => {
-          const hosts = this.hostRules.map(r => r.hostPattern.source);
+          const hosts = [...this.anchorRules.keys()];
           logger.info({ port, host: bindHost, interceptHosts: hosts }, 'Credential proxy started');
           resolve(httpServer);
         });
@@ -508,7 +566,7 @@ export class CredentialProxy {
       });
 
       server.listen(port, bindHost, () => {
-        const hosts = this.hostRules.map(r => r.hostPattern.source);
+        const hosts = [...this.anchorRules.keys()];
         logger.info(
           { port, host: bindHost, transparentHosts: hosts },
           'Credential proxy started (transparent mode)',
