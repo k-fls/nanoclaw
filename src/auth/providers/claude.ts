@@ -10,7 +10,6 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 
-import type { IncomingMessage, ServerResponse } from 'http';
 
 import {
   decrypt,
@@ -30,8 +29,8 @@ import {
 import { IDLE_TIMEOUT } from '../../config.js';
 import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
-import { proxyPipe, proxyBuffered, getProxy } from '../../credential-proxy.js';
-import { replaceJsonStringValue } from '../../oauth-interceptor.js';
+import { proxyPipe, getProxy } from '../../credential-proxy.js';
+import type { HostHandler } from '../../credential-proxy.js';
 import {
   RESELECT,
   type AuthContext,
@@ -466,114 +465,146 @@ async function runOAuthFlow(
   return { handle, output, sessionDir };
 }
 
-// ── Credential injection ─────────────────────────────────────────────
+// ── Host handlers ────────────────────────────────────────────────────
 
 /**
- * Inject Claude credentials into request headers.
- * Mutates headers in place.
- *
- * The request determines which credential to inject — not the secrets:
- *   x-api-key header present → replace with real API key
- *   Authorization header present → replace with real OAuth token
- * Both checks are independent so the logic works regardless of auth mode.
+ * Claude's OAuthProvider definition for the universal handler system.
+ * Registered programmatically (not via discovery file) because Claude
+ * has provider-specific logic: x-api-key mode, credential store integration.
  */
-export function injectClaudeCredentials(
-  headers: Record<string, string | number | string[] | undefined>,
-  secrets: Record<string, string>,
+export const CLAUDE_PROVIDER_ID = 'claude';
+
+export const CLAUDE_SUBSTITUTE_CONFIG = {
+  prefixLen: 14,
+  suffixLen: 0,
+  delimiters: '-_',
+};
+
+export const CLAUDE_OAUTH_PROVIDER: import('../oauth-types.js').OAuthProvider = {
+  id: CLAUDE_PROVIDER_ID,
+  rules: [
+    // Token exchange at platform.claude.com
+    {
+      anchor: 'platform.claude.com',
+      pathPattern: /^\/v1\/oauth\/token$/,
+      mode: 'token-exchange' as const,
+    },
+    // Bearer-swap for API calls at api.anthropic.com
+    {
+      anchor: 'api.anthropic.com',
+      pathPattern: /^\//,
+      mode: 'bearer-swap' as const,
+    },
+    // Bearer-swap for platform.claude.com (non-token paths)
+    {
+      anchor: 'platform.claude.com',
+      pathPattern: /^\//,
+      mode: 'bearer-swap' as const,
+    },
+  ],
+  scopeKeys: [],
+  substituteConfig: CLAUDE_SUBSTITUTE_CONFIG,
+};
+
+/**
+ * Wrap a universal bearer-swap handler to also handle x-api-key.
+ * API key requests are resolved via the token engine and passed through
+ * without refresh (API keys don't refresh — 401 escalates to user).
+ */
+export function wrapWithApiKeySupport(
+  universalHandler: HostHandler,
+  tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
+): HostHandler {
+  return async (clientReq, clientRes, targetHost, targetPort, scope) => {
+    const apiKeyHeader = clientReq.headers['x-api-key'];
+    if (typeof apiKeyHeader === 'string') {
+      // API key mode: resolve substitute, pipe through, no refresh on 401
+      proxyPipe(clientReq, clientRes, targetHost, targetPort, (headers) => {
+        const entry = tokenEngine.resolveSubstitute(apiKeyHeader, scope);
+        if (entry) {
+          headers['x-api-key'] = entry.realToken;
+        }
+      }, scope);
+      return;
+    }
+    // OAuth mode: delegate to universal bearer-swap (handles refresh)
+    return universalHandler(clientReq, clientRes, targetHost, targetPort, scope);
+  };
+}
+
+/**
+ * Register an additional API host for Claude from a base URL string.
+ * Parses the URL, skips if it's the default host, and registers the
+ * universal handler + x-api-key wrapper. Safe to call with invalid URLs.
+ */
+export function registerClaudeBaseUrl(
+  baseUrl: string,
+  tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
+  createUniversalHandler: typeof import('../universal-oauth-handler.js').createHandler,
 ): void {
-  if (headers['x-api-key'] && secrets.ANTHROPIC_API_KEY) {
-    headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
-  }
-  if (headers['authorization'] && secrets.CLAUDE_CODE_OAUTH_TOKEN) {
-    headers['authorization'] = `Bearer ${secrets.CLAUDE_CODE_OAUTH_TOKEN}`;
-  } else if (headers['authorization'] && secrets.ANTHROPIC_AUTH_TOKEN) {
-    headers['authorization'] = `Bearer ${secrets.ANTHROPIC_AUTH_TOKEN}`;
-  }
+  try {
+    const hostname = new URL(baseUrl).hostname;
+    if (!hostname || hostname === 'api.anthropic.com') return;
+
+    const proxy = getProxy();
+    const rule = { anchor: hostname, pathPattern: /^\//, mode: 'bearer-swap' as const };
+    const handler = wrapWithApiKeySupport(
+      createUniversalHandler(CLAUDE_OAUTH_PROVIDER, rule, tokenEngine),
+      tokenEngine,
+    );
+    const hostPattern = new RegExp(`^${hostname.replace(/\./g, '\\.')}$`);
+    proxy.registerAnchoredRule(hostname, hostPattern, rule.pathPattern, handler);
+  } catch { /* invalid URL, ignore */ }
 }
 
-// ── Host handlers (transparent proxy) ────────────────────────────────
+// ── Container credential provisioning ─────────────────────────────────
 
 /**
- * Handle requests to api.anthropic.com — header-only credential swap.
+ * Generate format-preserving substitute credentials for a container.
+ * Returns env vars to inject and optional .credentials.json content.
+ * Token engine is passed in to avoid circular deps with registry.ts.
  */
-export async function handleApiHost(
-  clientReq: import('http').IncomingMessage,
-  clientRes: import('http').ServerResponse,
-  targetHost: string,
-  targetPort: number,
-  scope: string,
-): Promise<void> {
-  const secrets = claudeProvider.provision(scope).env;
-  proxyPipe(clientReq, clientRes, targetHost, targetPort, (headers) => {
-    injectClaudeCredentials(headers, secrets);
-  }, scope);
-}
+export function generateSubstituteCredentials(
+  groupFolder: string,
+  tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
+): { env: Record<string, string>; credentialsJson?: string } {
+  const secrets = claudeProvider.provision(groupFolder).env;
+  const env: Record<string, string> = {};
 
-/**
- * Handle OAuth token refresh at console.anthropic.com/api/oauth/token.
- * Buffers body both directions: swaps placeholder refresh_token outbound,
- * captures real tokens inbound and returns placeholders to the container.
- */
-async function handleOAuthTokenExchange(
-  clientReq: import('http').IncomingMessage,
-  clientRes: import('http').ServerResponse,
-  targetHost: string,
-  targetPort: number,
-  scope: string,
-): Promise<void> {
-  const secrets = claudeProvider.provision(scope).env;
-  await proxyBuffered(
-    clientReq, clientRes, targetHost, targetPort,
-    (headers) => { injectClaudeCredentials(headers, secrets); },
-    // Outbound: swap placeholder refresh_token → real
-    (body) => {
-      if (!secrets.CLAUDE_REFRESH_TOKEN) return body;
-      try {
-        const parsed = JSON.parse(body);
-        if (parsed.grant_type === 'refresh_token' && parsed.refresh_token) {
-          return replaceJsonStringValue(body, 'refresh_token', secrets.CLAUDE_REFRESH_TOKEN);
-        }
-      } catch { /* not JSON or no grant_type — pass through */ }
-      return body;
-    },
-    // Inbound: capture new real tokens, store them, return substitutes
-    (body, _status) => {
-      try {
-        const tokens = JSON.parse(body);
-        if (!tokens.access_token) return body;
+  if (secrets.ANTHROPIC_API_KEY) {
+    const sub = tokenEngine.generateSubstitute(
+      secrets.ANTHROPIC_API_KEY, CLAUDE_PROVIDER_ID, {}, groupFolder, CLAUDE_SUBSTITUTE_CONFIG, 'api_key',
+    );
+    if (sub) env.ANTHROPIC_API_KEY = sub;
+    return { env };
+  }
 
-        // Store the new tokens in the credential store
-        const credsJson = JSON.stringify({
-          claudeAiOauth: {
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token,
-            expiresAt: tokens.expires_in
-              ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
-              : null,
-          },
-        });
-        saveCredential(scope, SERVICE, {
-          auth_type: 'auth_login',
-          token: encrypt(credsJson),
-          expires_at: tokens.expires_in
-            ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
-            : null,
-          updated_at: new Date().toISOString(),
-        });
-        logger.info({ scope }, 'OAuth tokens refreshed via transparent proxy');
+  if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
+    const subAccess = tokenEngine.generateSubstitute(
+      secrets.CLAUDE_CODE_OAUTH_TOKEN, CLAUDE_PROVIDER_ID, {}, groupFolder, CLAUDE_SUBSTITUTE_CONFIG,
+    );
+    if (!subAccess) return { env };
 
-        // Return substitute tokens to the container
-        let result = replaceJsonStringValue(body, 'access_token', PLACEHOLDER_ACCESS_TOKEN);
-        if (tokens.refresh_token) {
-          result = replaceJsonStringValue(result, 'refresh_token', PLACEHOLDER_REFRESH_TOKEN);
-        }
-        return result;
-      } catch (err) {
-        logger.error({ err }, 'Failed to process OAuth token response');
-        return body;
-      }
-    },
-  );
+    env.CLAUDE_CODE_OAUTH_TOKEN = subAccess;
+
+    const subRefresh = secrets.CLAUDE_REFRESH_TOKEN
+      ? tokenEngine.generateSubstitute(
+          secrets.CLAUDE_REFRESH_TOKEN, CLAUDE_PROVIDER_ID, {}, groupFolder, CLAUDE_SUBSTITUTE_CONFIG, 'refresh',
+        )
+      : null;
+
+    const credentialsJson = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: subAccess,
+        refreshToken: subRefresh ?? subAccess,
+        expiresAt: 0,
+      },
+    });
+
+    return { env, credentialsJson };
+  }
+
+  return { env };
 }
 
 // ── Provider ────────────────────────────────────────────────────────
@@ -581,11 +612,6 @@ async function handleOAuthTokenExchange(
 export const claudeProvider: CredentialProvider = {
   service: SERVICE,
   displayName: 'Claude',
-
-  hostRules: [
-    { hostPattern: /^console\.anthropic\.com$/, pathPattern: /^\/api\/oauth\/token/, handler: handleOAuthTokenExchange },
-    { hostPattern: /^api\.anthropic\.com$/, pathPattern: /^\//, handler: handleApiHost },
-  ],
 
   hasAuth(scope: string): boolean {
     return hasCredential(scope, SERVICE);
@@ -667,6 +693,7 @@ export const claudeProvider: CredentialProvider = {
     });
   },
 
+  // TODO: remove once bearer-swap 401 → refreshViaTokenEndpoint is proven
   async refresh(scope: string, force?: boolean): Promise<boolean> {
     const cred = loadCredential(scope, SERVICE);
     if (!cred || cred.auth_type !== 'auth_login') return false;

@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, execFileSync, execSync, spawn } from 'child_process';
+import { ChildProcess, exec, execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -27,7 +27,8 @@ import {
 } from './container-runtime.js';
 import { getProxy } from './credential-proxy.js';
 import { getMitmCaCertPath } from './mitm-proxy.js';
-import { PLACEHOLDER_API_KEY, PLACEHOLDER_ACCESS_TOKEN, PLACEHOLDER_REFRESH_TOKEN } from './auth/providers/claude.js';
+import { getTokenEngine } from './auth/registry.js';
+import { generateSubstituteCredentials } from './auth/providers/claude.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -215,6 +216,22 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount xdg-open shim so any tool (GitHub CLI, gcloud, etc.) that triggers
+  // OAuth has its browser-open intercepted by the credential proxy.
+  const xdgOpenShim = path.join(projectRoot, 'container', 'shims', 'xdg-open');
+  if (fs.existsSync(xdgOpenShim)) {
+    mounts.push({
+      hostPath: xdgOpenShim,
+      containerPath: '/usr/local/bin/xdg-open',
+      readonly: true,
+    });
+    mounts.push({
+      hostPath: xdgOpenShim,
+      containerPath: '/usr/bin/xdg-open',
+      readonly: true,
+    });
+  }
+
   // Mount entrypoint read-only so changes don't require image rebuild.
   // Runs as root before setpriv — read-only prevents agent tampering.
   const entrypointPath = path.join(projectRoot, 'container', 'entrypoint.sh');
@@ -237,6 +254,24 @@ function buildVolumeMounts(
   }
 
   return mounts;
+}
+
+/**
+ * Generate format-preserving substitute tokens and inject them as env vars.
+ * For OAuth mode, also writes .credentials.json with substitute tokens
+ * so the CLI attempts in-band token refresh (intercepted by proxy).
+ */
+function injectSubstituteCredentials(args: string[], groupFolder: string): void {
+  const { env, credentialsJson } = generateSubstituteCredentials(groupFolder, getTokenEngine());
+
+  for (const [key, value] of Object.entries(env)) {
+    args.push('-e', `${key}=${value}`);
+  }
+
+  if (credentialsJson) {
+    const credsPath = path.join(DATA_DIR, 'sessions', groupFolder, '.claude', '.credentials.json');
+    fs.writeFileSync(credsPath, credentialsJson);
+  }
 }
 
 function buildContainerArgs(
@@ -267,29 +302,6 @@ function buildContainerArgs(
     // Also set NODE_EXTRA_CA_CERTS for Node.js apps that don't use system store
     args.push('-e', 'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/nanoclaw-mitm.crt');
 
-    // Mirror the group's auth method with a placeholder value.
-    // The transparent proxy replaces these with real credentials.
-    const authMode = getProxy().detectAuthMode(groupFolder);
-    if (authMode === 'api-key') {
-      args.push('-e', `ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`);
-    } else {
-      args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${PLACEHOLDER_ACCESS_TOKEN}`);
-
-      // Ensure placeholder .credentials.json exists so the CLI attempts
-      // in-band token refresh via console.anthropic.com (intercepted by proxy).
-      // All values are placeholders — no real secrets leave the host.
-      const sessionsDir = path.join(DATA_DIR, 'sessions', groupFolder, '.claude');
-      const credsPath = path.join(sessionsDir, '.credentials.json');
-      if (!fs.existsSync(credsPath)) {
-        fs.writeFileSync(credsPath, JSON.stringify({
-          claudeAiOauth: {
-            accessToken: PLACEHOLDER_ACCESS_TOKEN,
-            refreshToken: PLACEHOLDER_REFRESH_TOKEN,
-            expiresAt: 0,
-          },
-        }));
-      }
-    }
   } else {
     // Non-transparent mode: containers use the proxy as a standard HTTPS proxy.
     // Set http_proxy/https_proxy so apps route traffic through the credential proxy,
@@ -297,15 +309,11 @@ function buildContainerArgs(
     const proxyUrl = `http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`;
     args.push('-e', `http_proxy=${proxyUrl}`);
     args.push('-e', `https_proxy=${proxyUrl}`);
-
-    // Mirror the group's auth method with a placeholder value.
-    const authMode = getProxy().detectAuthMode(groupFolder);
-    if (authMode === 'api-key') {
-      args.push('-e', `ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`);
-    } else {
-      args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${PLACEHOLDER_ACCESS_TOKEN}`);
-    }
   }
+
+  // Generate format-preserving substitute tokens for the container.
+  // Real credentials stay on the host; containers only see substitutes.
+  injectSubstituteCredentials(args, groupFolder);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());

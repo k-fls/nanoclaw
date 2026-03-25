@@ -9,34 +9,19 @@
  *   - token-exchange: reuse handleTokenExchange from oauth-interceptor.ts
  *   - authorize-stub: reuse handleAuthorizeStub from oauth-interceptor.ts
  */
-import type { IncomingMessage, ServerResponse, IncomingHttpHeaders } from 'http';
+import type { IncomingMessage, ServerResponse } from 'http';
 import { request as httpsRequest, RequestOptions } from 'https';
 
 import type { InterceptRule, OAuthProvider, RefreshStrategy } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
-import type { CredentialProvider } from './types.js';
+import type { PersistentTokenResolver } from './token-substitute.js';
 import type { HostHandler } from '../credential-proxy.js';
-import { proxyBuffered, setProxyResponseHook } from '../credential-proxy.js';
+import { proxyBuffered } from '../credential-proxy.js';
 import { replaceJsonStringValue } from '../oauth-interceptor.js';
 import { logger } from '../logger.js';
 
 // Re-export setUpstreamAgent for test use
 export { setUpstreamAgent } from '../credential-proxy.js';
-
-// ---------------------------------------------------------------------------
-// Provider registry for refresh lookups
-// ---------------------------------------------------------------------------
-
-/** Registry of credential providers, keyed by provider ID. */
-const credentialProviders = new Map<string, CredentialProvider>();
-
-/** Register a credential provider for refresh lookups. */
-export function registerCredentialProvider(
-  providerId: string,
-  provider: CredentialProvider,
-): void {
-  credentialProviders.set(providerId, provider);
-}
 
 // ---------------------------------------------------------------------------
 // Header helpers
@@ -76,6 +61,93 @@ function extractScopeAttrs(
   const match = rule.hostPattern.exec(targetHost);
   if (!match?.groups) return {};
   return { ...match.groups };
+}
+
+// ---------------------------------------------------------------------------
+// Token refresh via token endpoint (used by bearer-swap on 401)
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the token endpoint URL from a provider's rules.
+ * Returns the full URL (https://host/path) or null if no token-exchange rule.
+ */
+function findTokenEndpoint(provider: OAuthProvider): string | null {
+  const rule = provider.rules.find((r) => r.mode === 'token-exchange');
+  if (!rule) return null;
+  // Reconstruct URL from anchor + pathPattern source
+  const pathSource = rule.pathPattern.source
+    .replace(/^\^/, '')
+    .replace(/\$$/, '')
+    .replace(/\\\//g, '/');  // unescape regex-escaped slashes
+  return `https://${rule.anchor}${pathSource}`;
+}
+
+/**
+ * Attempt to refresh tokens by calling the token endpoint directly.
+ * Gets the real refresh token from the resolver, exchanges it, and
+ * updates the resolver with new tokens.
+ *
+ * Returns true if refresh succeeded and the resolver has new tokens.
+ */
+async function refreshViaTokenEndpoint(
+  provider: OAuthProvider,
+  tokenEngine: TokenSubstituteEngine,
+  scope: string,
+): Promise<boolean> {
+  const tokenEndpoint = findTokenEndpoint(provider);
+  if (!tokenEndpoint) return false;
+
+  const resolver = tokenEngine.getResolver() as PersistentTokenResolver;
+  const refreshHandle = resolver.findHandle(scope, provider.id, 'refresh');
+  if (!refreshHandle) return false;
+
+  const realRefreshToken = resolver.resolve(refreshHandle);
+  if (!realRefreshToken) return false;
+
+  try {
+    const response = await fetch(tokenEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: realRefreshToken,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!response.ok) {
+      logger.warn(
+        { provider: provider.id, scope, status: response.status },
+        'Token refresh: endpoint returned error',
+      );
+      return false;
+    }
+
+    const tokens = await response.json() as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+
+    if (!tokens.access_token) return false;
+
+    // Update the access token in the resolver
+    const accessHandle = resolver.findHandle(scope, provider.id, 'access');
+    if (accessHandle) {
+      resolver.update(accessHandle, tokens.access_token);
+    }
+
+    // Update the refresh token if a new one was issued
+    if (tokens.refresh_token && refreshHandle) {
+      resolver.update(refreshHandle, tokens.refresh_token);
+    }
+
+    logger.info({ provider: provider.id, scope }, 'Token refresh succeeded');
+    return true;
+  } catch (err) {
+    logger.warn({ err, provider: provider.id, scope }, 'Token refresh failed');
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -139,18 +211,7 @@ function createBearerSwapHandler(
             return;
           }
 
-          // Auth error — attempt refresh
-          const credProvider = credentialProviders.get(provider.id);
-
-          if (!credProvider?.refresh) {
-            // No refresh available — passthrough the error
-            clientRes.writeHead(statusCode, upRes.headers);
-            upRes.pipe(clientRes);
-            resolve();
-            return;
-          }
-
-          // Strategy (a) redirect or (c) passthrough-with-hold
+          // Auth error — attempt token refresh via token endpoint
           logger.info(
             { provider: provider.id, scope, status: statusCode, strategy: refreshStrategy },
             'Bearer-swap: auth error, attempting refresh',
@@ -160,24 +221,18 @@ function createBearerSwapHandler(
           upRes.resume();
           await new Promise<void>((r) => upRes.on('end', r));
 
-          // Await the refresh
-          let refreshed = false;
-          try {
-            refreshed = await credProvider.refresh!(scope, true);
-          } catch (err) {
-            logger.warn({ err, provider: provider.id }, 'Bearer-swap: refresh threw');
-          }
+          const refreshed = await refreshViaTokenEndpoint(provider, tokenEngine, scope);
 
           if (!refreshed || refreshStrategy === 'passthrough') {
-            // Strategy (c): forward the original error status
+            // No refresh available or passthrough strategy: forward the error
             clientRes.writeHead(statusCode, { 'content-type': 'application/json' });
             clientRes.end(JSON.stringify({ error: 'authentication_error', status: statusCode }));
             resolve();
             return;
           }
 
-          // Strategy (a): 307 redirect to same URL — client re-sends with same
-          // substitute token, proxy swaps with refreshed real token
+          // 307 redirect to same URL — client re-sends with same substitute
+          // token, proxy swaps with the refreshed real token
           const redirectUrl = `https://${targetHost}${clientReq.url}`;
           clientRes.writeHead(307, {
             location: redirectUrl,
@@ -288,6 +343,7 @@ function createTokenExchangeHandler(
               scopeAttrs,
               scope,
               provider.substituteConfig,
+              'refresh',
             );
             if (subRefresh) {
               result = replaceJsonStringValue(result, 'refresh_token', subRefresh);

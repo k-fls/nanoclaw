@@ -1,15 +1,26 @@
 /**
  * Credential provider registry — same pattern as channels/registry.ts.
  * When a provider has hostRules, they're registered with the credential proxy.
+ *
+ * Claude is registered programmatically through the universal handler system,
+ * with a wrapper for x-api-key support. Discovery-file providers fill gaps
+ * for other OAuth services.
  */
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 import type { CredentialProvider } from './types.js';
 import { getProxy } from '../credential-proxy.js';
-import { loadDiscoveryProviders } from './discovery-loader.js';
-import { TokenSubstituteEngine, InMemoryTokenResolver } from './token-substitute.js';
-import { createHandler, registerCredentialProvider } from './universal-oauth-handler.js';
+import { loadDiscoveryProviders, type DiscoveryFile } from './discovery-loader.js';
+import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
+import { createHandler } from './universal-oauth-handler.js';
+import { registerAuthorizationEndpoint } from './browser-open-handler.js';
+import {
+  CLAUDE_OAUTH_PROVIDER,
+  CLAUDE_PROVIDER_ID,
+  wrapWithApiKeySupport,
+} from './providers/claude.js';
 import { logger } from '../logger.js';
 
 const registry = new Map<string, CredentialProvider>();
@@ -34,17 +45,17 @@ export function getAllProviders(): CredentialProvider[] {
 }
 
 // ---------------------------------------------------------------------------
-// Discovery-file provider registration
+// Token engine (shared across all providers)
 // ---------------------------------------------------------------------------
 
-/** Shared token resolver — owns real token storage. */
-let _tokenResolver: InMemoryTokenResolver | null = null;
+/** Shared token resolver — owns real token storage with persistence. */
+let _tokenResolver: PersistentTokenResolver | null = null;
 
-/** Shared token substitute engine — one instance for all discovery providers. */
+/** Shared token substitute engine — one instance for all providers. */
 let _tokenEngine: TokenSubstituteEngine | null = null;
 
-export function getTokenResolver(): InMemoryTokenResolver {
-  if (!_tokenResolver) _tokenResolver = new InMemoryTokenResolver();
+export function getTokenResolver(): PersistentTokenResolver {
+  if (!_tokenResolver) _tokenResolver = new PersistentTokenResolver();
   return _tokenResolver;
 }
 
@@ -52,6 +63,45 @@ export function getTokenEngine(): TokenSubstituteEngine {
   if (!_tokenEngine) _tokenEngine = new TokenSubstituteEngine(getTokenResolver());
   return _tokenEngine;
 }
+
+// ---------------------------------------------------------------------------
+// Claude provider registration (programmatic, not discovery-file)
+// ---------------------------------------------------------------------------
+
+/**
+ * Register Claude's intercept rules through the universal handler.
+ * Called from registerBuiltinProviders() after the proxy is initialized.
+ *
+ * Claude gets special treatment:
+ *   - api.anthropic.com bearer-swap is wrapped with x-api-key support
+ *   - Claude's refresh() is wired to the universal handler's refresh lookup
+ *   - Token exchange at platform.claude.com uses the universal handler as-is
+ */
+function registerClaudeUniversalRules(provider: CredentialProvider): void {
+  const tokenEngine = getTokenEngine();
+  const proxy = getProxy();
+
+  // Register Claude's authorization endpoint for browser-open detection
+  registerAuthorizationEndpoint('https://claude.ai/oauth/authorize');
+
+  for (const rule of CLAUDE_OAUTH_PROVIDER.rules) {
+    const hostPattern = new RegExp(`^${rule.anchor.replace(/\./g, '\\.')}$`);
+    let handler = createHandler(CLAUDE_OAUTH_PROVIDER, rule, tokenEngine);
+
+    // Wrap api.anthropic.com bearer-swap with x-api-key support
+    if (rule.anchor === 'api.anthropic.com' && rule.mode === 'bearer-swap') {
+      handler = wrapWithApiKeySupport(handler, tokenEngine);
+    }
+
+    proxy.registerAnchoredRule(rule.anchor, hostPattern, rule.pathPattern, handler);
+  }
+
+  logger.info('Registered Claude provider via universal handler');
+}
+
+// ---------------------------------------------------------------------------
+// Discovery-file provider registration
+// ---------------------------------------------------------------------------
 
 /**
  * Load discovery files and register their intercept rules with the proxy.
@@ -67,6 +117,19 @@ export function registerDiscoveryProviders(discoveryDir?: string): void {
   const providers = loadDiscoveryProviders(dir);
   const tokenEngine = getTokenEngine();
   const proxy = getProxy();
+
+  // Register authorization_endpoint patterns for browser-open detection
+  // by reading raw discovery files
+  try {
+    for (const file of fs.readdirSync(dir).filter((f: string) => f.endsWith('.json'))) {
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf-8')) as DiscoveryFile;
+        if (data.authorization_endpoint && typeof data.authorization_endpoint === 'string') {
+          registerAuthorizationEndpoint(data.authorization_endpoint);
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* dir not readable */ }
 
   let ruleCount = 0;
   for (const [_id, provider] of providers) {
@@ -85,14 +148,12 @@ export function registerDiscoveryProviders(discoveryDir?: string): void {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Public registration entry point
+// ---------------------------------------------------------------------------
+
 /**
- * Wire a CredentialProvider to the universal handler's refresh lookup.
- * Call this for each built-in provider whose refresh() should be available
- * to discovery-file handlers (e.g. if Claude is later migrated).
+ * Register Claude with the universal handler system.
+ * Exported so auth/index.ts can call it from registerBuiltinProviders().
  */
-export function wireCredentialProviderRefresh(
-  providerId: string,
-  provider: CredentialProvider,
-): void {
-  registerCredentialProvider(providerId, provider);
-}
+export { registerClaudeUniversalRules };

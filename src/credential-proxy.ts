@@ -35,6 +35,7 @@ import type { Server as NetServer } from 'net';
 import { logger } from './logger.js';
 import { createMitmContext, type MitmContext } from './mitm-proxy.js';
 import { createTransparentServer } from './transparent-proxy.js';
+import { handleBrowserOpen } from './auth/browser-open-handler.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -467,6 +468,15 @@ export class CredentialProxy {
         );
         res.writeHead(403);
         res.end('Forbidden: unknown container');
+        return;
+      }
+
+      // Internal auth endpoint: browser-open relay
+      if (req.url === '/auth/browser-open' && req.method === 'POST') {
+        handleBrowserOpen(req, res, scope).catch((err) => {
+          logger.error({ err }, 'browser-open handler error');
+          if (!res.headersSent) { res.writeHead(500); res.end('Internal error'); }
+        });
         return;
       }
 

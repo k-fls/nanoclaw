@@ -12,7 +12,7 @@ import {
 } from './config.js';
 import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders } from './auth/index.js';
 import { resolveSecrets } from './auth/provision.js';
-import { claudeProvider, handleApiHost } from './auth/providers/claude.js';
+import { claudeProvider } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
 import { CredentialProxy, setProxyInstance } from './credential-proxy.js';
 import './channels/index.js';
@@ -560,14 +560,14 @@ async function main(): Promise<void> {
   loadState();
 
   // Register additional Claude hosts from ANTHROPIC_BASE_URL if configured
-  const envVars = await import('./env.js').then(m => m.readEnvFile(['ANTHROPIC_BASE_URL']));
-  if (envVars.ANTHROPIC_BASE_URL) {
-    try {
-      const customHost = new URL(envVars.ANTHROPIC_BASE_URL).hostname;
-      if (customHost && customHost !== 'api.anthropic.com') {
-        proxy.registerProviderHost(new RegExp(`^${customHost.replace(/\./g, '\\.')}$`), /^\//, handleApiHost);
-      }
-    } catch { /* invalid URL, ignore */ }
+  {
+    const envVars = await import('./env.js').then(m => m.readEnvFile(['ANTHROPIC_BASE_URL']));
+    if (envVars.ANTHROPIC_BASE_URL) {
+      const { registerClaudeBaseUrl } = await import('./auth/providers/claude.js');
+      const { createHandler } = await import('./auth/universal-oauth-handler.js');
+      const { getTokenEngine } = await import('./auth/registry.js');
+      registerClaudeBaseUrl(envVars.ANTHROPIC_BASE_URL, getTokenEngine(), createHandler);
+    }
   }
 
   // Start credential proxy — handles transparent TLS (iptables redirect),

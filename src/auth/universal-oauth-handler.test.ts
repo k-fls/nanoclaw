@@ -3,12 +3,11 @@ import https from 'https';
 import http from 'http';
 import { Agent } from 'https';
 
-import { createHandler, setTestUpstreamAgent, registerCredentialProvider } from './universal-oauth-handler.js';
+import { createHandler, setTestUpstreamAgent } from './universal-oauth-handler.js';
 import { setUpstreamAgent } from '../credential-proxy.js';
-import { TokenSubstituteEngine, InMemoryTokenResolver } from './token-substitute.js';
+import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
 import type { OAuthProvider, InterceptRule } from './oauth-types.js';
 import { DEFAULT_SUBSTITUTE_CONFIG } from './oauth-types.js';
-import type { CredentialProvider } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Self-signed HTTPS test server
@@ -212,7 +211,7 @@ async function executeHandler(
 describe('universal-oauth-handler', () => {
   describe('bearer-swap', () => {
     it('swaps substitute Bearer token with real token', async () => {
-      const engine = new TokenSubstituteEngine(new InMemoryTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -233,7 +232,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('passes through unknown tokens (no substitution)', async () => {
-      const engine = new TokenSubstituteEngine(new InMemoryTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -247,7 +246,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('pipes through requests without Authorization header', async () => {
-      const engine = new TokenSubstituteEngine(new InMemoryTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -257,35 +256,68 @@ describe('universal-oauth-handler', () => {
     });
 
     it('returns 307 redirect on 401 when refresh succeeds', async () => {
-      const engine = new TokenSubstituteEngine(new InMemoryTokenResolver());
-      const provider = makeProvider('refreshable');
+      const resolver = new PersistentTokenResolver();
+      const engine = new TokenSubstituteEngine(resolver);
+
+      // Provider with a token-exchange rule pointing to the test server
+      // Uses port in anchor so refreshViaTokenEndpoint can reach it
+      const provider: OAuthProvider = {
+        id: 'refreshable',
+        rules: [
+          { anchor: `127.0.0.1:${serverPort}`, pathPattern: /^\/oauth\/token$/, mode: 'token-exchange' },
+        ],
+        scopeKeys: [],
+        substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+      };
+
+      // Store a refresh token in the resolver so the refresh can find it
+      resolver.store('real_refresh_token_value', 'refreshable', 'test-scope', 'refresh');
+      // Store an access token too
+      resolver.store('real_access_token_value', 'refreshable', 'test-scope', 'access');
+
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine, 'redirect');
 
-      // Register a mock credential provider with refresh
-      registerCredentialProvider('refreshable', {
-        service: 'refreshable',
-        displayName: 'Refreshable',
-        hasAuth: () => true,
-        provision: () => ({ env: {} }),
-        storeResult: () => {},
-        authOptions: () => [],
-        refresh: async (_scope, _force) => true,
-      } as CredentialProvider);
-
-      // Upstream returns 401
-      serverResponseOverride = { status: 401, body: '{"error":"unauthorized"}' };
-
-      const res = await executeHandler(handler, {
-        path: '/api/test',
+      // First request (API call) returns 401, triggering refresh.
+      // The refresh call to /oauth/token should get 200 with new tokens
+      // (default test server response). Set up so the API call returns 401.
+      let callCount = 0;
+      serverResponseOverride = null;
+      // Override the test server to return 401 for API calls, 200 with tokens for /oauth/token
+      const origHandler = testServer.listeners('request')[0] as Function;
+      testServer.removeAllListeners('request');
+      testServer.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          lastRequest = { method: req.method || '', url: req.url || '', headers: req.headers, body: Buffer.concat(chunks).toString() };
+          if (req.url === '/oauth/token') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ access_token: 'new_access', refresh_token: 'new_refresh' }));
+          } else {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            res.end('{"error":"unauthorized"}');
+          }
+        });
       });
 
-      expect(res.status).toBe(307);
-      expect(res.headers['location']).toBe('https://127.0.0.1/api/test');
+      const origTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+      try {
+        const res = await executeHandler(handler, { path: '/api/test' });
+        expect(res.status).toBe(307);
+        expect(res.headers['location']).toBe('https://127.0.0.1/api/test');
+      } finally {
+        // Restore original handler and TLS setting
+        testServer.removeAllListeners('request');
+        testServer.on('request', origHandler as any);
+        if (origTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+        else process.env.NODE_TLS_REJECT_UNAUTHORIZED = origTls;
+      }
     });
 
-    it('passes through 401 when no refresh available', async () => {
-      const engine = new TokenSubstituteEngine(new InMemoryTokenResolver());
+    it('passes through 401 when no refresh token available', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       const provider = makeProvider('no-refresh');
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -297,7 +329,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('blocks cross-tenant token injection via scope attrs', async () => {
-      const engine = new TokenSubstituteEngine(new InMemoryTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       const provider = makeProvider();
 
       // Two rules for different tenants on the same provider
@@ -341,7 +373,7 @@ describe('universal-oauth-handler', () => {
 
   describe('token-exchange', () => {
     it('generates substitute tokens from upstream response', async () => {
-      const engine = new TokenSubstituteEngine(new InMemoryTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       const provider = makeProvider();
       const rule = makeTokenExchangeRule();
       const handler = createHandler(provider, rule, engine);
@@ -377,7 +409,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('resolves substitute refresh token on refresh grant', async () => {
-      const engine = new TokenSubstituteEngine(new InMemoryTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       const provider = makeProvider();
       const rule = makeTokenExchangeRule();
       const handler = createHandler(provider, rule, engine);

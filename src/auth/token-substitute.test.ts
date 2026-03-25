@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
-import { TokenSubstituteEngine, InMemoryTokenResolver } from './token-substitute.js';
+import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
 import type { SubstituteConfig } from './oauth-types.js';
 import { DEFAULT_SUBSTITUTE_CONFIG, MIN_RANDOM_CHARS } from './oauth-types.js';
 
 describe('TokenSubstituteEngine', () => {
   let engine: TokenSubstituteEngine;
-  let resolver: InMemoryTokenResolver;
+  let resolver: PersistentTokenResolver;
 
   beforeEach(() => {
-    resolver = new InMemoryTokenResolver();
+    resolver = new PersistentTokenResolver();
     engine = new TokenSubstituteEngine(resolver);
   });
 
@@ -193,9 +193,81 @@ describe('TokenSubstituteEngine', () => {
     });
   });
 
-  // ── InMemoryTokenResolver.update ───────────────────────────────────
+  // ── PersistentTokenResolver role-based storage ─────────────────────
 
-  describe('InMemoryTokenResolver.update', () => {
+  describe('PersistentTokenResolver roles', () => {
+    it('caches access tokens in memory', () => {
+      const handle = resolver.store('real_access', 'provider', 'scope', 'access');
+      expect(resolver.resolve(handle)).toBe('real_access');
+    });
+
+    it('caches api_key tokens in memory', () => {
+      const handle = resolver.store('sk-ant-api03-key', 'provider', 'scope', 'api_key');
+      expect(resolver.resolve(handle)).toBe('sk-ant-api03-key');
+    });
+
+    it('caches refresh tokens in memory when persistence is unavailable', () => {
+      // PersistentTokenResolver stores refresh tokens cold only when
+      // persistence succeeds. Without initCredentialStore(), persistence
+      // fails and tokens fall back to in-memory cache.
+      const handle = resolver.store('real_refresh', 'provider', 'scope', 'refresh');
+      expect(resolver.resolve(handle)).toBe('real_refresh');
+    });
+
+    it('findHandle returns handle by scope+provider+role', () => {
+      resolver.store('access_tok', 'claude', 'group-a', 'access');
+      resolver.store('refresh_tok', 'claude', 'group-a', 'refresh');
+      resolver.store('access_tok2', 'github', 'group-a', 'access');
+
+      const h1 = resolver.findHandle('group-a', 'claude', 'access');
+      expect(h1).not.toBeNull();
+      expect(resolver.resolve(h1!)).toBe('access_tok');
+
+      const h2 = resolver.findHandle('group-a', 'claude', 'refresh');
+      expect(h2).not.toBeNull();
+      expect(resolver.resolve(h2!)).toBe('refresh_tok');
+
+      const h3 = resolver.findHandle('group-a', 'github', 'access');
+      expect(h3).not.toBeNull();
+      expect(resolver.resolve(h3!)).toBe('access_tok2');
+    });
+
+    it('findHandle returns null for non-existent combination', () => {
+      resolver.store('tok', 'claude', 'group-a', 'access');
+      expect(resolver.findHandle('group-a', 'claude', 'refresh')).toBeNull();
+      expect(resolver.findHandle('group-b', 'claude', 'access')).toBeNull();
+      expect(resolver.findHandle('group-a', 'github', 'access')).toBeNull();
+    });
+  });
+
+  // ── generateSubstitute with role ──────────────────────────────────
+
+  describe('generateSubstitute with role', () => {
+    it('passes role through to resolver', () => {
+      const config = DEFAULT_SUBSTITUTE_CONFIG;
+      const real = 'sk-ant-ort01-abcdefghijklmnopqrstuvwxyz1234567890ab';
+
+      engine.generateSubstitute(real, 'claude', {}, scope, config, 'refresh');
+
+      const handle = resolver.findHandle(scope, 'claude', 'refresh');
+      expect(handle).not.toBeNull();
+      expect(resolver.resolve(handle!)).toBe(real);
+    });
+
+    it('defaults role to access', () => {
+      const config = DEFAULT_SUBSTITUTE_CONFIG;
+      const real = 'sk-ant-oat01-abcdefghijklmnopqrstuvwxyz1234567890ab';
+
+      engine.generateSubstitute(real, 'claude', {}, scope, config);
+
+      const handle = resolver.findHandle(scope, 'claude', 'access');
+      expect(handle).not.toBeNull();
+    });
+  });
+
+  // ── PersistentTokenResolver.update ───────────────────────────────────
+
+  describe('PersistentTokenResolver.update', () => {
     it('updates the real token behind a handle (refresh)', () => {
       const config = DEFAULT_SUBSTITUTE_CONFIG;
       const oldReal = 'tok_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';

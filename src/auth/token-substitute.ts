@@ -15,6 +15,8 @@ import { randomInt } from 'crypto';
 
 import type { SubstituteConfig, SubstituteMapping, TokenResolver } from './oauth-types.js';
 import { MIN_RANDOM_CHARS } from './oauth-types.js';
+import { encrypt, decrypt, saveCredential, loadCredential } from './store.js';
+import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // Character class helpers
@@ -37,29 +39,68 @@ function randomCharSameClass(ch: string, delimiters: string): string {
 // Default in-memory token resolver
 // ---------------------------------------------------------------------------
 
+/** Token role — used as part of the credential store service key. */
+export type TokenRole = 'access' | 'refresh' | 'api_key';
+
+interface TokenEntry {
+  providerId: string;
+  containerScope: string;
+  role: TokenRole;
+  /** Real token cached in memory. Only populated for access tokens / API keys. */
+  realToken: string | null;
+}
+
+/** Credential store service key for a token. */
+function storeKey(providerId: string, role: TokenRole): string {
+  return `${providerId}_${role}`;
+}
+
 /**
- * Simple in-memory TokenResolver. Stores real tokens in a Map keyed by handle.
- * Suitable for ephemeral token storage (substitutes regenerated each session).
+ * Persistent token resolver with hot cache for access tokens.
+ *
+ * - Access tokens / API keys: cached in memory (hot path, every request)
+ *   AND persisted to encrypted credential store.
+ * - Refresh tokens: persisted only, read from disk on demand (cold path,
+ *   only used during token refresh).
+ *
+ * Credential store key: scope = containerScope, service = `${providerId}_${role}`.
  */
-export class InMemoryTokenResolver implements TokenResolver {
-  private tokens = new Map<string, { realToken: string; providerId: string; containerScope: string }>();
+export class PersistentTokenResolver implements TokenResolver {
+  private tokens = new Map<string, TokenEntry>();
   private nextId = 0;
 
-  store(realToken: string, providerId: string, containerScope: string): string {
+  store(realToken: string, providerId: string, containerScope: string, role: TokenRole = 'access'): string {
     const handle = `tok_${this.nextId++}`;
-    this.tokens.set(handle, { realToken, providerId, containerScope });
+    const persisted = this.persist(containerScope, providerId, role, realToken);
+    // Refresh tokens are cold (disk-only) when persistence works.
+    // Fall back to in-memory cache if persistence is unavailable.
+    const isCold = role === 'refresh' && persisted;
+    this.tokens.set(handle, {
+      providerId,
+      containerScope,
+      role,
+      realToken: isCold ? null : realToken,
+    });
     return handle;
   }
 
   resolve(handle: string): string | null {
-    return this.tokens.get(handle)?.realToken ?? null;
+    const entry = this.tokens.get(handle);
+    if (!entry) return null;
+    // Hot path: return cached token
+    if (entry.realToken !== null) return entry.realToken;
+    // Cold path (refresh tokens): read from persistent store
+    return this.loadFromStore(entry.containerScope, entry.providerId, entry.role);
   }
 
   /** Update the real token behind a handle (e.g. after refresh). */
   update(handle: string, newRealToken: string): boolean {
     const entry = this.tokens.get(handle);
     if (!entry) return false;
-    entry.realToken = newRealToken;
+    if (entry.role !== 'refresh') {
+      entry.realToken = newRealToken;
+    }
+    this.persist(entry.containerScope, entry.providerId, entry.role, newRealToken);
     return true;
   }
 
@@ -73,9 +114,47 @@ export class InMemoryTokenResolver implements TokenResolver {
     }
   }
 
+  /** Find the handle for a given scope + provider + role. */
+  findHandle(containerScope: string, providerId: string, role: TokenRole): string | null {
+    for (const [handle, entry] of this.tokens) {
+      if (entry.containerScope === containerScope &&
+          entry.providerId === providerId &&
+          entry.role === role) {
+        return handle;
+      }
+    }
+    return null;
+  }
+
   /** Number of stored tokens (for testing). */
   get size(): number {
     return this.tokens.size;
+  }
+
+  private persist(scope: string, providerId: string, role: TokenRole, realToken: string): boolean {
+    try {
+      saveCredential(scope, storeKey(providerId, role), {
+        auth_type: 'oauth_token',
+        token: encrypt(realToken),
+        expires_at: null,
+        updated_at: new Date().toISOString(),
+      });
+      return true;
+    } catch (err) {
+      logger.warn({ err, scope, providerId, role }, 'Token persistence failed');
+      return false;
+    }
+  }
+
+  private loadFromStore(scope: string, providerId: string, role: TokenRole): string | null {
+    try {
+      const cred = loadCredential(scope, storeKey(providerId, role));
+      if (!cred) return null;
+      return decrypt(cred.token);
+    } catch (err) {
+      logger.warn({ err, scope, providerId, role }, 'Token load from store failed');
+      return null;
+    }
   }
 }
 
@@ -99,6 +178,11 @@ export class TokenSubstituteEngine {
 
   constructor(private resolver: TokenResolver) {}
 
+  /** Access the underlying token resolver (e.g. for refresh operations). */
+  getResolver(): TokenResolver {
+    return this.resolver;
+  }
+
   private scopeMap(containerScope: string): Map<string, SubstituteMapping> {
     let map = this.scopes.get(containerScope);
     if (!map) {
@@ -120,6 +204,7 @@ export class TokenSubstituteEngine {
     scopeAttrs: Record<string, string>,
     containerScope: string,
     config: SubstituteConfig,
+    role: TokenRole = 'access',
   ): string | null {
     const { prefixLen, suffixLen, delimiters } = config;
 
@@ -155,7 +240,7 @@ export class TokenSubstituteEngine {
       if (map.has(substitute)) continue;
 
       // Store real token via resolver, get opaque handle
-      const handle = this.resolver.store(realToken, providerId, containerScope);
+      const handle = this.resolver.store(realToken, providerId, containerScope, role);
 
       map.set(substitute, {
         handle,

@@ -76,7 +76,7 @@ export interface SubstituteMapping {
  */
 export interface TokenResolver {
   /** Store a real token, return an opaque handle for later retrieval. */
-  store(realToken: string, providerId: string, containerScope: string): string;
+  store(realToken: string, providerId: string, containerScope: string, role?: string): string;
   /** Retrieve the current real token by handle. Returns null if expired/revoked. */
   resolve(handle: string): string | null;
   /** Remove all tokens for a scope (and optionally a provider). */
