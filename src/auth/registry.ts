@@ -14,11 +14,13 @@ import type { CredentialProvider } from './types.js';
 import { getProxy } from '../credential-proxy.js';
 import { loadDiscoveryProviders, type DiscoveryFile } from './discovery-loader.js';
 import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
+import { CREDENTIALS_DIR } from './store.js';
 import { createHandler } from './universal-oauth-handler.js';
 import { registerAuthorizationEndpoint } from './browser-open-handler.js';
 import {
   CLAUDE_OAUTH_PROVIDER,
   CLAUDE_PROVIDER_ID,
+  migrateClaudeCredentials,
   wrapWithApiKeySupport,
 } from './providers/claude.js';
 import { logger } from '../logger.js';
@@ -60,8 +62,34 @@ export function getTokenResolver(): PersistentTokenResolver {
 }
 
 export function getTokenEngine(): TokenSubstituteEngine {
-  if (!_tokenEngine) _tokenEngine = new TokenSubstituteEngine(getTokenResolver());
+  if (!_tokenEngine) {
+    _tokenEngine = new TokenSubstituteEngine(getTokenResolver());
+    // Migrate old claude_auth.json → claude.keys.json for all scopes
+    // Must run before loadAllPersistedRefs so keys files exist for ref loading.
+    migrateAllScopes();
+    // Load persisted substitute→identity mappings from previous runs
+    const loaded = _tokenEngine.loadAllPersistedRefs();
+    if (loaded > 0) {
+      logger.info({ count: loaded }, 'Loaded persisted substitute refs');
+    }
+  }
   return _tokenEngine;
+}
+
+/**
+ * Run migrateClaudeCredentials for every scope directory in the credentials store.
+ * Converts claude_auth.json → claude.keys.json if not already migrated.
+ */
+function migrateAllScopes(): void {
+  try {
+    if (!fs.existsSync(CREDENTIALS_DIR)) return;
+    for (const entry of fs.readdirSync(CREDENTIALS_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      migrateClaudeCredentials(entry.name);
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to migrate credential scopes');
+  }
 }
 
 /** @internal Override the token engine (for e2e tests). */

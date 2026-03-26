@@ -31,10 +31,15 @@ export interface CredentialProvider {
   }>;
 
   /** Does this scope have usable credentials? */
-  hasAuth(scope: string): boolean;
+  hasValidCredentials(scope: string): boolean;
 
-  /** Produce env vars for a container run. */
-  provision(scope: string): { env: Record<string, string> };
+  /**
+   * Produce substitute env vars for a container run.
+   * Returns substitutes only — never real tokens. The engine handles mapping.
+   */
+  provision(scope: string, tokenEngine: import('./token-substitute.js').TokenSubstituteEngine): {
+    env: Record<string, string>;
+  };
 
   /** After flow completes, parse raw result and save to store. */
   storeResult(scope: string, result: FlowResult): void;

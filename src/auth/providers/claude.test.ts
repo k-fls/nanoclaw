@@ -41,15 +41,17 @@ vi.mock('../../config.js', () => ({
   IDLE_TIMEOUT: 1800_000,
 }));
 
-// Mock exec.js for authSessionDir
+// Mock exec.js for authSessionDir and scopeClaudeDir
 vi.mock('../exec.js', () => ({
   authSessionDir: vi.fn((scope: string) => path.join(tmpDir, 'sessions', scope)),
+  scopeClaudeDir: vi.fn((scope: string, ...sub: string[]) => path.join(tmpDir, 'sessions', scope, '.claude', ...sub)),
 }));
 
 // Import after mocks
-const { claudeProvider, isAuthError, classifyAuthError, waitForPattern, detectCodeDelivery, isPortOpen, parseCallbackUrl, extractStreamRequestId, extractUpstreamRequestId } = await import(
+const { claudeProvider, migrateClaudeCredentials, isAuthError, classifyAuthError, waitForPattern, detectCodeDelivery, isPortOpen, parseCallbackUrl, extractStreamRequestId, extractUpstreamRequestId } = await import(
   './claude.js'
 );
+const { TokenSubstituteEngine, PersistentTokenResolver } = await import('../token-substitute.js');
 
 describe('claudeProvider', () => {
   beforeEach(() => {
@@ -57,111 +59,75 @@ describe('claudeProvider', () => {
   });
 
   describe('provision', () => {
+    /** Store in old format, migrate, then provision with engine. */
+    function storeAndProvision(
+      scope: string,
+      result: { auth_type: string; token: string; expires_at: string | null },
+    ) {
+      claudeProvider.storeResult(scope, result);
+      migrateClaudeCredentials(scope);
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      engine.loadAllPersistedRefs();
+      return claudeProvider.provision(scope, engine);
+    }
+
     it('returns empty env when no credentials exist', () => {
-      const result = claudeProvider.provision('nonexistent');
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const result = claudeProvider.provision('nonexistent', engine);
       expect(result.env).toEqual({});
     });
 
-    it('provisions api_key as ANTHROPIC_API_KEY', () => {
-      claudeProvider.storeResult('test', {
+    it('provisions api_key as substitute ANTHROPIC_API_KEY', () => {
+      const real = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const result = storeAndProvision('test', {
         auth_type: 'api_key',
-        token: 'sk-ant-api03-test',
+        token: real,
         expires_at: null,
       });
 
-      const result = claudeProvider.provision('test');
-      expect(result.env.ANTHROPIC_API_KEY).toBe('sk-ant-api03-test');
+      expect(result.env.ANTHROPIC_API_KEY).toBeDefined();
+      expect(result.env.ANTHROPIC_API_KEY.slice(0, 14)).toBe(real.slice(0, 14));
+      expect(result.env.ANTHROPIC_API_KEY).not.toBe(real);
     });
 
-    it('provisions setup_token as CLAUDE_CODE_OAUTH_TOKEN', () => {
-      claudeProvider.storeResult('test', {
+    it('provisions setup_token as substitute CLAUDE_CODE_OAUTH_TOKEN', () => {
+      const real = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const result = storeAndProvision('test', {
         auth_type: 'setup_token',
-        token: 'sk-ant-oat01-test',
+        token: real,
         expires_at: null,
       });
 
-      const result = claudeProvider.provision('test');
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-test');
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(real.slice(0, 14));
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).not.toBe(real);
     });
 
-    it('provisions auth_login with accessToken and refreshToken', () => {
+    it('provisions auth_login with substitute accessToken, no refreshToken in env', () => {
+      const realAccess = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const realRefresh = 'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
       const credsJson = JSON.stringify({
-        accessToken: 'access-123',
-        refreshToken: 'refresh-456',
+        accessToken: realAccess,
+        refreshToken: realRefresh,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
       });
 
-      claudeProvider.storeResult('test', {
+      const result = storeAndProvision('test', {
         auth_type: 'auth_login',
         token: credsJson,
         expires_at: new Date(Date.now() + 3600_000).toISOString(),
       });
 
-      const result = claudeProvider.provision('test');
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('access-123');
-      expect(result.env.CLAUDE_REFRESH_TOKEN).toBe('refresh-456');
-    });
-
-    it('handles epoch ms expiresAt from CLI format', () => {
-      const credsJson = JSON.stringify({
-        claudeAiOauth: {
-          accessToken: 'access-epoch',
-          refreshToken: 'refresh-epoch',
-          expiresAt: Date.now() + 3600_000,
-        },
-      });
-
-      claudeProvider.storeResult('test', {
-        auth_type: 'auth_login',
-        token: credsJson,
-        expires_at: new Date(Date.now() + 3600_000).toISOString(),
-      });
-
-      const result = claudeProvider.provision('test');
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('access-epoch');
-      expect(result.env.CLAUDE_REFRESH_TOKEN).toBe('refresh-epoch');
-    });
-
-    it('provisions expired auth_login with refresh token for in-band refresh', () => {
-      const credsJson = JSON.stringify({
-        accessToken: 'expired-access',
-        refreshToken: 'refresh-456',
-        expiresAt: new Date(Date.now() - 3600_000).toISOString(),
-      });
-
-      claudeProvider.storeResult('test', {
-        auth_type: 'auth_login',
-        token: credsJson,
-        expires_at: new Date(Date.now() - 3600_000).toISOString(),
-      });
-
-      const result = claudeProvider.provision('test');
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('expired-access');
-      expect(result.env.CLAUDE_REFRESH_TOKEN).toBe('refresh-456');
-    });
-
-    it('provisions env_fallback by parsing stored JSON', () => {
-      const envVars = {
-        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-from-env',
-        ANTHROPIC_BASE_URL: 'https://custom.api',
-      };
-
-      saveCredential('test', 'claude_auth', {
-        auth_type: 'env_fallback',
-        token: encrypt(JSON.stringify(envVars)),
-        expires_at: null,
-        updated_at: new Date().toISOString(),
-      });
-
-      const result = claudeProvider.provision('test');
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-from-env');
-      expect(result.env.ANTHROPIC_BASE_URL).toBe('https://custom.api');
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(realAccess.slice(0, 14));
+      // Refresh token is NOT in env — only in .credentials.json
+      expect(result.env.CLAUDE_REFRESH_TOKEN).toBeUndefined();
     });
   });
 
-  describe('hasAuth', () => {
+  describe('hasValidCredentials', () => {
     it('returns false when no credential stored', () => {
-      expect(claudeProvider.hasAuth('empty')).toBe(false);
+      expect(claudeProvider.hasValidCredentials('empty')).toBe(false);
     });
 
     it('returns true after storing', () => {
@@ -170,7 +136,7 @@ describe('claudeProvider', () => {
         token: 'key',
         expires_at: null,
       });
-      expect(claudeProvider.hasAuth('has-test')).toBe(true);
+      expect(claudeProvider.hasValidCredentials('has-test')).toBe(true);
     });
   });
 
@@ -199,14 +165,11 @@ describe('claudeProvider', () => {
   describe('importEnv', () => {
     it('imports .env values into scope', () => {
       vi.mocked(readEnvFile).mockReturnValueOnce({
-        ANTHROPIC_API_KEY: 'sk-ant-api03-from-env',
+        ANTHROPIC_API_KEY: 'sk-ant-api03-from-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
 
       claudeProvider.importEnv!('default');
-      expect(claudeProvider.hasAuth('default')).toBe(true);
-
-      const result = claudeProvider.provision('default');
-      expect(result.env.ANTHROPIC_API_KEY).toBe('sk-ant-api03-from-env');
+      expect(claudeProvider.hasValidCredentials('default')).toBe(true);
     });
 
     it('skips import if credentials already exist', () => {
@@ -221,9 +184,8 @@ describe('claudeProvider', () => {
       });
 
       claudeProvider.importEnv!('default');
-
-      const result = claudeProvider.provision('default');
-      expect(result.env.ANTHROPIC_API_KEY).toBe('existing-key');
+      // hasValidCredentials still true — original key not overwritten
+      expect(claudeProvider.hasValidCredentials('default')).toBe(true);
     });
 
     it('skips import when .env has no relevant keys', () => {
@@ -231,7 +193,7 @@ describe('claudeProvider', () => {
       vi.mocked(readEnvFile).mockReturnValue({});
 
       claudeProvider.importEnv!('empty-env-scope');
-      expect(claudeProvider.hasAuth('empty-env-scope')).toBe(false);
+      expect(claudeProvider.hasValidCredentials('empty-env-scope')).toBe(false);
     });
   });
 

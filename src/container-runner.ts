@@ -27,8 +27,8 @@ import {
 } from './container-runtime.js';
 import { getProxy } from './credential-proxy.js';
 import { getMitmCaCertPath } from './mitm-proxy.js';
-import { getTokenEngine } from './auth/registry.js';
-import { generateSubstituteCredentials } from './auth/providers/claude.js';
+import { getTokenEngine, getAllProviders } from './auth/registry.js';
+import { resolveScope } from './auth/provision.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -258,20 +258,19 @@ export function buildVolumeMounts(
 }
 
 /**
- * Generate format-preserving substitute tokens and inject them as env vars.
- * For OAuth mode, also writes .credentials.json with substitute tokens
- * so the CLI attempts in-band token refresh (intercepted by proxy).
+ * Provision substitute credentials from all providers and inject as env vars.
+ * Resolves scope (group folder → 'default' fallback) so credentials are found
+ * regardless of which scope they're stored in.
+ * Providers handle writing any provider-specific files (e.g. .credentials.json).
  */
-function injectSubstituteCredentials(args: string[], groupFolder: string): void {
-  const { env, credentialsJson } = generateSubstituteCredentials(groupFolder, getTokenEngine());
-
-  for (const [key, value] of Object.entries(env)) {
-    args.push('-e', `${key}=${value}`);
-  }
-
-  if (credentialsJson) {
-    const credsPath = path.join(DATA_DIR, 'sessions', groupFolder, '.claude', '.credentials.json');
-    fs.writeFileSync(credsPath, credentialsJson);
+function injectSubstituteCredentials(args: string[], group: RegisteredGroup): void {
+  const scope = resolveScope(group);
+  const tokenEngine = getTokenEngine();
+  for (const provider of getAllProviders()) {
+    const { env } = provider.provision(scope, tokenEngine);
+    for (const [key, value] of Object.entries(env)) {
+      args.push('-e', `${key}=${value}`);
+    }
   }
 }
 
@@ -279,7 +278,7 @@ function injectSubstituteCredentials(args: string[], groupFolder: string): void 
 export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
-  groupFolder: string,
+  group: RegisteredGroup,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -315,7 +314,7 @@ export function buildContainerArgs(
 
   // Generate format-preserving substitute tokens for the container.
   // Real credentials stay on the host; containers only see substitutes.
-  injectSubstituteCredentials(args, groupFolder);
+  injectSubstituteCredentials(args, group);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -357,7 +356,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group.folder);
+  const containerArgs = buildContainerArgs(mounts, containerName, group);
 
   logger.debug(
     {

@@ -6,7 +6,6 @@
  * 1. credentials/{group.folder}/ (group-specific)
  * 2. credentials/default/ (if group is allowed via useDefaultCredentials)
  */
-import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
 import { getAllProviders } from './registry.js';
 
@@ -27,25 +26,7 @@ export function resolveScope(group: RegisteredGroup): string {
     ?? (group.isMain === true);
 
   // Group scope wins if any provider has credentials there
-  if (providers.some(p => p.hasAuth(group.folder))) return group.folder;
-  if (useDefault && providers.some(p => p.hasAuth('default'))) return 'default';
+  if (providers.some(p => p.hasValidCredentials(group.folder))) return group.folder;
+  if (useDefault && providers.some(p => p.hasValidCredentials('default'))) return 'default';
   return group.folder;
-}
-
-export function resolveSecrets(group: RegisteredGroup): Record<string, string> {
-  const scope = resolveScope(group);
-  const env: Record<string, string> = {};
-
-  for (const provider of getAllProviders()) {
-    Object.assign(env, provider.provision(scope).env);
-  }
-
-  if (Object.keys(env).length > 0) {
-    logger.debug(
-      { group: group.name, scope, keys: Object.keys(env) },
-      'Resolved secrets from credential store',
-    );
-  }
-
-  return env;
 }

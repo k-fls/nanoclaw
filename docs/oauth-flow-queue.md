@@ -33,6 +33,8 @@ Separate component from the queue. Receives callbacks from queue mutations and O
 - Subscribing to a specific flow's SSE events by `flowId`
 - Listing all current OAuth flow statuses (`GET /auth/flows`) — useful when the agent needs to check if any auth flows are pending or in progress without knowing a specific `flowId`
 
+**Implementation:** `BrowserOpenCallback` returns the `flowId` synchronously. The browser-open handler includes it in the HTTP response: `{"exit_code": 0, "flowId": "claude:54321"}`. The `flowId` is constructed in `pushOAuthFlow` (index.ts) from the OAuth URL's `redirect_uri` and the matched `providerId`.
+
 Event types:
 ```
 event: queued
@@ -58,7 +60,7 @@ data: {"providerId":"github","explanation":"new URL superseded old entry"}
 Claude CLI's `setup-token` mode can show a "Paste code here" prompt on stdout. `detectCodeDelivery` detects this via the paste prompt regex.
 
 - Direct stdin write to the auth container (spawned by `reauth.ts`, not the agent container)
-- The queue IS involved as the callback delivery mechanism — `detectCodeDelivery` races `wait(queue entry + stdin paste prompt)` instead of the current `wait(file + stdin paste prompt)`. The xdg-open shim POSTs to `/auth/browser-open`, the handler pushes to the queue, and the reauth orchestrator awaits the queue entry for the callback leg of the race.
+- `detectCodeDelivery` races `wait(file + stdin paste prompt)` — the xdg-open shim writes the OAuth URL to `.oauth-url` in the auth IPC directory, and the reauth orchestrator polls for it alongside the paste prompt. The queue is NOT involved here: reauth runs after the session context is deregistered (or before one exists), so there is no active flow queue to push to. The file-based approach is self-contained within the reauth container's IPC namespace.
 - No chat ownership contention — this runs inside the reauth orchestrator's sequential menu flow, where chat ownership is already held and the agent is not running
 - No status reporting needed — no agent to inform
 
@@ -85,12 +87,12 @@ Other providers' flows are presented to the user in FIFO order.
 
 ## Chat Ownership
 
-- Active queue flow → queue consumer owns the chat, agent message stream paused
+- Active queue flow → queue consumer owns the chat, agent message stream buffered
 - No active flow → agent owns the chat
 
 The agent may be:
 - Blocked on a tool call that triggered the OAuth → tool unblocks when flow completes, agent continues
-- Running → paused until flow completes
+- Running → output buffered until flow completes (see backpressure note in Barge-In Mechanism)
 - Dead (Claude 401) → agent was killed by `closeStdin()`, reauth runs post-exit via `handleAuthError()`
 
 With the flow queue, barge-in during a live agent run becomes possible — rather than killing the agent on auth error, the system can pause the stream, reauth, and resume. This was not possible in the pre-queue architecture.
@@ -101,18 +103,70 @@ With the flow queue, barge-in during a live agent run becomes possible — rathe
 
 The queue consumer and the streaming callback are independent concerns that share one resource: the chat. An async mutex mediates access.
 
-### Design
+### Synchronization objects
 
-**Async mutex (`chatLock`):** Created per agent run. Both the streaming callback and the queue consumer acquire it before any chat interaction and release it after.
+**`FlowQueue`** — ordered list with notification. Three operations:
+- `push(entry)` — append (dedup by provider first: if same `providerId` exists, splice it out, emit `removed`). Wake consumer if blocked.
+- `waitForEntry(signal: AbortSignal): Promise<FlowEntry | null>` — blocking pop from front. Blocks when empty, wakes on push or abort. Returns null on abort.
+- `removeByProvider(providerId): FlowEntry | undefined` — extract specific entry from anywhere in the queue. Returns it to the caller for processing.
 
-**Queue consumer:** Independent async loop, spawned when a flow is added to the queue. Accepts an `AbortSignal` for cancellation. Lifecycle:
-1. Acquire `chatLock`
-2. Present OAuth URL to user
-3. Await user reply (respects `AbortSignal`)
-4. Call `deliveryFn`, report to status registry
-5. Release `chatLock`
+Notification is a simple resolve callback — `push` calls it, `waitForEntry` sets it. Single-threaded Node, no concurrent mutation across await points.
 
-**Streaming callback:** Before `channel.sendMessage`, acquires `chatLock`. While the lock is held by the queue consumer, the callback blocks. Subsequent `onOutput` calls queue up in the `outputChain` promise chain. When the lock is released, queued messages are delivered in order.
+**`AsyncMutex` (`chatLock`)** — acquire/release. Two users: streaming callback and FIFO consumer. Uncontended case (no OAuth): acquire returns immediately, zero overhead.
+
+**`AbortController`** — created per `handleMessages`. Signal passed to consumer loop. Fired when container exits.
+
+### Moving parts
+
+**Producers** (push into queue):
+- `handleBrowserOpen` — xdg-open shim POST, resolves scope from container IP, calls `queue.push()`
+- Proxy interception — same path, different trigger source
+
+**FIFO consumer** (single loop, lifetime of `handleMessages`):
+```
+while not aborted:
+    entry = await queue.waitForEntry(signal)  // blocks when empty
+    if null: break                            // aborted
+    await chatLock.acquire()
+    present URL → await user reply → call deliveryFn → emit status
+    chatLock.release()
+```
+
+FIFO is structural — `waitForEntry` pops from front via `shift()`. One loop, one consumer, sequential processing.
+
+**Streaming callback** (per output chunk):
+```
+await chatLock.acquire()
+await channel.sendMessage(chatJid, text)
+chatLock.release()
+guard.onStreamResult(result)
+```
+
+While the lock is held by the queue consumer, the callback blocks. Subsequent `onOutput` calls queue up in the `outputChain` promise chain. When the lock is released, queued messages are delivered in order.
+
+**Claude's auth runner** (post-exit, inside `handleAuthError`):
+```
+entry = queue.removeByProvider('claude')
+if entry: present URL → await reply → call deliveryFn
+else: normal reauth menu
+```
+
+No `chatLock` needed — consumer is dead, agent is dead, nobody else is using the chat.
+
+### Lifecycle in `handleMessages`
+
+```
+1. Create queue, chatLock, abortController
+2. Start consumer:  consumerPromise = consumeFlows(queue, chatLock, chat, signal)
+3. Run agent        (streaming callback acquires chatLock per sendMessage)
+4. Agent exits
+5. abortController.abort()          — consumer sees abort
+6. await consumerPromise            — consumer finishes: releases chatLock if held, exits
+7. handleAuthError()                — may call queue.removeByProvider('claude')
+8. return                           — queue, chatLock, abortController go out of scope
+```
+
+Steps 5–6 before 7: the consumer is guaranteed dead before Claude's auth runner touches the queue. No race. If the consumer was mid-flow (awaiting user reply for a non-Claude provider), the AbortSignal aborts the reply await, consumer emits `failed` for that flow, releases chatLock, exits.
 
 **Note — no backpressure in current reading pattern:** `container-runner.ts` reads stdout via `container.stdout.on('data', ...)` which never blocks — chunks accumulate in `parseBuffer` (unbounded) regardless of whether `onOutput` is blocked. The container keeps running during an OAuth flow; the agent is not paused. Output arrives in a burst when the lock releases. In practice the agent produces little output during a ~30s OAuth flow, so this is benign — but it is buffering, not backpressure. True pause requires switching to `for await (const chunk of container.stdout)` (async iterator with built-in backpressure) or explicit `pause()`/`resume()` around the `onOutput` await.
 
@@ -152,18 +206,17 @@ The race exists because the CLI's behavior depends on whether xdg-open succeeded
 
 ## Auth Error Detection
 
-### Current approach (fragile)
+### Dual-confirmation flow
 
-`authGuard.onStreamResult` parses Claude CLI's streaming output for `Failed to authenticate. API Error: 401 {...}`. Depends on exact string format, only works for Claude, detection happens late.
+Auth errors require both proxy and agent to agree via request ID correlation. The bearer-swap handler attempts `refreshViaTokenEndpoint` inline on 401/403 — by the time the agent surfaces the error, the proxy has already tried and failed to refresh.
 
-### Current flow (preserved with improvements)
+1. Bearer-swap gets 401/403, `refreshViaTokenEndpoint` fails → calls auth error callback → `pendingErrors.record(requestId)`. Upstream error body (with `request_id`) forwarded to container.
+2. `onStreamResult` sees error in streaming output → extracts request ID → `pendingErrors.has(requestId)` → confirmed. Sets `streamedAuthError`, calls `closeStdin()` → container dies.
+3. Agent exits → `handleAuthError()` runs → checks flow queue for Claude entry (`queue.removeByProvider('claude')`) → if found, processes it directly (no chatLock needed — consumer is dead). If credentials still missing, falls through to `runReauth()`.
 
-1. `onStreamResult` detects auth error in streaming output → sets `streamedAuthError`, calls `closeStdin()` → container dies
-2. Agent exits → back in `index.ts`, `handleAuthError()` runs
-3. `handleAuthError` checks `streamedAuthError` → tries `tryRefreshProvider(force=true)` → if fails, calls `runReauth()`
-4. Reauth menu presented to user → provider flow runs → credentials stored
+Without `pendingErrors` (legacy, no proxy integration): regex match alone is sufficient — no proxy confirmation.
 
-### UOAuth improvement: provider hook + proxy-confirmed detection
+### Provider hook + proxy-confirmed detection
 
 **Container session context:**
 
@@ -188,11 +241,11 @@ When the container dies and `handleMessages` returns, the callback is deregister
 
 **Claude's flow:**
 
-1. Bearer-swap gets 401/403 from `api.anthropic.com`, refresh fails → resolves session context from container IP → calls auth error callback → callback extracts `request_id` from Anthropic's JSON error response, calls `pendingErrors.record(requestId)`. The upstream error body (containing `request_id`) is forwarded to the container. **Note:** the current bearer-swap handler (`universal-oauth-handler.ts`) drains the upstream body on 401 and synthesizes a generic `{ error, status }` response. This must change to buffer the upstream body, extract the `request_id`, then forward the real body to the container — both sides need the same `request_id` for correlation.
-2. `onStreamResult` sees error in streaming output → extracts request ID → calls `pendingErrors.has(requestId)` → confirmed (not a false positive).
-3. Auth guard triggers reauth, calls `pendingErrors.clear()`.
+1. Bearer-swap gets 401/403 from `api.anthropic.com`, `refreshViaTokenEndpoint` fails → resolves session context from container IP → calls auth error callback → callback extracts `request_id` from Anthropic's JSON error response, calls `pendingErrors.record(requestId)`. The upstream error body (containing `request_id`) is forwarded to the container (`universal-oauth-handler.ts` buffers the body, calls `authErrorCb`, then `clientRes.end(upstreamBody)`).
+2. `onStreamResult` sees error in streaming output → extracts request ID → calls `pendingErrors.has(requestId)` → confirmed (not a false positive). Unconfirmed errors (proxy didn't record the request ID) are ignored.
+3. Auth guard calls `pendingErrors.clear()`, checks flow queue for a queued Claude OAuth URL (`queue.removeByProvider('claude')`), processes it if found, falls through to `runReauth()` if credentials are still missing.
 
-**Benefits over current approach:**
+**Benefits:**
 - No false positives — both proxy and agent must agree
 - Provider-agnostic at the proxy level (any 401/403 calls the session context's auth error callback)
 - Agent-side detection can remain loose (just extract request ID, no format-specific regex)
@@ -200,3 +253,26 @@ When the container dies and `handleMessages` returns, the callback is deregister
 - The auth error callback is set per container session, not per provider — different providers can supply different callback logic when the session is created
 
 **Non-Claude providers:** Currently have no OAuth initiation logic, so proxy-detected 401 cannot trigger a reauth flow for them. However, xdg-open shim detection of their OAuth URLs works — those URLs are barged-in to the user via the queue regardless of provider.
+
+## Credential Migration (per-group-auth-flat → ssl-auth-proxy)
+
+The earlier branch (`skill/per-group-auth-flat`) stores Claude OAuth credentials as a single encrypted JSON blob:
+
+**Old format:** `credentials/{scope}/claude_auth.json`
+```json
+{
+  "auth_type": "auth_login",
+  "token": "enc:aes-256-gcm:...(encrypted JSON: {\"claudeAiOauth\": {\"accessToken\": \"...\", \"refreshToken\": \"...\", \"expiresAt\": \"...\"}})",
+  "expires_at": "...",
+  "updated_at": "..."
+}
+```
+
+The new `PersistentTokenResolver` stores each token separately:
+
+**New format:** `credentials/{scope}/claude_access.json` + `credentials/{scope}/claude_refresh.json`
+```json
+{ "auth_type": "oauth_token", "token": "enc:aes-256-gcm:...(single token)", "expires_at": null, "updated_at": "..." }
+```
+
+On startup (or first `provision()` for a scope), if `claude_access.json` / `claude_refresh.json` do not exist, try to extract them from `claude_auth.json`. If found with `auth_type: 'auth_login'`: decrypt the blob, parse the `claudeAiOauth` JSON, extract `accessToken` and `refreshToken`, store each via `PersistentTokenResolver.store()`. Keep the old `claude_auth.json` intact — it remains the source of truth for `claudeProvider.provision()` and `claudeProvider.refresh()` until those are fully migrated to the token engine. `api_key` and `setup_token` auth types do not need migration — they are single-value tokens that map directly.

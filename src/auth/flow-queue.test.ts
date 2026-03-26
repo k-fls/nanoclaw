@@ -118,43 +118,17 @@ describe('FlowQueue', () => {
     });
   });
 
-  describe('removeByProvider', () => {
-    it('extracts matching entry', () => {
+  describe('hasProvider', () => {
+    it('returns true when provider has pending entry', () => {
       const q = new FlowQueue();
       q.push(entry('github'), 'test');
-      q.push(entry('google'), 'test');
-
-      const removed = q.removeByProvider('github');
-      expect(removed).toBeDefined();
-      expect(removed!.providerId).toBe('github');
-      expect(q.length).toBe(1);
+      expect(q.hasProvider('github')).toBe(true);
     });
 
-    it('returns undefined if not found', () => {
+    it('returns false when provider has no pending entry', () => {
       const q = new FlowQueue();
       q.push(entry('github'), 'test');
-
-      const removed = q.removeByProvider('slack');
-      expect(removed).toBeUndefined();
-      expect(q.length).toBe(1);
-    });
-
-    it('extracts from middle of queue', async () => {
-      const q = new FlowQueue();
-      q.push(entry('github'), 'test');
-      q.push(entry('google'), 'test');
-      q.push(entry('slack'), 'test');
-
-      const removed = q.removeByProvider('google');
-      expect(removed!.providerId).toBe('google');
-      expect(q.length).toBe(2);
-
-      // Remaining are github and slack in order
-      const abort = new AbortController();
-      const r1 = q.waitForEntry(abort.signal);
-      const r2 = q.waitForEntry(abort.signal);
-      expect((await r1)!.providerId).toBe('github');
-      expect((await r2)!.providerId).toBe('slack');
+      expect(q.hasProvider('slack')).toBe(false);
     });
   });
 

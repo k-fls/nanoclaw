@@ -34,7 +34,7 @@ const { initCredentialStore, encrypt, saveCredential } = await import(
   './store.js'
 );
 const { registerProvider, getAllProviders } = await import('./registry.js');
-const { resolveSecrets, importEnvToDefault } = await import('./provision.js');
+const { resolveScope, importEnvToDefault } = await import('./provision.js');
 const { readEnvFile } = await import('../env.js');
 
 import type { CredentialProvider } from './types.js';
@@ -56,173 +56,59 @@ function makeGroup(
   };
 }
 
-describe('resolveSecrets', () => {
-  beforeEach(() => {
-    initCredentialStore();
+describe('resolveScope', () => {
+  const stub = (service: string, hasValid: (scope: string) => boolean): CredentialProvider => ({
+    service,
+    displayName: 'Test',
+    hasValidCredentials: hasValid,
+    provision: () => ({ env: {} }),
+    storeResult: () => {},
+    authOptions: () => [],
   });
 
-  it('returns empty when no credentials exist and default not allowed', () => {
-    const group = makeGroup('no-creds');
-    const env = resolveSecrets(group);
-    expect(env).toEqual({});
+  it('returns group folder when no credentials anywhere', () => {
+    registerProvider(stub('test-none', () => false));
+    expect(resolveScope(makeGroup('no-creds'))).toBe('no-creds');
   });
 
-  it('returns group-specific credentials', () => {
-    // Register a test provider
-    const provider: CredentialProvider = {
-      service: 'test-resolve',
-      displayName: 'Test',
-      hasAuth: (scope) => scope === 'my-group',
-      provision: (scope) => {
-        if (scope === 'my-group') return { env: { MY_KEY: 'group-value' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('my-group');
-    const env = resolveSecrets(group);
-    expect(env.MY_KEY).toBe('group-value');
+  it('returns group folder when group has credentials', () => {
+    registerProvider(stub('test-group', (s) => s === 'my-group'));
+    expect(resolveScope(makeGroup('my-group'))).toBe('my-group');
   });
 
-  it('falls back to default scope when useDefaultCredentials is true', () => {
-    const provider: CredentialProvider = {
-      service: 'test-default',
-      displayName: 'Test',
-      hasAuth: (scope) => scope === 'default',
-      provision: (scope) => {
-        if (scope === 'default') return { env: { DEF_KEY: 'default-value' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('some-group', { useDefaultCredentials: true });
-    const env = resolveSecrets(group);
-    expect(env.DEF_KEY).toBe('default-value');
+  it('falls back to default when useDefaultCredentials is true', () => {
+    registerProvider(stub('test-default', (s) => s === 'default'));
+    expect(resolveScope(makeGroup('some-group', { useDefaultCredentials: true }))).toBe('default');
   });
 
   it('defaults to useDefaultCredentials=true for main group', () => {
-    const provider: CredentialProvider = {
-      service: 'test-main-default',
-      displayName: 'Test',
-      hasAuth: (scope) => scope === 'default',
-      provision: (scope) => {
-        if (scope === 'default') return { env: { MAIN_KEY: 'from-default' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    // Main group with no containerConfig at all — should still get default creds
-    const group = makeGroup('main-group', { isMain: true });
-    const env = resolveSecrets(group);
-    expect(env.MAIN_KEY).toBe('from-default');
+    registerProvider(stub('test-main', (s) => s === 'default'));
+    expect(resolveScope(makeGroup('main-group', { isMain: true }))).toBe('default');
   });
 
   it('does NOT default to useDefaultCredentials=true for non-main group', () => {
-    const provider: CredentialProvider = {
-      service: 'test-nonmain-default',
-      displayName: 'Test',
-      hasAuth: () => false,
-      provision: (scope) => {
-        if (scope === 'default') return { env: { NONMAIN: 'blocked' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    // Non-main group with no containerConfig — should NOT get default creds
-    const group = makeGroup('other-group');
-    const env = resolveSecrets(group);
-    expect(env.NONMAIN).toBeUndefined();
+    registerProvider(stub('test-nonmain', () => false));
+    expect(resolveScope(makeGroup('other-group'))).toBe('other-group');
   });
 
   it('explicit useDefaultCredentials=false overrides isMain', () => {
-    const provider: CredentialProvider = {
-      service: 'test-main-override',
-      displayName: 'Test',
-      hasAuth: () => false,
-      provision: (scope) => {
-        if (scope === 'default') return { env: { OVERRIDE: 'blocked' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('main-locked', { isMain: true, useDefaultCredentials: false });
-    const env = resolveSecrets(group);
-    expect(env.OVERRIDE).toBeUndefined();
+    registerProvider(stub('test-override', () => false));
+    expect(resolveScope(makeGroup('main-locked', { isMain: true, useDefaultCredentials: false }))).toBe('main-locked');
   });
 
   it('does NOT fall back to default when useDefaultCredentials is not set', () => {
-    const provider: CredentialProvider = {
-      service: 'test-no-default',
-      displayName: 'Test',
-      hasAuth: () => false,
-      provision: (scope) => {
-        if (scope === 'default')
-          return { env: { BLOCKED_KEY: 'should-not-see' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('isolated-group');
-    const env = resolveSecrets(group);
-    expect(env.BLOCKED_KEY).toBeUndefined();
+    registerProvider(stub('test-no-default', () => false));
+    expect(resolveScope(makeGroup('isolated-group'))).toBe('isolated-group');
   });
 
   it('does NOT fall back to default when useDefaultCredentials is false', () => {
-    const provider: CredentialProvider = {
-      service: 'test-explicit-false',
-      displayName: 'Test',
-      hasAuth: () => false,
-      provision: (scope) => {
-        if (scope === 'default')
-          return { env: { NOPE: 'blocked' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('locked-group', { useDefaultCredentials: false });
-    const env = resolveSecrets(group);
-    expect(env.NOPE).toBeUndefined();
+    registerProvider(stub('test-explicit-false', () => false));
+    expect(resolveScope(makeGroup('locked-group', { useDefaultCredentials: false }))).toBe('locked-group');
   });
 
   it('group scope takes precedence over default', () => {
-    const provider: CredentialProvider = {
-      service: 'test-precedence',
-      displayName: 'Test',
-      hasAuth: () => true,
-      provision: (scope) => {
-        if (scope === 'priority-group') return { env: { K: 'group' } };
-        if (scope === 'default') return { env: { K: 'default' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('priority-group', { useDefaultCredentials: true });
-    const env = resolveSecrets(group);
-    expect(env.K).toBe('group');
+    registerProvider(stub('test-precedence', () => true));
+    expect(resolveScope(makeGroup('priority-group', { useDefaultCredentials: true }))).toBe('priority-group');
   });
 });
 
@@ -236,7 +122,7 @@ describe('importEnvToDefault', () => {
     const provider: CredentialProvider = {
       service: 'test-import',
       displayName: 'Test',
-      hasAuth: () => false,
+      hasValidCredentials: () => false,
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],
@@ -252,7 +138,7 @@ describe('importEnvToDefault', () => {
     const provider: CredentialProvider = {
       service: 'test-no-import',
       displayName: 'Test',
-      hasAuth: () => false,
+      hasValidCredentials: () => false,
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],

@@ -2,7 +2,6 @@
  * Auth barrel — re-exports and registers built-in providers.
  */
 export { initCredentialStore } from './store.js';
-export { resolveSecrets } from './provision.js';
 export { importEnvToDefault } from './provision.js';
 export { createAuthGuard } from './guard.js';
 export { registerProvider, getProvider, getAllProviders, registerDiscoveryProviders, getTokenEngine, getTokenResolver } from './registry.js';

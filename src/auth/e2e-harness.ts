@@ -257,10 +257,7 @@ export class OAuthE2EHarness {
       return fetch(`${mockBase}${url.pathname}${url.search}`, init);
     });
 
-    // 3. Set up proxy credential resolver (noop — tokens go through engine)
-    this.proxy.setCredentialResolver(() => ({}));
-
-    // 3b. Wire global singletons so buildContainerArgs (which calls getProxy(),
+    // 3. Wire global singletons so buildContainerArgs (which calls getProxy(),
     //     getTokenEngine(), etc.) uses our test instances
     setProxyInstance(this.proxy);
     setTokenEngine(this.tokenEngine);
@@ -404,7 +401,7 @@ export class OAuthE2EHarness {
     // Use the real container setup from container-runner.ts
     const volumeMounts = buildVolumeMounts(group, false);
     const containerName = `nanoclaw-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const containerArgs = buildContainerArgs(volumeMounts, containerName, scope);
+    const containerArgs = buildContainerArgs(volumeMounts, containerName, group);
 
     // Override PROXY_PORT — buildContainerArgs uses CREDENTIAL_PROXY_PORT from config
     // but our test proxy is on a dynamic port.

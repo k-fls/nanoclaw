@@ -22,7 +22,7 @@ const CONFIG_DIR = path.join(
   '.config',
   'nanoclaw',
 );
-const CREDENTIALS_DIR = path.join(CONFIG_DIR, 'credentials');
+export const CREDENTIALS_DIR = path.join(CONFIG_DIR, 'credentials');
 const KEY_PATH = path.join(CONFIG_DIR, 'encryption-key');
 
 let encryptionKey: Buffer | null = null;

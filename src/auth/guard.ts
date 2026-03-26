@@ -7,32 +7,8 @@ import type { ChatIO, CredentialProvider } from './types.js';
 import { isAuthError, extractStreamRequestId } from './providers/claude.js';
 import { resolveScope } from './provision.js';
 import { runReauth } from './reauth.js';
-import { processFlow } from './flow-consumer.js';
-import { FlowStatusRegistry } from './flow-status.js';
-import type { FlowQueue } from './flow-queue.js';
 import type { PendingAuthErrors } from './pending-auth-errors.js';
 import { logger } from '../logger.js';
-
-/**
- * Try to refresh the given provider's credentials for this group.
- * Returns true if credentials are now available.
- */
-async function tryRefreshProvider(
-  group: RegisteredGroup,
-  provider: CredentialProvider,
-  scope: string,
-  force?: boolean,
-): Promise<boolean> {
-  if (!provider.refresh) return false;
-
-  logger.info({ group: group.name, provider: provider.service, scope, force }, 'Attempting credential refresh');
-  try {
-    return await provider.refresh(scope, force);
-  } catch (err) {
-    logger.warn({ group: group.name, provider: provider.service, scope, err }, 'Credential refresh threw');
-  }
-  return false;
-}
 
 const MAX_REASON_LEN = 200;
 
@@ -55,10 +31,6 @@ export function createAuthGuard(
   provider: CredentialProvider,
   /** Optional pending auth errors tracker for proxy-confirmed detection. */
   pendingErrors?: PendingAuthErrors,
-  /** Optional flow queue — if provided, handleAuthError checks for queued Claude OAuth URLs. */
-  flowQueue?: FlowQueue,
-  /** Status registry for flow events (needed when processing queued entries). */
-  statusRegistry?: FlowStatusRegistry,
 ) {
   let streamedAuthError: string | null = null;
 
@@ -71,19 +43,19 @@ export function createAuthGuard(
     if (!isAuthError(error)) return false;
 
     if (pendingErrors) {
+      // Proxy-confirmed mode: both proxy and agent must agree via request_id.
       const requestId = extractStreamRequestId(error);
       if (requestId && pendingErrors.has(requestId)) {
         return true;
       }
-      // Proxy didn't record this request_id — could be a false positive.
-      // Fall through to legacy detection for backwards compatibility during migration.
       logger.debug(
         { group: group.name, requestId },
-        'Auth error detected in stream but not confirmed by proxy, using legacy detection',
+        'Auth error in stream not confirmed by proxy — ignoring (not a confirmed auth error)',
       );
+      return false;
     }
 
-    // Legacy: regex match alone is sufficient (no proxy confirmation)
+    // No pendingErrors tracker — regex match alone (legacy, no proxy integration)
     return true;
   }
 
@@ -92,11 +64,8 @@ export function createAuthGuard(
     async preCheck(): Promise<boolean> {
       const scope = resolveScope(group);
 
-      // Check if provider can serve usable credentials
-      if (Object.keys(provider.provision(scope).env).length > 0) return true;
-
-      // Credentials missing or expired — try refresh
-      if (await tryRefreshProvider(group, provider, scope)) return true;
+      // Check if provider has stored credentials
+      if (provider.hasValidCredentials(scope)) return true;
 
       logger.warn({ group: group.name }, 'No credentials available, starting reauth');
       return runReauth(group.folder, createChat(), 'No credentials configured', provider.displayName);
@@ -127,33 +96,6 @@ export function createAuthGuard(
       const reason = streamedAuthError;
       streamedAuthError = null;
       pendingErrors?.clear();
-
-      if (await tryRefreshProvider(group, provider, resolveScope(group), true)) {
-        logger.info({ group: group.name }, 'Credential refresh succeeded, skipping reauth');
-        return 'reauth-ok';
-      }
-
-      // Check if the flow queue has a Claude OAuth URL captured during the agent run.
-      // The FIFO consumer was cancelled (step 5-6), but the entry may still be in the queue.
-      // Process it directly — no chatLock needed (consumer is dead, agent is dead).
-      if (flowQueue) {
-        const entry = flowQueue.removeByProvider('claude');
-        if (entry) {
-          logger.info({ flowId: entry.flowId }, 'Auth error: using queued Claude OAuth URL');
-          const chat = createChat();
-          const reg = statusRegistry ?? new FlowStatusRegistry();
-          await processFlow(entry, null, chat, reg);
-          chat.advanceCursor();
-          // Check if credentials are now available after the flow
-          if (await tryRefreshProvider(group, provider, resolveScope(group), true)) {
-            return 'reauth-ok';
-          }
-          if (Object.keys(provider.provision(resolveScope(group)).env).length > 0) {
-            return 'reauth-ok';
-          }
-          // Flow completed but credentials still not available — fall through to reauth menu
-        }
-      }
 
       logger.warn({ group: group.name, reason }, 'Auth error detected, starting reauth');
       const ok = await runReauth(group.folder, createChat(), `Agent failed: ${sanitizeReason(reason)}`, provider.displayName);

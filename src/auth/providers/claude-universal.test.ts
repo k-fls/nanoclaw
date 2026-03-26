@@ -1,7 +1,6 @@
 /**
  * Tests for Claude's universal OAuth integration:
  * - wrapWithApiKeySupport
- * - generateSubstituteCredentials
  * - CLAUDE_OAUTH_PROVIDER definition
  */
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -12,15 +11,26 @@ import {
   CLAUDE_PROVIDER_ID,
   CLAUDE_SUBSTITUTE_CONFIG,
   wrapWithApiKeySupport,
-  generateSubstituteCredentials,
+  claudeProvider,
 } from './claude.js';
-import { TokenSubstituteEngine, PersistentTokenResolver } from '../token-substitute.js';
+import { TokenSubstituteEngine, PersistentTokenResolver, type TokenRole } from '../token-substitute.js';
 import type { HostHandler } from '../../credential-proxy.js';
 import { DEFAULT_SUBSTITUTE_CONFIG } from '../oauth-types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Seed engine with a real token and return provision() result. */
+function generateSubstitute(
+  engine: TokenSubstituteEngine,
+  scope: string,
+  realToken: string,
+  role: TokenRole = 'access',
+): { env: Record<string, string> } {
+  engine.generateSubstitute(realToken, CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, role);
+  return claudeProvider.provision(scope, engine);
+}
 
 function mockRequest(headers: Record<string, string> = {}): http.IncomingMessage {
   const { PassThrough } = require('stream');
@@ -104,32 +114,26 @@ describe('wrapWithApiKeySupport', () => {
     engine = new TokenSubstituteEngine(resolver);
   });
 
-  it('resolves x-api-key substitute and delegates to proxyPipe', async () => {
+  it('resolves x-api-key substitute and delegates to universal handler', async () => {
     const realKey = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const sub = engine.generateSubstitute(realKey, CLAUDE_PROVIDER_ID, {}, 'scope', CLAUDE_SUBSTITUTE_CONFIG, 'api_key')!;
     expect(sub).not.toBeNull();
 
-    // Track what the universal handler receives
-    let universalCalled = false;
-    const universalHandler: HostHandler = async () => { universalCalled = true; };
+    // Track what the universal handler receives and verify resolved header
+    let capturedHeaders: Record<string, any> = {};
+    const universalHandler: HostHandler = async (req) => {
+      capturedHeaders = { ...req.headers };
+    };
 
     const handler = wrapWithApiKeySupport(universalHandler, engine);
 
-    // The handler calls proxyPipe which requires a real socket — we can't fully
-    // test the pipe, but we can verify the universal handler is NOT called
-    // (x-api-key path is taken instead)
     const req = mockRequest({ 'x-api-key': sub });
     const res = mockResponse();
 
-    // This will throw because proxyPipe needs real sockets, but the important
-    // thing is that universalHandler is NOT called
-    try {
-      await handler(req, res, 'api.anthropic.com', 443, 'scope');
-    } catch {
-      // Expected — proxyPipe can't actually connect
-    }
+    await handler(req, res, 'api.anthropic.com', 443, 'scope');
 
-    expect(universalCalled).toBe(false);
+    // x-api-key should be resolved to the real key before delegation
+    expect(capturedHeaders['x-api-key']).toBe(realKey);
   });
 
   it('delegates to universal handler for Bearer tokens', async () => {
@@ -162,44 +166,46 @@ describe('wrapWithApiKeySupport', () => {
 });
 
 // ---------------------------------------------------------------------------
-// generateSubstituteCredentials
+// provision with token engine
 // ---------------------------------------------------------------------------
 
-describe('generateSubstituteCredentials', () => {
-  // Note: these tests can't call the real claudeProvider.provision() because
-  // the credential store isn't initialized. We test the token engine interaction
-  // by verifying the function signature and substitute config are correct.
-
-  it('CLAUDE_SUBSTITUTE_CONFIG preserves sk-ant-api prefix', () => {
-    const resolver = new PersistentTokenResolver();
-    const engine = new TokenSubstituteEngine(resolver);
+describe('provision with token engine', () => {
+  it('returns substitute for api_key with sk-ant-api prefix preserved', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
     const real = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
-    const sub = engine.generateSubstitute(real, CLAUDE_PROVIDER_ID, {}, 'scope', CLAUDE_SUBSTITUTE_CONFIG, 'api_key')!;
-    expect(sub).not.toBeNull();
-    // First 14 chars preserved: "sk-ant-api03-a"
-    expect(sub.slice(0, 14)).toBe(real.slice(0, 14));
-    expect(sub).not.toBe(real);
-    expect(sub.length).toBe(real.length);
+    const { env } = generateSubstitute(engine, 'scope', real, 'api_key');
+    expect(env.ANTHROPIC_API_KEY).toBeDefined();
+    expect(env.ANTHROPIC_API_KEY.slice(0, 14)).toBe(real.slice(0, 14));
+    expect(env.ANTHROPIC_API_KEY).not.toBe(real);
+    expect(env.ANTHROPIC_API_KEY.length).toBe(real.length);
   });
 
-  it('CLAUDE_SUBSTITUTE_CONFIG preserves sk-ant-oat prefix', () => {
-    const resolver = new PersistentTokenResolver();
-    const engine = new TokenSubstituteEngine(resolver);
+  it('returns substitute for access token with sk-ant-oat prefix preserved', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
     const real = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
-    const sub = engine.generateSubstitute(real, CLAUDE_PROVIDER_ID, {}, 'scope', CLAUDE_SUBSTITUTE_CONFIG)!;
-    expect(sub).not.toBeNull();
-    expect(sub.slice(0, 14)).toBe(real.slice(0, 14));
+    const { env } = generateSubstitute(engine, 'scope', real);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(real.slice(0, 14));
   });
 
-  it('CLAUDE_SUBSTITUTE_CONFIG preserves sk-ant-ort prefix for refresh tokens', () => {
-    const resolver = new PersistentTokenResolver();
-    const engine = new TokenSubstituteEngine(resolver);
-    const real = 'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  it('does not expose refresh token in env', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const realAccess = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const realRefresh = 'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
-    const sub = engine.generateSubstitute(real, CLAUDE_PROVIDER_ID, {}, 'scope', CLAUDE_SUBSTITUTE_CONFIG, 'refresh')!;
-    expect(sub).not.toBeNull();
-    expect(sub.slice(0, 14)).toBe(real.slice(0, 14));
+    generateSubstitute(engine, 'scope', realAccess);
+    generateSubstitute(engine, 'scope', realRefresh, 'refresh');
+
+    const { env } = claudeProvider.provision('scope', engine);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
+    expect(env.CLAUDE_REFRESH_TOKEN).toBeUndefined();
+  });
+
+  it('returns empty env when no substitutes exist', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const { env } = claudeProvider.provision('empty-scope', engine);
+    expect(env).toEqual({});
   });
 });

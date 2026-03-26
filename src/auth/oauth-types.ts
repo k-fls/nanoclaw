@@ -60,12 +60,12 @@ export const MIN_RANDOM_CHARS = 16;
 
 /**
  * Identity of a substitute token. The engine stores this, not the real token.
- * The real token is resolved at request time via TokenResolver.
+ * The real token is resolved at request time via TokenResolver using
+ * the natural key (containerScope, providerId, role).
  */
 export interface SubstituteMapping {
-  /** Opaque handle returned by TokenResolver.store(). Used to retrieve the real token. */
-  handle: string;
   providerId: string;
+  role: string;
   scopeAttrs: Record<string, string>;
   containerScope: string;
 }
@@ -73,12 +73,13 @@ export interface SubstituteMapping {
 /**
  * Pluggable credential store interface. The engine delegates real-token
  * storage and retrieval to this — it never holds credentials itself.
+ * Credentials are keyed by (containerScope, providerId, role) — no handles.
  */
 export interface TokenResolver {
-  /** Store a real token, return an opaque handle for later retrieval. */
-  store(realToken: string, providerId: string, containerScope: string, role?: string): string;
-  /** Retrieve the current real token by handle. Returns null if expired/revoked. */
-  resolve(handle: string): string | null;
+  /** Store (or update) a real token. */
+  store(realToken: string, providerId: string, containerScope: string, role?: string): void;
+  /** Retrieve the current real token. Returns null if not found or revoked. */
+  resolve(containerScope: string, providerId: string, role: string): string | null;
   /** Remove all tokens for a scope (and optionally a provider). */
   revoke(containerScope: string, providerId?: string): void;
 }

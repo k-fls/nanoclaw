@@ -110,18 +110,6 @@ describe('CredentialProxy class', () => {
     });
   });
 
-  describe('detectAuthMode', () => {
-    it('returns api-key when ANTHROPIC_API_KEY present', () => {
-      proxy.setCredentialResolver(() => ({ ANTHROPIC_API_KEY: 'sk-test' }));
-      expect(proxy.detectAuthMode('any')).toBe('api-key');
-    });
-
-    it('returns oauth when no API key', () => {
-      proxy.setCredentialResolver(() => ({ CLAUDE_CODE_OAUTH_TOKEN: 'token' }));
-      expect(proxy.detectAuthMode('any')).toBe('oauth');
-    });
-  });
-
   describe('unregisterContainerIP', () => {
     it('removes the mapping', () => {
       proxy.registerContainerIP('172.17.0.7', 'temp');
@@ -205,7 +193,6 @@ describe('credential-proxy HTTP server', () => {
 
   it('does not inject credentials on HTTP proxy requests', async () => {
     proxy.registerContainerIP('127.0.0.1', 'my-group');
-    proxy.setCredentialResolver(() => ({ ANTHROPIC_API_KEY: 'real-key' }));
     proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
     proxyPort = (proxyServer.address() as AddressInfo).port;
 

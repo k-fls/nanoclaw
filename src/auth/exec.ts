@@ -18,15 +18,17 @@ export interface ExecContainerOpts {
   timeoutMs?: number;
 }
 
-// Shim xdg-open: captures OAuth URL and exits 0 so CLI thinks browser opened.
-const XDG_OPEN_SHIM = path.join(process.cwd(), 'container', 'shims', 'xdg-open');
+// Auth shim: writes URL to file so detectCodeDelivery can poll it.
+// Agent containers use a different shim (container/shims/xdg-open) that POSTs
+// to the credential proxy's browser-open endpoint for the flow queue path.
+const XDG_OPEN_SHIM = path.join(process.cwd(), 'container', 'shims', 'xdg-open-auth');
 
 /**
  * Spawn a command inside a nanoclaw-agent container.
  *
  * Infrastructure mounts (always added):
  *   - xdg-open shim at /usr/local/bin and /usr/bin (captures OAuth URLs)
- *   - auth-ipc dir at /workspace/auth-ipc (shim writes .oauth-url here)
+ *   - auth-ipc dir at /workspace/auth-ipc (auth shim writes .oauth-url here)
  *
  * Provider-specific mounts come through opts.mounts.
  *
@@ -159,9 +161,19 @@ export function execInContainer(
   };
 }
 
+/** Base data directory for a scope (e.g. data/sessions/{scope}). */
+export function scopeDataDir(scope: string, ...subpath: string[]): string {
+  return path.join(DATA_DIR, 'sessions', scope, ...subpath);
+}
+
+/** Claude CLI data directory for a scope (e.g. data/sessions/{scope}/.claude). */
+export function scopeClaudeDir(scope: string, ...subpath: string[]): string {
+  return scopeDataDir(scope, '.claude', ...subpath);
+}
+
 /** Resolve the auth session directory for a scope. */
 export function authSessionDir(scope: string): string {
-  return path.join(DATA_DIR, 'sessions', scope, '.claude-auth');
+  return scopeDataDir(scope, '.claude-auth');
 }
 
 /**

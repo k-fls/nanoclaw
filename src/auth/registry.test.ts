@@ -10,7 +10,7 @@ import type { CredentialProvider } from './types.js';
 const makeStub = (service: string): CredentialProvider => ({
   service,
   displayName: service,
-  hasAuth: () => false,
+  hasValidCredentials: () => false,
   provision: () => ({ env: {} }),
   storeResult: () => {},
   authOptions: () => [],

@@ -3,7 +3,7 @@ import https from 'https';
 import http from 'http';
 import { Agent } from 'https';
 
-import { createHandler, setTestUpstreamAgent } from './universal-oauth-handler.js';
+import { createHandler, setTestUpstreamAgent, setAuthErrorResolver, setTokenFetch } from './universal-oauth-handler.js';
 import { setUpstreamAgent } from '../credential-proxy.js';
 import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
 import type { OAuthProvider, InterceptRule } from './oauth-types.js';
@@ -370,6 +370,69 @@ describe('universal-oauth-handler', () => {
       expect(allowed!.realToken).toBe(realToken);
     });
   });
+
+    it('buffer strategy calls authErrorCb when replay also returns 401', async () => {
+      const resolver = new PersistentTokenResolver();
+      const engine = new TokenSubstituteEngine(resolver);
+
+      const provider: OAuthProvider = {
+        id: 'buf-replay',
+        rules: [
+          { anchor: `127.0.0.1:${serverPort}`, pathPattern: /^\/oauth\/token$/, mode: 'token-exchange' },
+        ],
+        scopeKeys: [],
+        substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+      };
+
+      resolver.store('real_refresh_value', 'buf-replay', 'test-scope', 'refresh');
+      resolver.store('real_access_value', 'buf-replay', 'test-scope', 'access');
+
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine, 'buffer');
+
+      // Track auth error callbacks
+      let authErrorCalled = false;
+      setAuthErrorResolver(() => () => { authErrorCalled = true; });
+
+      // Server: /oauth/token returns new tokens, everything else returns 401
+      // (even after refresh — simulates immediate revocation)
+      const origHandler = testServer.listeners('request')[0] as Function;
+      testServer.removeAllListeners('request');
+      testServer.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          lastRequest = { method: req.method || '', url: req.url || '', headers: req.headers, body: Buffer.concat(chunks).toString() };
+          if (req.url === '/oauth/token') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ access_token: 'new_access', refresh_token: 'new_refresh' }));
+          } else {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'unauthorized', request_id: 'req_replay' }));
+          }
+        });
+      });
+
+      const origTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+      try {
+        const res = await executeHandler(handler, {
+          path: '/api/test',
+          body: 'small-body',
+          method: 'POST',
+        });
+        // Replay 401 forwarded to container
+        expect(res.status).toBe(401);
+        // Auth error callback must have fired for the replay 401
+        expect(authErrorCalled).toBe(true);
+      } finally {
+        testServer.removeAllListeners('request');
+        testServer.on('request', origHandler as any);
+        setAuthErrorResolver(() => null);
+        if (origTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+        else process.env.NODE_TLS_REJECT_UNAUTHORIZED = origTls;
+      }
+    });
 
   describe('token-exchange', () => {
     it('generates substitute tokens from upstream response', async () => {

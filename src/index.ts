@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -11,7 +12,7 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders } from './auth/index.js';
-import { resolveSecrets, resolveScope } from './auth/provision.js';
+import { resolveScope } from './auth/provision.js';
 import { claudeProvider, extractUpstreamRequestId } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
 import { AsyncMutex } from './auth/async-mutex.js';
@@ -19,7 +20,7 @@ import { createSessionContext } from './auth/session-context.js';
 import { consumeFlows } from './auth/flow-consumer.js';
 import { setAuthErrorResolver, setOAuthInitiationResolver } from './auth/universal-oauth-handler.js';
 import { setBrowserOpenCallback } from './auth/browser-open-handler.js';
-import { CredentialProxy, setProxyInstance, getProxy } from './credential-proxy.js';
+import { CredentialProxy, setProxyInstance, getProxy, setProxyResponseHook } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -230,8 +231,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     () => queue.closeStdin(chatJid),
     claudeProvider,
     sessionCtx.pendingErrors,
-    sessionCtx.flowQueue,
-    sessionCtx.statusRegistry,
   );
   const credentialsOk = await guard.preCheck();
 
@@ -598,13 +597,6 @@ async function main(): Promise<void> {
   registerBuiltinProviders();
   registerDiscoveryProviders();
 
-  // Wire per-group credential resolution into the proxy.
-  proxy.setCredentialResolver((scope) => {
-    const group = Object.values(registeredGroups).find(g => g.folder === scope)
-      || { name: scope, folder: scope, trigger: '', added_at: '' };
-    return resolveSecrets(group);
-  });
-
   // Wire auth error resolver: bearer-swap handler looks up session context by scope
   setAuthErrorResolver((scope) => {
     const ctx = proxy.getSessionContext(scope);
@@ -627,7 +619,9 @@ async function main(): Promise<void> {
     // providerId comes from the matched authorization pattern (browser-open handler)
     // or the authorize-stub handler (proxy interception) — always a real provider ID.
 
-    // flowId format: providerId:port (localhost) or providerId:<hash> (non-localhost)
+    // flowId format: providerId:callbackPort:stateHash
+    //   callbackPort = localhost port or 0 for non-localhost
+    //   stateHash = first 8 chars of base64url(sha256(oauth state param))
     let flowId: string;
     try {
       const parsed = new URL(url);
@@ -643,15 +637,14 @@ async function main(): Promise<void> {
           callbackPort = parseInt(redirectUrl.port, 10) || null;
           callbackPath = redirectUrl.pathname || '/callback';
         }
-        flowId = isLocalhost
-          ? `${providerId}:${callbackPort || 'unknown'}`
-          : `${providerId}:${Buffer.from(redirectUri).toString('base64url').slice(0, 12)}`;
-      } else {
-        const hash = Buffer.from(url).toString('base64url').slice(0, 12);
-        flowId = `${providerId}:${hash}`;
       }
-    } catch {
-      flowId = `${providerId}:${Date.now()}`;
+      const state = parsed.searchParams.get('state') || url;
+      const stateHash = crypto.createHash('sha256')
+        .update(state).digest('base64url').slice(0, 8);
+      flowId = `${providerId}:${callbackPort || 0}:${stateHash}`;
+    } catch (err) {
+      logger.warn({ err, providerId, url }, 'Failed to parse OAuth URL for flowId');
+      flowId = `${providerId}:0:${Date.now()}`;
     }
 
     // Build deliveryFn only for localhost callbacks — non-localhost redirects

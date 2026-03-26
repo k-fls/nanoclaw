@@ -289,7 +289,6 @@ export class CredentialProxy {
   private anchorRules = new Map<string, HostRule[]>();
   private containerIpToScope = new Map<string, string>();
   private sessionContexts = new Map<string, ContainerSessionContext>();
-  private _credentialResolver: CredentialResolver = () => ({});
   private _mitmCtx: MitmContext | null = null;
   private _tapFilter: ProxyTapFilter | null = null;
 
@@ -326,17 +325,9 @@ export class CredentialProxy {
 
   // ── State management ────────────────────────────────────────────
 
-  setCredentialResolver(resolver: CredentialResolver): void {
-    this._credentialResolver = resolver;
-  }
-
   /** Set a tap filter for observing raw MITM traffic. Pass null to disable. */
   setTapFilter(filter: ProxyTapFilter | null): void {
     this._tapFilter = filter;
-  }
-
-  getCredentials(scope: string): Record<string, string> {
-    return this._credentialResolver(scope);
   }
 
   registerContainerIP(ip: string, scope: string): void {
@@ -466,10 +457,6 @@ export class CredentialProxy {
     return this._mitmCtx;
   }
 
-  detectAuthMode(scope: string): AuthMode {
-    const secrets = this._credentialResolver(scope);
-    return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
-  }
 
   // ── MITM dispatch ───────────────────────────────────────────────
 

@@ -3,9 +3,9 @@
  *
  * Creates HostHandler functions for discovery-file providers.
  * Dispatches by InterceptRule.mode:
- *   - bearer-swap: swap Authorization header, pipe request, check response
- *     status before forwarding. On 401/403 with refresh available:
- *     strategy (a) 307 redirect, fallback (c) passthrough-with-hold.
+ *   - bearer-swap: swap Authorization header, send request, check response
+ *     status before forwarding. On 401/403: attempt refresh, then apply
+ *     strategy — redirect (307), buffer (replay request), or passthrough.
  *   - token-exchange: reuse handleTokenExchange from oauth-interceptor.ts
  *   - authorize-stub: reuse handleAuthorizeStub from oauth-interceptor.ts
  */
@@ -130,10 +130,7 @@ async function refreshViaTokenEndpoint(
   if (!tokenEndpoint) return false;
 
   const resolver = tokenEngine.getResolver() as PersistentTokenResolver;
-  const refreshHandle = resolver.findHandle(scope, provider.id, 'refresh');
-  if (!refreshHandle) return false;
-
-  const realRefreshToken = resolver.resolve(refreshHandle);
+  const realRefreshToken = resolver.resolve(scope, provider.id, 'refresh');
   if (!realRefreshToken) return false;
 
   try {
@@ -164,14 +161,14 @@ async function refreshViaTokenEndpoint(
     if (!tokens.access_token) return false;
 
     // Update the access token in the resolver
-    const accessHandle = resolver.findHandle(scope, provider.id, 'access');
-    if (accessHandle) {
-      resolver.update(accessHandle, tokens.access_token);
-    }
+    const expiresTs = tokens.expires_in
+      ? Date.now() + tokens.expires_in * 1000
+      : 0;
+    resolver.update(scope, provider.id, 'access', tokens.access_token, expiresTs);
 
     // Update the refresh token if a new one was issued
-    if (tokens.refresh_token && refreshHandle) {
-      resolver.update(refreshHandle, tokens.refresh_token);
+    if (tokens.refresh_token) {
+      resolver.update(scope, provider.id, 'refresh', tokens.refresh_token);
     }
 
     logger.info({ provider: provider.id, scope }, 'Token refresh succeeded');
@@ -201,6 +198,52 @@ export function setTokenFetch(fn: typeof fetch): void {
   _tokenFetch = fn;
 }
 
+/** Max request body size for buffer strategy before falling back to passthrough. */
+const BUFFER_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
+
+/**
+ * Fire the auth error callback (records request_id in pendingErrors).
+ * Must be called BEFORE clientRes.end() so the record exists when
+ * the container surfaces the error in stdout.
+ */
+function fireAuthErrorCb(scope: string, body: string, statusCode: number): void {
+  const authErrorCb = _authErrorResolver?.(scope);
+  if (authErrorCb) {
+    try {
+      authErrorCb(body, statusCode);
+    } catch (err) {
+      logger.error({ err, scope }, 'Auth error callback threw');
+    }
+  }
+}
+
+/**
+ * Send an HTTPS request and return the response.
+ * Shared by the initial request and the buffer-strategy replay.
+ */
+function sendUpstream(
+  targetHost: string,
+  targetPort: number,
+  method: string,
+  path: string,
+  headers: HeaderMap,
+  body: Buffer,
+): Promise<{ statusCode: number; headers: import('http').IncomingHttpHeaders; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(
+      { hostname: targetHost, port: targetPort, path, method, headers, agent: _upstreamAgent } as RequestOptions,
+      async (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c));
+        await new Promise<void>((r) => res.on('end', r));
+        resolve({ statusCode: res.statusCode!, headers: res.headers, body: Buffer.concat(chunks) });
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 function createBearerSwapHandler(
   provider: OAuthProvider,
   rule: InterceptRule,
@@ -226,7 +269,32 @@ function createBearerSwapHandler(
       if (entry) {
         headers['authorization'] = `Bearer ${entry.realToken}`;
       }
-      // If not resolved: pass through as-is (container's token hits upstream, gets 401)
+    }
+
+    // Buffer request body when strategy may need replay (buffer/passthrough).
+    // For redirect, pipe straight through (no replay needed).
+    let reqBody: Buffer | null = null;
+    let effectiveStrategy = refreshStrategy;
+
+    if (refreshStrategy !== 'redirect') {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      await new Promise<void>((resolve) => {
+        clientReq.on('data', (c: Buffer) => {
+          chunks.push(c);
+          size += c.length;
+        });
+        clientReq.on('end', resolve);
+      });
+      reqBody = Buffer.concat(chunks);
+      // Fall back to passthrough if body exceeds buffer limit
+      if (refreshStrategy === 'buffer' && size > BUFFER_MAX_BYTES) {
+        effectiveStrategy = 'passthrough';
+        logger.debug(
+          { provider: provider.id, scope, size },
+          'Request body exceeds buffer limit, falling back to passthrough',
+        );
+      }
     }
 
     // Send request upstream — DON'T pipe response yet, check status first
@@ -237,7 +305,7 @@ function createBearerSwapHandler(
           port: targetPort,
           path: clientReq.url,
           method: clientReq.method,
-          headers,
+          headers: reqBody ? { ...headers, 'content-length': reqBody.length } : headers,
           agent: _upstreamAgent,
         } as RequestOptions,
         async (upRes) => {
@@ -253,11 +321,10 @@ function createBearerSwapHandler(
 
           // Auth error — buffer upstream body for correlation, then attempt refresh
           logger.info(
-            { provider: provider.id, scope, status: statusCode, strategy: refreshStrategy },
+            { provider: provider.id, scope, status: statusCode, strategy: effectiveStrategy },
             'Bearer-swap: auth error, attempting refresh',
           );
 
-          // Buffer upstream body (needed for request_id extraction and forwarding)
           const bodyChunks: Buffer[] = [];
           upRes.on('data', (c) => bodyChunks.push(c));
           await new Promise<void>((r) => upRes.on('end', r));
@@ -265,33 +332,67 @@ function createBearerSwapHandler(
 
           const refreshed = await refreshViaTokenEndpoint(provider, tokenEngine, scope);
 
-          if (!refreshed || refreshStrategy === 'passthrough') {
-            // Refresh failed — notify auth error callback (for request_id correlation)
-            const authErrorCb = _authErrorResolver?.(scope);
-            if (authErrorCb) {
-              try {
-                authErrorCb(upstreamBody, statusCode);
-              } catch (err) {
-                logger.error({ err, scope }, 'Auth error callback threw');
-              }
-            }
-
-            // Forward the real upstream body to container (not a synthetic response)
+          if (!refreshed) {
+            fireAuthErrorCb(scope, upstreamBody, statusCode);
             clientRes.writeHead(statusCode, upRes.headers);
             clientRes.end(upstreamBody);
             resolve();
             return;
           }
 
-          // 307 redirect to same URL — client re-sends with same substitute
-          // token, proxy swaps with the refreshed real token
-          const redirectUrl = `https://${targetHost}${clientReq.url}`;
-          clientRes.writeHead(307, {
-            location: redirectUrl,
-            'content-length': '0',
-          });
-          clientRes.end();
-          resolve();
+          // Refresh succeeded — strategy determines what happens next
+          switch (effectiveStrategy) {
+            case 'redirect': {
+              const redirectUrl = `https://${targetHost}${clientReq.url}`;
+              clientRes.writeHead(307, { location: redirectUrl, 'content-length': '0' });
+              clientRes.end();
+              resolve();
+              break;
+            }
+
+            case 'buffer': {
+              // Replay the original request with the refreshed real token
+              try {
+                const freshEntry = substitutedToken
+                  ? tokenEngine.resolveWithRestriction(substitutedToken, scope, scopeAttrs)
+                  : null;
+                const replayHeaders = { ...headers };
+                if (freshEntry) {
+                  replayHeaders['authorization'] = `Bearer ${freshEntry.realToken}`;
+                }
+                const replay = await sendUpstream(
+                  targetHost, targetPort, clientReq.method || 'GET',
+                  clientReq.url || '/', replayHeaders, reqBody!,
+                );
+                // If replay also fails with auth error, record for the guard
+                if (replay.statusCode === 401 || replay.statusCode === 403) {
+                  fireAuthErrorCb(scope, replay.body.toString(), replay.statusCode);
+                }
+                const resHeaders = { ...replay.headers, 'content-length': String(replay.body.length) };
+                delete resHeaders['transfer-encoding'];
+                clientRes.writeHead(replay.statusCode, resHeaders);
+                clientRes.end(replay.body);
+              } catch (err) {
+                logger.error({ err, provider: provider.id }, 'Buffer replay failed');
+                if (!clientRes.headersSent) {
+                  clientRes.writeHead(502);
+                  clientRes.end('Bad Gateway');
+                }
+              }
+              resolve();
+              break;
+            }
+
+            case 'passthrough': {
+              // Forward the original 401 body. Token is already refreshed,
+              // so the client's next request will succeed.
+              fireAuthErrorCb(scope, upstreamBody, statusCode);
+              clientRes.writeHead(statusCode, upRes.headers);
+              clientRes.end(upstreamBody);
+              resolve();
+              break;
+            }
+          }
         },
       );
 
@@ -304,8 +405,12 @@ function createBearerSwapHandler(
         resolve();
       });
 
-      // Pipe request body straight through
-      clientReq.pipe(upstream);
+      // Send request body
+      if (reqBody) {
+        upstream.end(reqBody);
+      } else {
+        clientReq.pipe(upstream);
+      }
     });
   };
 }

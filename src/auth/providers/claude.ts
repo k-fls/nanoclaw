@@ -18,7 +18,8 @@ import {
   loadCredential,
   saveCredential,
 } from '../store.js';
-import { authSessionDir, CLAUDE_CONFIG_STUB, ensureClaudeConfigStub, execInContainer } from '../exec.js';
+import { readKeysFile, writeKeysFile } from '../token-substitute.js';
+import { authSessionDir, scopeClaudeDir, CLAUDE_CONFIG_STUB, ensureClaudeConfigStub, execInContainer } from '../exec.js';
 import {
   ensureGpgKey,
   exportPublicKey,
@@ -493,6 +494,63 @@ async function runOAuthFlow(
   return { handle, output, sessionDir };
 }
 
+// ── Migration: claude_auth.json → claude.keys.json ──────────────────
+
+export const CLAUDE_PROVIDER_ID = 'claude';
+
+/**
+ * If claude.keys.json doesn't exist for a scope but claude_auth.json does,
+ * extract the access/refresh tokens and write them to claude.keys.json.
+ * Called once at startup per scope.
+ */
+export function migrateClaudeCredentials(scope: string): void {
+  // Already migrated?
+  const existing = readKeysFile(scope, CLAUDE_PROVIDER_ID);
+  if (Object.keys(existing).length > 0) return;
+
+  const cred = loadCredential(scope, SERVICE);
+  if (!cred) return;
+
+  const plaintext = decrypt(cred.token);
+
+  switch (cred.auth_type) {
+    case 'api_key':
+      writeKeysFile(scope, CLAUDE_PROVIDER_ID, {
+        api_key: { value: encrypt(plaintext), updated_ts: Date.now(), expires_ts: 0 },
+      });
+      break;
+
+    case 'setup_token':
+      writeKeysFile(scope, CLAUDE_PROVIDER_ID, {
+        access: { value: encrypt(plaintext), updated_ts: Date.now(), expires_ts: 0 },
+      });
+      break;
+
+    case 'auth_login': {
+      const parsed = parseCredentialsJson(plaintext);
+      if (!parsed) return;
+      const keys: Record<string, { value: string; updated_ts: number; expires_ts: number }> = {
+        access: {
+          value: encrypt(parsed.accessToken),
+          updated_ts: Date.now(),
+          expires_ts: parsed.expiresAt ? new Date(parsed.expiresAt).getTime() : 0,
+        },
+      };
+      if (parsed.refreshToken) {
+        keys.refresh = {
+          value: encrypt(parsed.refreshToken),
+          updated_ts: Date.now(),
+          expires_ts: 0,
+        };
+      }
+      writeKeysFile(scope, CLAUDE_PROVIDER_ID, keys);
+      break;
+    }
+  }
+
+  logger.info({ scope, authType: cred.auth_type }, 'Migrated claude_auth.json → claude.keys.json');
+}
+
 // ── Host handlers ────────────────────────────────────────────────────
 
 /**
@@ -500,7 +558,6 @@ async function runOAuthFlow(
  * Registered programmatically (not via discovery file) because Claude
  * has provider-specific logic: x-api-key mode, credential store integration.
  */
-export const CLAUDE_PROVIDER_ID = 'claude';
 
 export const CLAUDE_SUBSTITUTE_CONFIG = {
   prefixLen: 14,
@@ -546,14 +603,15 @@ export function wrapWithApiKeySupport(
   return async (clientReq, clientRes, targetHost, targetPort, scope) => {
     const apiKeyHeader = clientReq.headers['x-api-key'];
     if (typeof apiKeyHeader === 'string') {
-      // API key mode: resolve substitute, pipe through, no refresh on 401
-      proxyPipe(clientReq, clientRes, targetHost, targetPort, (headers) => {
-        const entry = tokenEngine.resolveSubstitute(apiKeyHeader, scope);
-        if (entry) {
-          headers['x-api-key'] = entry.realToken;
-        }
-      }, scope);
-      return;
+      // API key mode: resolve substitute, then delegate to the same
+      // bearer-swap handler. It handles 401 detection, body buffering,
+      // and auth error callback. Refresh will fail (no refresh token
+      // for API keys), so the 401 is forwarded with request_id recorded.
+      const entry = tokenEngine.resolveSubstitute(apiKeyHeader, scope);
+      if (entry) {
+        (clientReq.headers as Record<string, string>)['x-api-key'] = entry.realToken;
+      }
+      return universalHandler(clientReq, clientRes, targetHost, targetPort, scope);
     }
     // OAuth mode: delegate to universal bearer-swap (handles refresh)
     return universalHandler(clientReq, clientRes, targetHost, targetPort, scope);
@@ -587,61 +645,16 @@ export function registerClaudeBaseUrl(
 
 // ── Container credential provisioning ─────────────────────────────────
 
-/**
- * Generate format-preserving substitute credentials for a container.
- * Returns env vars to inject and optional .credentials.json content.
- * Token engine is passed in to avoid circular deps with registry.ts.
- */
-export function generateSubstituteCredentials(
-  groupFolder: string,
-  tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
-): { env: Record<string, string>; credentialsJson?: string } {
-  const secrets = claudeProvider.provision(groupFolder).env;
-  const env: Record<string, string> = {};
-
-  if (secrets.ANTHROPIC_API_KEY) {
-    const sub = tokenEngine.generateSubstitute(
-      secrets.ANTHROPIC_API_KEY, CLAUDE_PROVIDER_ID, {}, groupFolder, CLAUDE_SUBSTITUTE_CONFIG, 'api_key',
-    );
-    if (sub) env.ANTHROPIC_API_KEY = sub;
-    return { env };
-  }
-
-  if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
-    const subAccess = tokenEngine.generateSubstitute(
-      secrets.CLAUDE_CODE_OAUTH_TOKEN, CLAUDE_PROVIDER_ID, {}, groupFolder, CLAUDE_SUBSTITUTE_CONFIG,
-    );
-    if (!subAccess) return { env };
-
-    env.CLAUDE_CODE_OAUTH_TOKEN = subAccess;
-
-    const subRefresh = secrets.CLAUDE_REFRESH_TOKEN
-      ? tokenEngine.generateSubstitute(
-          secrets.CLAUDE_REFRESH_TOKEN, CLAUDE_PROVIDER_ID, {}, groupFolder, CLAUDE_SUBSTITUTE_CONFIG, 'refresh',
-        )
-      : null;
-
-    const credentialsJson = JSON.stringify({
-      claudeAiOauth: {
-        accessToken: subAccess,
-        refreshToken: subRefresh ?? subAccess,
-        expiresAt: 0,
-      },
-    });
-
-    return { env, credentialsJson };
-  }
-
-  return { env };
-}
-
 // ── Provider ────────────────────────────────────────────────────────
 
 export const claudeProvider: CredentialProvider = {
   service: SERVICE,
   displayName: 'Claude',
 
-  hasAuth(scope: string): boolean {
+  hasValidCredentials(scope: string): boolean {
+    // Check new store (keys file) first, fall back to old store
+    const keys = readKeysFile(scope, CLAUDE_PROVIDER_ID);
+    if (keys.api_key || keys.access) return true;
     return hasCredential(scope, SERVICE);
   },
 
@@ -664,50 +677,36 @@ export const claudeProvider: CredentialProvider = {
     );
   },
 
-  provision(scope: string): { env: Record<string, string> } {
-    const cred = loadCredential(scope, SERVICE);
-    if (!cred) return { env: {} };
-
-    const plaintext = decrypt(cred.token);
+  provision(scope: string, tokenEngine: import('../token-substitute.js').TokenSubstituteEngine): { env: Record<string, string> } {
     const env: Record<string, string> = {};
 
-    switch (cred.auth_type) {
-      case 'api_key':
-        env.ANTHROPIC_API_KEY = plaintext;
-        break;
-
-      case 'setup_token':
-        env.CLAUDE_CODE_OAUTH_TOKEN = plaintext;
-        break;
-
-      case 'auth_login': {
-        const parsed = parseCredentialsJson(plaintext);
-        if (!parsed) {
-          logger.warn({ scope }, 'Failed to parse stored .credentials.json');
-          return { env: {} };
-        }
-        env.CLAUDE_CODE_OAUTH_TOKEN = parsed.accessToken;
-        if (parsed.refreshToken) {
-          env.CLAUDE_REFRESH_TOKEN = parsed.refreshToken;
-        }
-        break;
-      }
-
-      case 'env_fallback': {
-        // Stored from .env import — token is JSON { key: value, ... }
-        try {
-          const vars = JSON.parse(plaintext) as Record<string, string>;
-          Object.assign(env, vars);
-        } catch {
-          logger.warn({ scope }, 'Failed to parse env_fallback credential');
-        }
-        break;
-      }
-
-      default:
-        // Unknown auth_type — try as raw OAuth token
-        env.CLAUDE_CODE_OAUTH_TOKEN = plaintext;
+    // API key mode
+    const subApiKey = tokenEngine.getOrCreateSubstitute(CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'api_key');
+    if (subApiKey) {
+      env.ANTHROPIC_API_KEY = subApiKey;
+      return { env };
     }
+
+    // OAuth mode
+    const subAccess = tokenEngine.getOrCreateSubstitute(CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'access');
+    if (!subAccess) return { env };
+
+    env.CLAUDE_CODE_OAUTH_TOKEN = subAccess;
+    const subRefresh = tokenEngine.getOrCreateSubstitute(CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'refresh');
+
+    // Write .credentials.json with substitute tokens + real expiresAt
+    const keys = readKeysFile(scope, CLAUDE_PROVIDER_ID);
+    const expiresAt = keys.access?.expires_ts || 0;
+    const credentialsJson = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: subAccess,
+        refreshToken: subRefresh ?? subAccess,
+        expiresAt,
+      },
+    });
+    const credsPath = scopeClaudeDir(scope, '.credentials.json');
+    fs.mkdirSync(path.dirname(credsPath), { recursive: true });
+    fs.writeFileSync(credsPath, credentialsJson);
 
     return { env };
   },

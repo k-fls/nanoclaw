@@ -108,21 +108,6 @@ export class FlowQueue {
     return this.entries.shift()!;
   }
 
-  /**
-   * Extract a specific provider's entry from anywhere in the queue.
-   * Returns the entry to the caller for processing, or undefined if not found.
-   */
-  removeByProvider(providerId: string): FlowEntry | undefined {
-    const idx = this.entries.findIndex((e) => e.providerId === providerId);
-    if (idx === -1) return undefined;
-    const [entry] = this.entries.splice(idx, 1);
-    logger.info(
-      { flowId: entry.flowId, providerId },
-      'Flow queue: entry removed by provider',
-    );
-    return entry;
-  }
-
   /** Check if a provider has a pending entry without removing it. */
   hasProvider(providerId: string): boolean {
     return this.entries.some((e) => e.providerId === providerId);

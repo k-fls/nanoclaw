@@ -38,7 +38,7 @@ function makeProvider(
   return {
     service: 'test',
     displayName: 'Test Provider',
-    hasAuth: () => false,
+    hasValidCredentials: () => false,
     provision: () => ({ env: {} }),
     storeResult: vi.fn(),
     authOptions: () =>
@@ -64,7 +64,7 @@ function createProvider(
   const provider: CredentialProvider = {
     service: 'test',
     displayName: 'Test Provider',
-    hasAuth: () => false,
+    hasValidCredentials: () => false,
     provision: () => ({ env: {} }),
     storeResult: vi.fn(),
     authOptions: () =>
