@@ -64,6 +64,11 @@ export function getTokenEngine(): TokenSubstituteEngine {
   return _tokenEngine;
 }
 
+/** @internal Override the token engine (for e2e tests). */
+export function setTokenEngine(engine: TokenSubstituteEngine): void {
+  _tokenEngine = engine;
+}
+
 // ---------------------------------------------------------------------------
 // Claude provider registration (programmatic, not discovery-file)
 // ---------------------------------------------------------------------------
@@ -82,7 +87,7 @@ function registerClaudeUniversalRules(provider: CredentialProvider): void {
   const proxy = getProxy();
 
   // Register Claude's authorization endpoint for browser-open detection
-  registerAuthorizationEndpoint('https://claude.ai/oauth/authorize');
+  registerAuthorizationEndpoint('https://claude.ai/oauth/authorize', 'claude');
 
   for (const rule of CLAUDE_OAUTH_PROVIDER.rules) {
     const hostPattern = new RegExp(`^${rule.anchor.replace(/\./g, '\\.')}$`);
@@ -123,9 +128,10 @@ export function registerDiscoveryProviders(discoveryDir?: string): void {
   try {
     for (const file of fs.readdirSync(dir).filter((f: string) => f.endsWith('.json'))) {
       try {
+        const providerId = file.replace(/\.json$/, '');
         const data = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf-8')) as DiscoveryFile;
         if (data.authorization_endpoint && typeof data.authorization_endpoint === 'string') {
-          registerAuthorizationEndpoint(data.authorization_endpoint);
+          registerAuthorizationEndpoint(data.authorization_endpoint, providerId);
         }
       } catch { /* skip */ }
     }

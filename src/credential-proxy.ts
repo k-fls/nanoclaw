@@ -29,6 +29,7 @@ import {
 } from 'http';
 import { request as httpsRequest, RequestOptions } from 'https';
 import { connect as netConnect, Socket } from 'net';
+import { Duplex, PassThrough } from 'stream';
 import { TLSSocket } from 'tls';
 import type { Server as NetServer } from 'net';
 
@@ -36,6 +37,7 @@ import { logger } from './logger.js';
 import { createMitmContext, type MitmContext } from './mitm-proxy.js';
 import { createTransparentServer } from './transparent-proxy.js';
 import { handleBrowserOpen } from './auth/browser-open-handler.js';
+import type { ContainerSessionContext } from './auth/session-context.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -50,6 +52,8 @@ export type HostHandler = (
   targetHost: string,
   targetPort: number,
   scope: string,
+  /** Original container bridge IP (from connection time, not the MITM socket). */
+  sourceIP?: string,
 ) => Promise<void>;
 
 /** Pluggable credential resolver. */
@@ -67,6 +71,8 @@ interface MitmMeta {
   targetHost: string;
   targetPort: number;
   scope: string;
+  /** Original container bridge IP (resolved at connection time). */
+  sourceIP: string;
 }
 
 /** Options for the credential proxy. */
@@ -248,6 +254,32 @@ export async function proxyBuffered(
 
 // ── CredentialProxy class ───────────────────────────────────────────
 
+/**
+ * Socket-level tap for observing raw HTTP bytes through the MITM proxy.
+ * Both `inbound` (client → proxy) and `outbound` (proxy → client) chunks
+ * are delivered as-is — the consumer parses HTTP framing externally.
+ */
+export interface ProxyTapEvent {
+  direction: 'inbound' | 'outbound' | 'close';
+  targetHost: string;
+  targetPort: number;
+  scope: string;
+  chunk: Buffer;
+}
+
+/**
+ * Two-stage tap:
+ *   1. Filter `(hostname) => TapResolver | null` — called on hostname before
+ *      the MITM/tunnel decision. If non-null, forces the MITM path so the tap
+ *      sees decrypted HTTP bytes (even for hosts with no handler rules).
+ *   2. Resolver `(targetHost, scope) => TapCallback | null` — called per-connection
+ *      after MITM setup. Returns the callback that receives raw chunks, or null
+ *      to skip tapping this specific connection.
+ */
+export type ProxyTapFilter = (hostname: string, scope: string) => ProxyTapResolver | null;
+export type ProxyTapResolver = (targetHost: string, scope: string) => ProxyTapCallback | null;
+export type ProxyTapCallback = (event: ProxyTapEvent) => void;
+
 export class CredentialProxy {
   /**
    * Anchor-indexed rules: domain suffix → rules for that anchor.
@@ -256,8 +288,10 @@ export class CredentialProxy {
    */
   private anchorRules = new Map<string, HostRule[]>();
   private containerIpToScope = new Map<string, string>();
+  private sessionContexts = new Map<string, ContainerSessionContext>();
   private _credentialResolver: CredentialResolver = () => ({});
   private _mitmCtx: MitmContext | null = null;
+  private _tapFilter: ProxyTapFilter | null = null;
 
   /**
    * Shared HTTP server for dispatching all MITM'd requests (both transparent
@@ -279,7 +313,7 @@ export class CredentialProxy {
       }
       const handler = this.matchHostRule(meta.targetHost, req.url || '/');
       if (handler) {
-        handler(req, res, meta.targetHost, meta.targetPort, meta.scope).catch((err) => {
+        handler(req, res, meta.targetHost, meta.targetPort, meta.scope, meta.sourceIP).catch((err) => {
           logger.error({ err, host: meta.targetHost }, 'MITM handler error');
           if (!res.headersSent) { res.writeHead(502); res.end('Bad Gateway'); }
         });
@@ -296,6 +330,11 @@ export class CredentialProxy {
     this._credentialResolver = resolver;
   }
 
+  /** Set a tap filter for observing raw MITM traffic. Pass null to disable. */
+  setTapFilter(filter: ProxyTapFilter | null): void {
+    this._tapFilter = filter;
+  }
+
   getCredentials(scope: string): Record<string, string> {
     return this._credentialResolver(scope);
   }
@@ -303,6 +342,23 @@ export class CredentialProxy {
   registerContainerIP(ip: string, scope: string): void {
     this.containerIpToScope.set(ip, scope);
     logger.debug({ ip, scope }, 'Registered container IP');
+  }
+
+  /** Register a session context for a scope. Looked up by auth error resolver. */
+  registerSessionContext(scope: string, ctx: ContainerSessionContext): void {
+    this.sessionContexts.set(scope, ctx);
+    logger.debug({ scope }, 'Registered session context');
+  }
+
+  /** Deregister a session context. */
+  deregisterSessionContext(scope: string): void {
+    this.sessionContexts.delete(scope);
+    logger.debug({ scope }, 'Deregistered session context');
+  }
+
+  /** Get session context by scope (used by auth error resolver). */
+  getSessionContext(scope: string): ContainerSessionContext | undefined {
+    return this.sessionContexts.get(scope);
   }
 
   unregisterContainerIP(ip: string): void {
@@ -426,9 +482,89 @@ export class CredentialProxy {
     targetHost: string,
     targetPort: number,
     scope: string,
+    sourceIP: string = '',
+    tapResolver?: ProxyTapResolver | null,
   ): void {
-    this.socketMeta.set(socket, { targetHost, targetPort, scope });
-    this.mitmDispatcher.emit('connection', socket);
+    const tapCb = tapResolver?.(targetHost, scope) ?? null;
+    const emitSocket = tapCb
+      ? this.wrapWithTap(socket as Socket, tapCb, { targetHost, targetPort, scope })
+      : socket;
+    this.socketMeta.set(emitSocket, { targetHost, targetPort, scope, sourceIP });
+    this.mitmDispatcher.emit('connection', emitSocket);
+  }
+
+  /**
+   * Interpose PassThrough streams that tee raw bytes to a tap callback.
+   * The dispatcher sees a normal duplex socket; the tap is passive.
+   */
+  /**
+   * Wrap a socket with two PassThrough taps for bidirectional observation.
+   *
+   * Data flow:
+   *   client → socket → inTap → dispatcher (HTTP server reads requests)
+   *   dispatcher → outTap → socket → client (HTTP server writes responses)
+   *
+   * The dispatcher sees `inTap` as its socket (reads from it, writes to it).
+   * Writes to `inTap` are intercepted and forwarded to `outTap` → socket.
+   */
+  private wrapWithTap(
+    socket: Socket,
+    tapCb: ProxyTapCallback,
+    meta: { targetHost: string; targetPort: number; scope: string },
+  ): Duplex {
+    const inTap = new PassThrough();  // client → dispatcher (request data)
+    const outTap = new PassThrough(); // dispatcher → client (response data)
+
+    // Inbound: socket → inTap (dispatcher reads from inTap)
+    socket.on('data', (chunk: Buffer) => {
+      try { tapCb({ ...meta, direction: 'inbound', chunk }); } catch {}
+      inTap.push(chunk);
+    });
+    socket.on('end', () => inTap.push(null));
+    socket.on('error', (err) => inTap.destroy(err));
+
+    // Outbound: dispatcher writes to inTap's writable side → route to outTap
+    // The HTTP server calls res.write() which calls socket.write() — where
+    // "socket" is the Duplex we return. Override _write to capture + forward.
+    outTap.on('data', (chunk: Buffer) => {
+      try { tapCb({ ...meta, direction: 'outbound', chunk }); } catch {}
+      socket.write(chunk);
+    });
+    outTap.on('end', () => socket.end());
+
+    socket.on('close', () => {
+      try { tapCb({ ...meta, direction: 'close', chunk: Buffer.alloc(0) }); } catch {}
+    });
+
+    // Return a Duplex that the dispatcher uses as its socket:
+    //   reads come from inTap (client requests)
+    //   writes go to outTap (server responses)
+    const duplex = new Duplex({
+      read() {
+        // Pulls are satisfied by inTap pushing data above
+      },
+      write(chunk: Buffer, _enc: string, cb: () => void) {
+        outTap.write(chunk, cb);
+      },
+      final(cb: () => void) {
+        outTap.end(cb);
+      },
+      destroy(err: Error | null, cb: (err: Error | null) => void) {
+        inTap.destroy();
+        outTap.destroy();
+        socket.destroy(err ?? undefined);
+        cb(err);
+      },
+    });
+
+    // Forward inTap readable data to the duplex's readable side
+    inTap.on('data', (chunk: Buffer) => {
+      if (!duplex.push(chunk)) inTap.pause();
+    });
+    inTap.on('end', () => duplex.push(null));
+    duplex.on('drain', () => inTap.resume());
+
+    return duplex;
   }
 
   // ── Caller validation ───────────────────────────────────────────
@@ -473,10 +609,36 @@ export class CredentialProxy {
 
       // Internal auth endpoint: browser-open relay
       if (req.url === '/auth/browser-open' && req.method === 'POST') {
-        handleBrowserOpen(req, res, scope).catch((err) => {
+        const containerIP = normalizeIP(req.socket.remoteAddress || '');
+        handleBrowserOpen(req, res, scope, containerIP).catch((err) => {
           logger.error({ err }, 'browser-open handler error');
           if (!res.headersSent) { res.writeHead(500); res.end('Internal error'); }
         });
+        return;
+      }
+
+      // SSE endpoint: per-flow events
+      if (req.url?.startsWith('/auth/flow/') && req.url.endsWith('/events') && req.method === 'GET') {
+        const flowId = decodeURIComponent(req.url.slice('/auth/flow/'.length, -'/events'.length));
+        const ctx = this.sessionContexts.get(scope);
+        if (ctx) {
+          ctx.statusRegistry.handleSSE(flowId, req, res);
+        } else {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'no active session' }));
+        }
+        return;
+      }
+
+      // Flow list endpoint
+      if (req.url === '/auth/flows' && req.method === 'GET') {
+        const ctx = this.sessionContexts.get(scope);
+        if (ctx) {
+          ctx.statusRegistry.handleListFlows(req, res);
+        } else {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('[]');
+        }
         return;
       }
 
@@ -519,7 +681,12 @@ export class CredentialProxy {
       const [targetHost, targetPortStr] = (req.url || '').split(':');
       const targetPort = parseInt(targetPortStr || '443');
 
-      if (!this._mitmCtx || !this.shouldIntercept(targetHost)) {
+      // Stage 1: check handler rules + tap filter
+      const tapResolver = this._tapFilter?.(targetHost, scope) ?? null;
+      const shouldMitm = this.shouldIntercept(targetHost) || tapResolver !== null;
+      // Stage 2 (tapResolver) is passed to emitMitmConnection below
+
+      if (!this._mitmCtx || !shouldMitm) {
         // No MITM — plain TCP tunnel (no header inspection or modification)
         const upstream = netConnect(targetPort, targetHost, () => {
           clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -552,7 +719,9 @@ export class CredentialProxy {
         clientSocket.destroy();
       });
 
-      this.emitMitmConnection(tlsSocket, targetHost, targetPort, scope);
+      const sourceIP = normalizeIP(clientSocket.remoteAddress || '');
+      // Stage 2: pass tapResolver to emitMitmConnection for per-connection callback
+      this.emitMitmConnection(tlsSocket, targetHost, targetPort, scope, sourceIP, tapResolver);
     });
 
     return new Promise((resolve, reject) => {
@@ -570,9 +739,15 @@ export class CredentialProxy {
       const server = createTransparentServer({
         httpServer,
         mitmCtx: this._mitmCtx!,
-        shouldIntercept: (h) => this.shouldIntercept(h),
+        shouldIntercept: (h, sc) => {
+          const tapResolver = this._tapFilter?.(h, sc) ?? null;
+          if (this.shouldIntercept(h)) return { tapResolver };
+          if (tapResolver) return { tapResolver };
+          return null;
+        },
         resolveScope: (ip) => this.resolveScope(ip),
-        emitMitmConnection: (s, h, p, sc) => this.emitMitmConnection(s, h, p, sc),
+        emitMitmConnection: (s, h, p, sc, ip, tapResolver) =>
+          this.emitMitmConnection(s, h, p, sc, ip, tapResolver as ProxyTapResolver | undefined),
       });
 
       server.listen(port, bindHost, () => {

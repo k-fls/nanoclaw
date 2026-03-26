@@ -11,10 +11,15 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders } from './auth/index.js';
-import { resolveSecrets } from './auth/provision.js';
-import { claudeProvider } from './auth/providers/claude.js';
+import { resolveSecrets, resolveScope } from './auth/provision.js';
+import { claudeProvider, extractUpstreamRequestId } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
-import { CredentialProxy, setProxyInstance } from './credential-proxy.js';
+import { AsyncMutex } from './auth/async-mutex.js';
+import { createSessionContext } from './auth/session-context.js';
+import { consumeFlows } from './auth/flow-consumer.js';
+import { setAuthErrorResolver, setOAuthInitiationResolver } from './auth/universal-oauth-handler.js';
+import { setBrowserOpenCallback } from './auth/browser-open-handler.js';
+import { CredentialProxy, setProxyInstance, getProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -200,11 +205,33 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
+  // Create per-session context for auth error correlation and flow queue
+  const scope = resolveScope(group);
+  const sessionCtx = createSessionContext(scope, extractUpstreamRequestId);
+  const chatLock = new AsyncMutex();
+  const flowAbort = new AbortController();
+
+  // Register session context with proxy for auth error callbacks and SSE
+  const proxy = getProxy();
+  proxy.registerSessionContext(scope, sessionCtx);
+
+  // Start FIFO flow queue consumer
+  const consumerPromise = consumeFlows(
+    sessionCtx.flowQueue,
+    chatLock,
+    createChatIO(channel, chatJid),
+    sessionCtx.statusRegistry,
+    flowAbort.signal,
+  );
+
   const guard = createAuthGuard(
     group,
     () => createChatIO(channel, chatJid),
     () => queue.closeStdin(chatJid),
     claudeProvider,
+    sessionCtx.pendingErrors,
+    sessionCtx.flowQueue,
+    sessionCtx.statusRegistry,
   );
   const credentialsOk = await guard.preCheck();
 
@@ -278,7 +305,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        await chatLock.acquire();
+        try {
+          await channel.sendMessage(chatJid, text);
+        } finally {
+          chatLock.release();
+        }
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -295,8 +327,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
+  // Step 5-6: Cancel consumer and await clean exit before handleAuthError
+  flowAbort.abort();
+  await consumerPromise;
+
   if (agentResult.status === 'error' || hadError) {
     const authResult = await guard.handleAuthError(agentResult.error);
+
+    // Step 8: Cleanup session context
+    proxy.deregisterSessionContext(scope);
+    sessionCtx.statusRegistry.destroy();
+
     if (authResult === 'reauth-failed') return true;
     if (authResult === 'reauth-ok') {
       // If reauth consumed messages (advanceCursor moved past original), don't retry
@@ -324,6 +365,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     );
     return false;
   }
+
+  // Step 8: Cleanup session context (success path)
+  proxy.deregisterSessionContext(scope);
+  sessionCtx.statusRegistry.destroy();
 
   return true;
 }
@@ -543,6 +588,11 @@ async function main(): Promise<void> {
   const proxy = new CredentialProxy();
   setProxyInstance(proxy);
 
+  // Activate proxy tap logger if PROXY_TAP_DOMAIN + PROXY_TAP_PATH are set
+  const { createTapFilterFromEnv } = await import('./proxy-tap-logger.js');
+  const tapFilter = createTapFilterFromEnv();
+  if (tapFilter) proxy.setTapFilter(tapFilter);
+
   // Register built-in auth providers first (takes priority in first-match dispatch),
   // then discovery-file providers to fill gaps for other OAuth services.
   registerBuiltinProviders();
@@ -553,6 +603,105 @@ async function main(): Promise<void> {
     const group = Object.values(registeredGroups).find(g => g.folder === scope)
       || { name: scope, folder: scope, trigger: '', added_at: '' };
     return resolveSecrets(group);
+  });
+
+  // Wire auth error resolver: bearer-swap handler looks up session context by scope
+  setAuthErrorResolver((scope) => {
+    const ctx = proxy.getSessionContext(scope);
+    return ctx?.onAuthError ?? null;
+  });
+
+  // Shared logic: parse an OAuth authorization URL, build a FlowEntry, push to queue.
+  /** Parse an OAuth authorization URL, build a FlowEntry, push to queue. Returns the flowId. */
+  function pushOAuthFlow(
+    ctx: import('./auth/session-context.js').ContainerSessionContext,
+    url: string,
+    containerIP: string,
+    providerId: string,
+    reason: string,
+  ): string {
+    // Extract redirect_uri and check if it targets localhost
+    let callbackPort: number | null = null;
+    let callbackPath = '/callback';
+    let isLocalhost = false;
+    // providerId comes from the matched authorization pattern (browser-open handler)
+    // or the authorize-stub handler (proxy interception) — always a real provider ID.
+
+    // flowId format: providerId:port (localhost) or providerId:<hash> (non-localhost)
+    let flowId: string;
+    try {
+      const parsed = new URL(url);
+      const redirectUri = parsed.searchParams.get('redirect_uri');
+      if (redirectUri) {
+        const redirectUrl = new URL(redirectUri);
+        const host = redirectUrl.hostname;
+        isLocalhost = host === 'localhost'
+          || host === '127.0.0.1'
+          || host === '[::1]'
+          || host === '::1';
+        if (isLocalhost) {
+          callbackPort = parseInt(redirectUrl.port, 10) || null;
+          callbackPath = redirectUrl.pathname || '/callback';
+        }
+        flowId = isLocalhost
+          ? `${providerId}:${callbackPort || 'unknown'}`
+          : `${providerId}:${Buffer.from(redirectUri).toString('base64url').slice(0, 12)}`;
+      } else {
+        const hash = Buffer.from(url).toString('base64url').slice(0, 12);
+        flowId = `${providerId}:${hash}`;
+      }
+    } catch {
+      flowId = `${providerId}:${Date.now()}`;
+    }
+
+    // Build deliveryFn only for localhost callbacks — non-localhost redirects
+    // are handled by the OAuth provider directly (browser redirect), no
+    // programmatic delivery possible.
+    let deliveryFn: import('./auth/flow-queue.js').DeliveryFn | null = null;
+    if (isLocalhost && callbackPort && containerIP) {
+      const port = callbackPort;
+      const cbPath = callbackPath;
+      const ip = containerIP;
+      deliveryFn = async (reply: string) => {
+        const code = encodeURIComponent(reply);
+        // Container bridge IP — bracket-wrap if IPv6 for URL compatibility.
+        const host = ip.includes(':') ? `[${ip}]` : ip;
+        const callbackUrl = `http://${host}:${port}${cbPath}?code=${code}`;
+        try {
+          const res = await fetch(callbackUrl, { signal: AbortSignal.timeout(10_000) });
+          if (res.ok) {
+            return { ok: true };
+          }
+          return { ok: false, error: `callback returned ${res.status}` };
+        } catch (err) {
+          // ECONNREFUSED, timeout, etc — container may be dead
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      };
+    }
+
+    ctx.flowQueue.push({ flowId, providerId, url, deliveryFn }, reason);
+    return flowId;
+  }
+
+  // Wire OAuth initiation resolver: authorize-stub handler pushes to session's flow queue
+  setOAuthInitiationResolver((eventScope) => {
+    const ctx = proxy.getSessionContext(eventScope);
+    if (!ctx) return null;
+    return (authUrl: string, providerId: string, containerIP: string) => {
+      pushOAuthFlow(ctx, authUrl, containerIP, providerId, 'proxy intercepted authorization endpoint');
+    };
+  });
+
+  // Wire browser-open callback: xdg-open shim pushes to session's flow queue.
+  // Returns flowId so the handler can include it in the HTTP response to the shim.
+  setBrowserOpenCallback(({ url, scope: eventScope, containerIP, providerId }) => {
+    const ctx = proxy.getSessionContext(eventScope);
+    if (!ctx) {
+      logger.warn({ scope: eventScope }, 'browser-open: no session context for scope');
+      return null;
+    }
+    return pushOAuthFlow(ctx, url, containerIP, providerId, 'xdg-open shim detected OAuth URL');
   });
 
   initDatabase();

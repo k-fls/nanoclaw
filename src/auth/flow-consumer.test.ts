@@ -1,0 +1,173 @@
+import { describe, it, expect, vi } from 'vitest';
+
+import { AsyncMutex } from './async-mutex.js';
+import { FlowQueue, type FlowEntry, type DeliveryFn } from './flow-queue.js';
+import { FlowStatusRegistry } from './flow-status.js';
+import { consumeFlows, processFlow } from './flow-consumer.js';
+import type { ChatIO } from './types.js';
+
+function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
+  const chat = {
+    sent: [] as string[],
+    replies: [] as string[],
+    async send(text: string) { chat.sent.push(text); },
+    async sendRaw(text: string) { chat.sent.push(text); },
+    async receive(_timeoutMs?: number): Promise<string | null> {
+      return chat.replies.shift() ?? null;
+    },
+    advanceCursor: vi.fn(),
+  };
+  return chat;
+}
+
+function entry(
+  providerId: string,
+  deliveryFn?: DeliveryFn | null,
+): FlowEntry {
+  return {
+    flowId: `${providerId}:12345`,
+    providerId,
+    url: `https://example.com/auth?provider=${providerId}`,
+    deliveryFn: deliveryFn === undefined ? vi.fn(async () => ({ ok: true })) : deliveryFn,
+  };
+}
+
+describe('processFlow', () => {
+  it('presents URL and delivers user reply', async () => {
+    const chat = mockChat();
+    chat.replies.push('AUTH_CODE_123');
+    const deliveryFn = vi.fn(async () => ({ ok: true }));
+    const reg = new FlowStatusRegistry();
+    const e = entry('github', deliveryFn);
+
+    await processFlow(e, null, chat, reg);
+
+    expect(chat.sent[0]).toContain('github');
+    expect(chat.sent[0]).toContain('https://example.com/auth?provider=github');
+    expect(deliveryFn).toHaveBeenCalledWith('AUTH_CODE_123');
+    expect(reg.currentState('github:12345')).toBe('completed');
+  });
+
+  it('handles user cancellation', async () => {
+    const chat = mockChat();
+    chat.replies.push('cancel');
+    const deliveryFn = vi.fn(async () => ({ ok: true }));
+    const reg = new FlowStatusRegistry();
+    const e = entry('github', deliveryFn);
+
+    await processFlow(e, null, chat, reg);
+
+    expect(deliveryFn).not.toHaveBeenCalled();
+    expect(reg.currentState('github:12345')).toBe('failed');
+  });
+
+  it('handles delivery failure', async () => {
+    const chat = mockChat();
+    chat.replies.push('CODE');
+    const deliveryFn = vi.fn(async () => ({ ok: false, error: 'ECONNREFUSED' }));
+    const reg = new FlowStatusRegistry();
+    const e = entry('github', deliveryFn);
+
+    await processFlow(e, null, chat, reg);
+
+    expect(reg.currentState('github:12345')).toBe('failed');
+    expect(chat.sent.some((s) => s.includes('ECONNREFUSED'))).toBe(true);
+  });
+
+  it('handles null deliveryFn (non-localhost redirect)', async () => {
+    const chat = mockChat();
+    chat.replies.push('done');
+    const reg = new FlowStatusRegistry();
+    const e = entry('github', null);
+
+    await processFlow(e, null, chat, reg);
+
+    expect(reg.currentState('github:12345')).toBe('completed');
+    // Second message should mention the redirect handling
+    expect(chat.sent.length).toBeGreaterThanOrEqual(2);
+    expect(chat.sent[1]).toContain('OAuth provider should handle');
+  });
+
+  it('handles receive timeout (null reply)', async () => {
+    const chat = mockChat();
+    // No replies → receive returns null
+    const reg = new FlowStatusRegistry();
+    const e = entry('github');
+
+    await processFlow(e, null, chat, reg);
+
+    expect(reg.currentState('github:12345')).toBe('failed');
+  });
+
+  it('acquires and releases chatLock when provided', async () => {
+    const mutex = new AsyncMutex();
+    const chat = mockChat();
+    chat.replies.push('CODE');
+    const reg = new FlowStatusRegistry();
+    const e = entry('github');
+
+    await processFlow(e, mutex, chat, reg);
+
+    // Lock should be released after processing
+    expect(mutex.locked).toBe(false);
+  });
+
+  it('releases chatLock even on error', async () => {
+    const mutex = new AsyncMutex();
+    const chat = mockChat();
+    chat.replies.push('CODE');
+    const deliveryFn = vi.fn(async () => { throw new Error('boom'); });
+    const reg = new FlowStatusRegistry();
+    const e = entry('github', deliveryFn);
+
+    await processFlow(e, mutex, chat, reg);
+
+    expect(mutex.locked).toBe(false);
+    expect(reg.currentState('github:12345')).toBe('failed');
+  });
+});
+
+describe('consumeFlows', () => {
+  it('processes entries in FIFO order then exits on abort', async () => {
+    const q = new FlowQueue();
+    const mutex = new AsyncMutex();
+    const chat = mockChat();
+    chat.replies.push('CODE1', 'CODE2');
+    const reg = new FlowStatusRegistry();
+    const abort = new AbortController();
+
+    const fn1 = vi.fn(async () => ({ ok: true }));
+    const fn2 = vi.fn(async () => ({ ok: true }));
+    q.push(entry('github', fn1), 'test');
+    q.push(entry('google', fn2), 'test');
+
+    // Start consumer — it will process both entries then block on empty queue
+    const consumerDone = consumeFlows(q, mutex, chat, reg, abort.signal);
+
+    // Wait for entries to be processed
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fn1).toHaveBeenCalledWith('CODE1');
+    expect(fn2).toHaveBeenCalledWith('CODE2');
+
+    abort.abort();
+    await consumerDone;
+  });
+
+  it('exits cleanly on abort while waiting for entry', async () => {
+    const q = new FlowQueue();
+    const mutex = new AsyncMutex();
+    const chat = mockChat();
+    const reg = new FlowStatusRegistry();
+    const abort = new AbortController();
+
+    const consumerDone = consumeFlows(q, mutex, chat, reg, abort.signal);
+
+    // Consumer is blocked waiting for entries
+    await new Promise((r) => setTimeout(r, 10));
+
+    abort.abort();
+    await consumerDone; // Should resolve without hanging
+    expect(mutex.locked).toBe(false);
+  });
+});

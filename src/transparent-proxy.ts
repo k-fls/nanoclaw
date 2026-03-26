@@ -18,17 +18,23 @@ import { parseSni, type MitmContext } from './mitm-proxy.js';
 // No import from credential-proxy.ts — callbacks are passed via options
 // to avoid circular dependencies and enable isolated testing.
 
+/** Returned from shouldIntercept to force MITM with an optional tap resolver. */
+export interface InterceptResult {
+  /** If non-null, passed to emitMitmConnection for socket-level tapping. */
+  tapResolver?: unknown;
+}
+
 export interface TransparentProxyOptions {
   /** The HTTP server to delegate non-TLS connections to. */
   httpServer: Server;
   /** MITM context for cert generation. */
   mitmCtx: MitmContext;
-  /** Should this hostname be TLS-terminated? */
-  shouldIntercept(hostname: string): boolean;
+  /** Should this hostname be TLS-terminated? null = passthrough, InterceptResult = MITM. */
+  shouldIntercept(hostname: string, scope: string): InterceptResult | null;
   /** Resolve scope from a container's source IP. Returns null for unknown IPs. */
   resolveScope(sourceIP: string): string | null;
   /** Emit a TLS socket into the shared MITM dispatcher with connection metadata. */
-  emitMitmConnection(socket: object, targetHost: string, targetPort: number, scope: string): void;
+  emitMitmConnection(socket: object, targetHost: string, targetPort: number, scope: string, sourceIP?: string, tapResolver?: unknown): void;
 }
 
 /**
@@ -62,8 +68,16 @@ export function createTransparentServer(opts: TransparentProxyOptions): NetServe
       }
       logger.debug({ hostname, remoteIP: socket.remoteAddress }, 'Transparent: SNI parsed');
 
-      if (!opts.shouldIntercept(hostname)) {
-        // No rules for this host — TCP passthrough (no TLS termination).
+      const scope = opts.resolveScope(socket.remoteAddress || '');
+      if (!scope) {
+        logger.warn({ remoteIP: socket.remoteAddress, host: hostname }, 'Rejecting connection from unknown container');
+        socket.destroy();
+        return;
+      }
+
+      const interceptResult = opts.shouldIntercept(hostname, scope);
+      if (!interceptResult) {
+        // No rules and no tap for this host — TCP passthrough (no TLS termination).
         // NOTE: DNS re-resolves the hostname on the host. Split-horizon DNS
         // (hostnames only resolvable in the container's network) won't work.
         // Using SO_ORIGINAL_DST from iptables would fix this but is overkill.
@@ -79,13 +93,6 @@ export function createTransparentServer(opts: TransparentProxyOptions): NetServe
           socket.destroy();
         });
         socket.on('error', () => upstream.destroy());
-        return;
-      }
-
-      const scope = opts.resolveScope(socket.remoteAddress || '');
-      if (!scope) {
-        logger.warn({ remoteIP: socket.remoteAddress, host: hostname }, 'Rejecting connection from unknown container');
-        socket.destroy();
         return;
       }
 
@@ -142,7 +149,7 @@ export function createTransparentServer(opts: TransparentProxyOptions): NetServe
         socket.destroy();
       });
 
-      opts.emitMitmConnection(tlsSocket, hostname, 443, scope);
+      opts.emitMitmConnection(tlsSocket, hostname, 443, scope, socket.remoteAddress || '', interceptResult.tapResolver);
     });
   });
 }

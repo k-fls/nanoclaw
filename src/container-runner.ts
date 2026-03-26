@@ -32,8 +32,8 @@ import { generateSubstituteCredentials } from './auth/providers/claude.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
-/** Query a running container's bridge IP via docker inspect. */
-function getContainerIP(containerName: string): string | null {
+/** Query a running container's bridge IP via docker inspect. @internal Exported for e2e test reuse. */
+export function getContainerIP(containerName: string): string | null {
   try {
     const ip = execFileSync(
       CONTAINER_RUNTIME_BIN,
@@ -73,7 +73,8 @@ interface VolumeMount {
   readonly: boolean;
 }
 
-function buildVolumeMounts(
+/** @internal Exported for e2e test reuse. */
+export function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
 ): VolumeMount[] {
@@ -274,7 +275,8 @@ function injectSubstituteCredentials(args: string[], groupFolder: string): void 
   }
 }
 
-function buildContainerArgs(
+/** @internal Exported for e2e test reuse. */
+export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   groupFolder: string,

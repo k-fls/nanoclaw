@@ -4,9 +4,13 @@
  */
 import type { RegisteredGroup } from '../types.js';
 import type { ChatIO, CredentialProvider } from './types.js';
-import { isAuthError } from './providers/claude.js';
+import { isAuthError, extractStreamRequestId } from './providers/claude.js';
 import { resolveScope } from './provision.js';
 import { runReauth } from './reauth.js';
+import { processFlow } from './flow-consumer.js';
+import { FlowStatusRegistry } from './flow-status.js';
+import type { FlowQueue } from './flow-queue.js';
+import type { PendingAuthErrors } from './pending-auth-errors.js';
 import { logger } from '../logger.js';
 
 /**
@@ -49,8 +53,39 @@ export function createAuthGuard(
   closeStdin: () => void,
   /** The provider whose credentials power the session. */
   provider: CredentialProvider,
+  /** Optional pending auth errors tracker for proxy-confirmed detection. */
+  pendingErrors?: PendingAuthErrors,
+  /** Optional flow queue — if provided, handleAuthError checks for queued Claude OAuth URLs. */
+  flowQueue?: FlowQueue,
+  /** Status registry for flow events (needed when processing queued entries). */
+  statusRegistry?: FlowStatusRegistry,
 ) {
   let streamedAuthError: string | null = null;
+
+  /**
+   * Check if an error string is a confirmed auth error.
+   * With pendingErrors: requires both proxy and agent to agree (request_id correlation).
+   * Without pendingErrors: falls back to regex-only detection (legacy behavior).
+   */
+  function isConfirmedAuthError(error: string): boolean {
+    if (!isAuthError(error)) return false;
+
+    if (pendingErrors) {
+      const requestId = extractStreamRequestId(error);
+      if (requestId && pendingErrors.has(requestId)) {
+        return true;
+      }
+      // Proxy didn't record this request_id — could be a false positive.
+      // Fall through to legacy detection for backwards compatibility during migration.
+      logger.debug(
+        { group: group.name, requestId },
+        'Auth error detected in stream but not confirmed by proxy, using legacy detection',
+      );
+    }
+
+    // Legacy: regex match alone is sufficient (no proxy confirmation)
+    return true;
+  }
 
   return {
     /** Check credentials before agent run. Returns false if reauth failed. */
@@ -69,9 +104,9 @@ export function createAuthGuard(
 
     /** Call from streaming callback. Detects auth errors and kills container. */
     onStreamResult(result: { status: string; result?: string | null; error?: string }): void {
-      if (typeof result.error === 'string' && isAuthError(result.error)) {
+      if (typeof result.error === 'string' && isConfirmedAuthError(result.error)) {
         streamedAuthError = result.error;
-      } else if (typeof result.result === 'string' && isAuthError(result.result)) {
+      } else if (typeof result.result === 'string' && isConfirmedAuthError(result.result)) {
         streamedAuthError = result.result;
       }
       if (streamedAuthError) {
@@ -91,10 +126,33 @@ export function createAuthGuard(
 
       const reason = streamedAuthError;
       streamedAuthError = null;
+      pendingErrors?.clear();
 
       if (await tryRefreshProvider(group, provider, resolveScope(group), true)) {
         logger.info({ group: group.name }, 'Credential refresh succeeded, skipping reauth');
         return 'reauth-ok';
+      }
+
+      // Check if the flow queue has a Claude OAuth URL captured during the agent run.
+      // The FIFO consumer was cancelled (step 5-6), but the entry may still be in the queue.
+      // Process it directly — no chatLock needed (consumer is dead, agent is dead).
+      if (flowQueue) {
+        const entry = flowQueue.removeByProvider('claude');
+        if (entry) {
+          logger.info({ flowId: entry.flowId }, 'Auth error: using queued Claude OAuth URL');
+          const chat = createChat();
+          const reg = statusRegistry ?? new FlowStatusRegistry();
+          await processFlow(entry, null, chat, reg);
+          chat.advanceCursor();
+          // Check if credentials are now available after the flow
+          if (await tryRefreshProvider(group, provider, resolveScope(group), true)) {
+            return 'reauth-ok';
+          }
+          if (Object.keys(provider.provision(resolveScope(group)).env).length > 0) {
+            return 'reauth-ok';
+          }
+          // Flow completed but credentials still not available — fall through to reauth menu
+        }
       }
 
       logger.warn({ group: group.name, reason }, 'Auth error detected, starting reauth');

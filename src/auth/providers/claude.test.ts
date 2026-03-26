@@ -47,7 +47,7 @@ vi.mock('../exec.js', () => ({
 }));
 
 // Import after mocks
-const { claudeProvider, isAuthError, classifyAuthError, waitForPattern, detectCodeDelivery, isPortOpen, parseCallbackUrl } = await import(
+const { claudeProvider, isAuthError, classifyAuthError, waitForPattern, detectCodeDelivery, isPortOpen, parseCallbackUrl, extractStreamRequestId, extractUpstreamRequestId } = await import(
   './claude.js'
 );
 
@@ -683,5 +683,48 @@ describe('isPortOpen', () => {
     // Use a high port unlikely to be in use
     const result = await isPortOpen(59999, 500);
     expect(result).toBe(false);
+  });
+});
+
+describe('extractStreamRequestId', () => {
+  const apiError = (requestId: string) =>
+    `Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token"},"request_id":"${requestId}"}`;
+
+  it('extracts request_id from a well-formed auth error', () => {
+    expect(extractStreamRequestId(apiError('req_011CYn1REexA8rAwsuHGTCAJ'))).toBe('req_011CYn1REexA8rAwsuHGTCAJ');
+  });
+
+  it('returns null for non-auth errors', () => {
+    expect(extractStreamRequestId('timeout after 300s')).toBeNull();
+    expect(extractStreamRequestId('')).toBeNull();
+  });
+
+  it('returns null when JSON has no request_id', () => {
+    expect(extractStreamRequestId(
+      'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"test"}}',
+    )).toBeNull();
+  });
+});
+
+describe('extractUpstreamRequestId', () => {
+  it('extracts request_id from Anthropic error response body', () => {
+    const body = JSON.stringify({
+      type: 'error',
+      error: { type: 'authentication_error', message: 'Invalid bearer token' },
+      request_id: 'req_abc123',
+    });
+    expect(extractUpstreamRequestId(body)).toBe('req_abc123');
+  });
+
+  it('returns null for invalid JSON', () => {
+    expect(extractUpstreamRequestId('not json')).toBeNull();
+  });
+
+  it('returns null when no request_id field', () => {
+    expect(extractUpstreamRequestId(JSON.stringify({ error: 'auth' }))).toBeNull();
+  });
+
+  it('returns null for non-string request_id', () => {
+    expect(extractUpstreamRequestId(JSON.stringify({ request_id: 42 }))).toBeNull();
   });
 });

@@ -18,10 +18,42 @@ import type { PersistentTokenResolver } from './token-substitute.js';
 import type { HostHandler } from '../credential-proxy.js';
 import { proxyBuffered } from '../credential-proxy.js';
 import { replaceJsonStringValue } from '../oauth-interceptor.js';
+import type { AuthErrorCallback } from './session-context.js';
 import { logger } from '../logger.js';
 
 // Re-export setUpstreamAgent for test use
 export { setUpstreamAgent } from '../credential-proxy.js';
+
+// ---------------------------------------------------------------------------
+// Auth error callback resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves scope → auth error callback. Set once at startup by the proxy.
+ * On 401/403 with refresh failure, the bearer-swap handler calls this to
+ * get the callback, then invokes it with the buffered upstream body.
+ */
+type AuthErrorCallbackResolver = (scope: string) => AuthErrorCallback | null;
+
+let _authErrorResolver: AuthErrorCallbackResolver | null = null;
+
+export function setAuthErrorResolver(resolver: AuthErrorCallbackResolver): void {
+  _authErrorResolver = resolver;
+}
+
+/**
+ * Resolves scope → OAuth initiation callback. Called by authorize-stub handler
+ * when the proxy intercepts a request to a known authorization endpoint.
+ * The callback pushes to the session's flow queue.
+ */
+type OAuthInitiationCallback = (authUrl: string, providerId: string, containerIP: string) => void;
+type OAuthInitiationResolver = (scope: string) => OAuthInitiationCallback | null;
+
+let _oauthInitiationResolver: OAuthInitiationResolver | null = null;
+
+export function setOAuthInitiationResolver(resolver: OAuthInitiationResolver): void {
+  _oauthInitiationResolver = resolver;
+}
 
 // ---------------------------------------------------------------------------
 // Header helpers
@@ -105,7 +137,7 @@ async function refreshViaTokenEndpoint(
   if (!realRefreshToken) return false;
 
   try {
-    const response = await fetch(tokenEndpoint, {
+    const response = await _tokenFetch(tokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -161,6 +193,14 @@ export function setTestUpstreamAgent(agent: import('https').Agent): void {
   _upstreamAgent = agent;
 }
 
+/** Replaceable fetch for token endpoint calls (default: global fetch). */
+let _tokenFetch: typeof fetch = globalThis.fetch;
+
+/** Override the fetch used by refreshViaTokenEndpoint (for tests with mock upstreams). */
+export function setTokenFetch(fn: typeof fetch): void {
+  _tokenFetch = fn;
+}
+
 function createBearerSwapHandler(
   provider: OAuthProvider,
   rule: InterceptRule,
@@ -211,22 +251,34 @@ function createBearerSwapHandler(
             return;
           }
 
-          // Auth error — attempt token refresh via token endpoint
+          // Auth error — buffer upstream body for correlation, then attempt refresh
           logger.info(
             { provider: provider.id, scope, status: statusCode, strategy: refreshStrategy },
             'Bearer-swap: auth error, attempting refresh',
           );
 
-          // Drain upstream body (we won't forward it)
-          upRes.resume();
+          // Buffer upstream body (needed for request_id extraction and forwarding)
+          const bodyChunks: Buffer[] = [];
+          upRes.on('data', (c) => bodyChunks.push(c));
           await new Promise<void>((r) => upRes.on('end', r));
+          const upstreamBody = Buffer.concat(bodyChunks).toString();
 
           const refreshed = await refreshViaTokenEndpoint(provider, tokenEngine, scope);
 
           if (!refreshed || refreshStrategy === 'passthrough') {
-            // No refresh available or passthrough strategy: forward the error
-            clientRes.writeHead(statusCode, { 'content-type': 'application/json' });
-            clientRes.end(JSON.stringify({ error: 'authentication_error', status: statusCode }));
+            // Refresh failed — notify auth error callback (for request_id correlation)
+            const authErrorCb = _authErrorResolver?.(scope);
+            if (authErrorCb) {
+              try {
+                authErrorCb(upstreamBody, statusCode);
+              } catch (err) {
+                logger.error({ err, scope }, 'Auth error callback threw');
+              }
+            }
+
+            // Forward the real upstream body to container (not a synthetic response)
+            clientRes.writeHead(statusCode, upRes.headers);
+            clientRes.end(upstreamBody);
             resolve();
             return;
           }
@@ -365,7 +417,7 @@ function createTokenExchangeHandler(
 // ---------------------------------------------------------------------------
 
 function createAuthorizeStubHandler(
-  _provider: OAuthProvider,
+  provider: OAuthProvider,
   _rule: InterceptRule,
   _tokenEngine: TokenSubstituteEngine,
 ): HostHandler {
@@ -375,10 +427,28 @@ function createAuthorizeStubHandler(
     targetHost: string,
     targetPort: number,
     scope: string,
+    sourceIP?: string,
   ): Promise<void> => {
-    // Default: forward the authorize request (passthrough).
-    // The container handles the OAuth dance itself.
-    // Provider-specific overrides can be registered via credentialProviders.
+    // Reconstruct the full authorization URL
+    const authUrl = `https://${targetHost}${clientReq.url}`;
+
+    // Push to flow queue if a session context exists (agent is running)
+    const oauthInitCb = _oauthInitiationResolver?.(scope);
+    if (oauthInitCb) {
+      oauthInitCb(authUrl, provider.id, sourceIP || '');
+
+      // Return a stub response — don't forward to upstream.
+      // The container's HTTP client gets a 200 with an explanation.
+      clientRes.writeHead(200, { 'content-type': 'application/json' });
+      clientRes.end(JSON.stringify({
+        status: 'intercepted',
+        message: 'OAuth authorization URL intercepted by proxy and queued for user authentication',
+        url: authUrl,
+      }));
+      return;
+    }
+
+    // No session context — forward the authorize request (passthrough).
     const { proxyPipe } = await import('../credential-proxy.js');
     proxyPipe(clientReq, clientRes, targetHost, targetPort, () => {}, scope);
   };

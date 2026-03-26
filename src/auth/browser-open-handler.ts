@@ -22,47 +22,58 @@ import { logger } from '../logger.js';
 export interface BrowserOpenEvent {
   url: string;
   scope: string;
+  /** The container's bridge IP — needed to reach callback ports inside the container. */
+  containerIP: string;
+  /** The matched provider ID (from discovery files or built-in registration). */
+  providerId: string;
 }
 
 /**
  * Callback invoked when a known OAuth URL is detected.
- * The host wires this to relay the URL through the messaging channel
- * and store the callback port for code delivery.
+ * Returns the flowId (for inclusion in the HTTP response to the shim),
+ * or null if the event could not be processed.
  */
-export type BrowserOpenCallback = (event: BrowserOpenEvent) => void;
+export type BrowserOpenCallback = (event: BrowserOpenEvent) => string | null;
 
 // ---------------------------------------------------------------------------
 // Authorization endpoint registry
 // ---------------------------------------------------------------------------
 
-/** Compiled patterns from discovery files' authorization_endpoint fields. */
-const authorizationPatterns: RegExp[] = [];
+interface AuthorizationPatternEntry {
+  pattern: RegExp;
+  providerId: string;
+}
 
-/** Register an authorization_endpoint URL pattern for matching. */
-export function registerAuthorizationPattern(pattern: RegExp): void {
-  authorizationPatterns.push(pattern);
+/** Compiled patterns from discovery files' authorization_endpoint fields. */
+const authorizationPatterns: AuthorizationPatternEntry[] = [];
+
+/** Register an authorization_endpoint URL pattern with its provider ID. */
+export function registerAuthorizationPattern(pattern: RegExp, providerId: string): void {
+  authorizationPatterns.push({ pattern, providerId });
 }
 
 /**
  * Register authorization patterns from a discovery endpoint URL.
  * Extracts the host and builds a regex that matches URLs starting with that host.
  */
-export function registerAuthorizationEndpoint(url: string): void {
+export function registerAuthorizationEndpoint(url: string, providerId: string): void {
   try {
     const parsed = new URL(url);
     const escaped = parsed.hostname.replace(/\./g, '\\.');
     const pathEscaped = parsed.pathname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    authorizationPatterns.push(
-      new RegExp(`^https?://${escaped}${pathEscaped}`),
-    );
+    authorizationPatterns.push({
+      pattern: new RegExp(`^https?://${escaped}${pathEscaped}`),
+      providerId,
+    });
   } catch {
     // Skip invalid URLs
   }
 }
 
-/** Check if a URL matches any known authorization endpoint. */
-function isKnownAuthorizationUrl(url: string): boolean {
-  return authorizationPatterns.some((re) => re.test(url));
+/** Match a URL against known authorization endpoints. Returns providerId or null. */
+function matchAuthorizationUrl(url: string): string | null {
+  const entry = authorizationPatterns.find((e) => e.pattern.test(url));
+  return entry?.providerId ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +100,7 @@ export async function handleBrowserOpen(
   req: IncomingMessage,
   res: ServerResponse,
   scope: string,
+  containerIP?: string,
 ): Promise<void> {
   // Buffer request body
   const chunks: Buffer[] = [];
@@ -112,7 +124,8 @@ export async function handleBrowserOpen(
     return;
   }
 
-  if (!isKnownAuthorizationUrl(url)) {
+  const providerId = matchAuthorizationUrl(url);
+  if (!providerId) {
     // Pass through — shim defaults to exit 0, tool thinks browser opened
     logger.debug({ url, scope }, 'browser-open: unknown URL, pass-through');
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -120,16 +133,17 @@ export async function handleBrowserOpen(
     return;
   }
 
-  logger.info({ url, scope }, 'browser-open: known OAuth URL, relaying');
+  logger.info({ url, scope, providerId }, 'browser-open: known OAuth URL, relaying');
 
+  let flowId: string | null = null;
   if (_onBrowserOpen) {
     try {
-      _onBrowserOpen({ url, scope });
+      flowId = _onBrowserOpen({ url, scope, containerIP: containerIP || '', providerId });
     } catch (err) {
       logger.error({ err, scope }, 'browser-open: callback error');
     }
   }
 
   res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({ exit_code: 0 }));
+  res.end(JSON.stringify({ exit_code: 0, ...(flowId && { flowId }) }));
 }

@@ -95,6 +95,34 @@ export function isAuthError(error?: string): boolean {
   return classifyAuthError(error) !== null;
 }
 
+/**
+ * Extract request_id from a Claude API error in streaming output.
+ * The error format is: Failed to authenticate. API Error: 401 {"...","request_id":"req_..."}
+ */
+export function extractStreamRequestId(error: string): string | null {
+  const m = API_ERROR_RE.exec(error.trim());
+  if (!m) return null;
+  try {
+    const body = JSON.parse(m[2]);
+    return typeof body.request_id === 'string' ? body.request_id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract request_id from an upstream Anthropic API error response body.
+ * The body is raw JSON: {"type":"error","error":{...},"request_id":"req_..."}
+ */
+export function extractUpstreamRequestId(responseBody: string): string | null {
+  try {
+    const body = JSON.parse(responseBody);
+    return typeof body.request_id === 'string' ? body.request_id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Check if a user reply is a cancel/decline. */
 function isCancelReply(reply: string): boolean {
   const lower = reply.trim().toLowerCase();
