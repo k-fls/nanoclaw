@@ -1,16 +1,25 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+import { muteLogger, restoreLogger } from '../test-helpers.js';
 import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
 import type { SubstituteConfig } from './oauth-types.js';
 import { DEFAULT_SUBSTITUTE_CONFIG, MIN_RANDOM_CHARS, asGroupScope, asCredentialScope, toCredentialScope } from './oauth-types.js';
 
+// Every test calls generateSubstitute or resolver.store, both of which trigger
+// "Token persistence failed" warnings (credential store not initialized in tests).
 describe('TokenSubstituteEngine', () => {
   let engine: TokenSubstituteEngine;
   let resolver: PersistentTokenResolver;
+  let logSpies: ReturnType<typeof muteLogger>;
 
   beforeEach(() => {
     resolver = new PersistentTokenResolver();
     engine = new TokenSubstituteEngine(resolver);
+    logSpies = muteLogger();
+  });
+
+  afterEach(() => {
+    restoreLogger(logSpies);
   });
 
   const defaultAttrs = {};

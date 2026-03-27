@@ -69,10 +69,15 @@ describe('ensureContainerRuntimeRunning', () => {
       throw new Error('Cannot connect to the Docker daemon');
     });
 
-    expect(() => ensureContainerRuntimeRunning()).toThrow(
-      'Container runtime is required but failed to start',
-    );
-    expect(logger.error).toHaveBeenCalled();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => ensureContainerRuntimeRunning()).toThrow(
+        'Container runtime is required but failed to start',
+      );
+      expect(logger.error).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

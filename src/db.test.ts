@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
@@ -631,5 +634,139 @@ describe('storeChatMetadata channel info', () => {
     const chat = chats.find((c) => c.jid === 'tg:99');
     expect(chat!.channel).toBe('telegram');
     expect(chat!.name).toBe('TG Chat Updated');
+  });
+});
+
+// --- migrateJsonState (via initDatabase) ---
+
+describe('migrateJsonState', () => {
+  let tmpDataDir: string;
+  let tmpStoreDir: string;
+
+  beforeEach(() => {
+    tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-db-data-'));
+    tmpStoreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-db-store-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDataDir, { recursive: true, force: true });
+    fs.rmSync(tmpStoreDir, { recursive: true, force: true });
+  });
+
+  /** Import a fresh db module with config pointing to temp dirs. */
+  async function freshDb() {
+    vi.resetModules();
+    vi.doMock('./config.js', () => ({
+      DATA_DIR: tmpDataDir,
+      STORE_DIR: tmpStoreDir,
+      ASSISTANT_NAME: 'Andy',
+    }));
+    vi.doMock('./logger.js', () => ({
+      logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+    }));
+    return import('./db.js');
+  }
+
+  it('migrates router_state.json', async () => {
+    fs.writeFileSync(
+      path.join(tmpDataDir, 'router_state.json'),
+      JSON.stringify({
+        last_timestamp: '2024-06-01T00:00:00.000Z',
+        last_agent_timestamp: { main: '2024-06-01T00:00:01.000Z' },
+      }),
+    );
+
+    const db = await freshDb();
+    db.initDatabase();
+
+    expect(db.getRouterState('last_timestamp')).toBe('2024-06-01T00:00:00.000Z');
+    const agentTs = db.getRouterState('last_agent_timestamp');
+    expect(agentTs).toBeDefined();
+    expect(JSON.parse(agentTs!)).toEqual({ main: '2024-06-01T00:00:01.000Z' });
+
+    // Original file should be renamed to .migrated
+    expect(fs.existsSync(path.join(tmpDataDir, 'router_state.json.migrated'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDataDir, 'router_state.json'))).toBe(false);
+  });
+
+  it('migrates sessions.json', async () => {
+    fs.writeFileSync(
+      path.join(tmpDataDir, 'sessions.json'),
+      JSON.stringify({
+        whatsapp_main: 'session-abc',
+        whatsapp_family: 'session-def',
+      }),
+    );
+
+    const db = await freshDb();
+    db.initDatabase();
+
+    expect(db.getAllSessions()).toEqual({
+      whatsapp_main: 'session-abc',
+      whatsapp_family: 'session-def',
+    });
+
+    expect(fs.existsSync(path.join(tmpDataDir, 'sessions.json.migrated'))).toBe(true);
+  });
+
+  it('migrates registered_groups.json', async () => {
+    fs.writeFileSync(
+      path.join(tmpDataDir, 'registered_groups.json'),
+      JSON.stringify({
+        'group@g.us': {
+          name: 'Test Group',
+          folder: 'whatsapp_test',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+    );
+
+    const db = await freshDb();
+    db.initDatabase();
+
+    const groups = db.getAllRegisteredGroups();
+    expect(groups['group@g.us']).toBeDefined();
+    expect(groups['group@g.us'].name).toBe('Test Group');
+    expect(groups['group@g.us'].folder).toBe('whatsapp_test');
+
+    expect(fs.existsSync(path.join(tmpDataDir, 'registered_groups.json.migrated'))).toBe(true);
+  });
+
+  it('skips migration when JSON files do not exist', async () => {
+    // No JSON files written — migration should be a no-op
+    const db = await freshDb();
+    db.initDatabase();
+
+    expect(db.getRouterState('last_timestamp')).toBeUndefined();
+    expect(db.getAllSessions()).toEqual({});
+    expect(db.getAllRegisteredGroups()).toEqual({});
+  });
+
+  it('skips groups with invalid folders during migration', async () => {
+    fs.writeFileSync(
+      path.join(tmpDataDir, 'registered_groups.json'),
+      JSON.stringify({
+        'valid@g.us': {
+          name: 'Valid',
+          folder: 'whatsapp_valid',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+        'invalid@g.us': {
+          name: 'Invalid',
+          folder: '../escape',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+    );
+
+    const db = await freshDb();
+    db.initDatabase();
+
+    const groups = db.getAllRegisteredGroups();
+    expect(groups['valid@g.us']).toBeDefined();
+    expect(groups['invalid@g.us']).toBeUndefined();
   });
 });

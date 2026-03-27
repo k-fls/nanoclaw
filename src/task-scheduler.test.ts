@@ -4,6 +4,13 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
+const mockRunContainerAgent = vi.fn();
+const mockWriteTasksSnapshot = vi.fn();
+vi.mock('./container-runner.js', () => ({
+  runContainerAgent: (...args: unknown[]) => mockRunContainerAgent(...args),
+  writeTasksSnapshot: (...args: unknown[]) => mockWriteTasksSnapshot(...args),
+}));
+
 import { _initTestDatabase, createTask, getTaskById } from './db.js';
 import {
   _resetSchedulerLoopForTests,
@@ -189,5 +196,160 @@ describe('task scheduler', () => {
     const offset =
       (new Date(nextRun!).getTime() - new Date(scheduledTime).getTime()) % ms;
     expect(offset).toBe(0);
+  });
+
+  // ── runTask via container ─────────────────────────────────────────
+
+  it('logs success and updates task on container success', async () => {
+    createTask({
+      id: 'task-success',
+      group_folder: 'whatsapp_success-test',
+      chat_jid: 'success@g.us',
+      prompt: 'do something',
+      schedule_type: 'once',
+      schedule_value: '2026-02-22T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-02-22T00:00:00.000Z',
+    });
+
+    mockRunContainerAgent.mockImplementation(
+      async (_group: unknown, _input: unknown, _onProc: unknown, _engine: unknown, onOutput?: (o: unknown) => Promise<void>) => {
+        if (onOutput) {
+          await onOutput({ status: 'success', result: 'task completed' });
+        }
+        return { status: 'success', result: 'task completed' };
+      },
+    );
+
+    const sendMessage = vi.fn(async () => {});
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'success@g.us': {
+          name: 'Success Group',
+          folder: 'whatsapp_success-test',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask, closeStdin: vi.fn(), notifyIdle: vi.fn() } as any,
+      onProcess: () => {},
+      sendMessage,
+      tokenEngine: {} as any,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // once-task: should be completed (nextRun is null)
+    const task = getTaskById('task-success');
+    expect(task?.status).toBe('completed');
+    expect(task?.last_result).toContain('task completed');
+  });
+
+  it('logs error run on container error', async () => {
+    createTask({
+      id: 'task-error',
+      group_folder: 'whatsapp_error-test',
+      chat_jid: 'error@g.us',
+      prompt: 'fail please',
+      schedule_type: 'once',
+      schedule_value: '2026-02-22T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-02-22T00:00:00.000Z',
+    });
+
+    mockRunContainerAgent.mockImplementation(async () => {
+      return { status: 'error', result: null, error: 'container crashed' };
+    });
+
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'error@g.us': {
+          name: 'Error Group',
+          folder: 'whatsapp_error-test',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask, closeStdin: vi.fn(), notifyIdle: vi.fn() } as any,
+      onProcess: () => {},
+      sendMessage: async () => {},
+      tokenEngine: {} as any,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    const task = getTaskById('task-error');
+    expect(task?.status).toBe('completed'); // once-task completed even on error
+    expect(task?.last_result).toContain('Error: container crashed');
+  });
+
+  it('forwards streaming result via sendMessage', async () => {
+    createTask({
+      id: 'task-stream',
+      group_folder: 'whatsapp_stream-test',
+      chat_jid: 'stream@g.us',
+      prompt: 'stream it',
+      schedule_type: 'once',
+      schedule_value: '2026-02-22T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-02-22T00:00:00.000Z',
+    });
+
+    mockRunContainerAgent.mockImplementation(
+      async (_group: unknown, _input: unknown, _onProc: unknown, _engine: unknown, onOutput?: (o: unknown) => Promise<void>) => {
+        // Simulate streaming: callback fires before resolve
+        if (onOutput) {
+          await onOutput({ status: 'success', result: 'streamed result' });
+        }
+        return { status: 'success', result: 'streamed result' };
+      },
+    );
+
+    const sendMessage = vi.fn(async () => {});
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'stream@g.us': {
+          name: 'Stream Group',
+          folder: 'whatsapp_stream-test',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask, closeStdin: vi.fn(), notifyIdle: vi.fn() } as any,
+      onProcess: () => {},
+      sendMessage,
+      tokenEngine: {} as any,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(sendMessage).toHaveBeenCalledWith('stream@g.us', 'streamed result');
   });
 });

@@ -113,17 +113,23 @@ describe('processFlow', () => {
   });
 
   it('releases chatLock even on error', async () => {
-    const mutex = new AsyncMutex();
-    const chat = mockChat();
-    chat.replies.push('CODE');
-    const deliveryFn = vi.fn(async () => { throw new Error('boom'); });
-    const reg = new FlowStatusRegistry();
-    const e = entry('github', deliveryFn);
+    const { muteLogger, restoreLogger } = await import('../test-helpers.js');
+    const spies = muteLogger();
+    try {
+      const mutex = new AsyncMutex();
+      const chat = mockChat();
+      chat.replies.push('CODE');
+      const deliveryFn = vi.fn(async () => { throw new Error('boom'); });
+      const reg = new FlowStatusRegistry();
+      const e = entry('github', deliveryFn);
 
-    await processFlow(e, mutex, chat, reg);
+      await processFlow(e, mutex, chat, reg);
 
-    expect(mutex.locked).toBe(false);
-    expect(reg.currentState('github:12345')).toBe('failed');
+      expect(mutex.locked).toBe(false);
+      expect(reg.currentState('github:12345')).toBe('failed');
+    } finally {
+      restoreLogger(spies);
+    }
   });
 });
 
