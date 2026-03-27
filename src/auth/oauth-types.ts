@@ -143,7 +143,7 @@ export interface SubstituteMapping {
  */
 export interface TokenResolver {
   /** Store (or update) a real token. */
-  store(realToken: string, providerId: string, credentialScope: CredentialScope, role?: string): void;
+  store(realToken: string, providerId: string, credentialScope: CredentialScope, role?: string, expiresTs?: number): void;
   /** Retrieve the current real token. Returns null if not found or revoked. */
   resolve(credentialScope: CredentialScope, providerId: string, role: string): string | null;
   /** Remove all tokens for a scope (and optionally a provider). */

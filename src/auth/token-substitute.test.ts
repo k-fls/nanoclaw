@@ -380,4 +380,133 @@ describe('TokenSubstituteEngine', () => {
       expect(engine.revokeByScope(asGroupScope('nonexistent'))).toBe(0);
     });
   });
+
+  // ── sharedOp ──────────────────────────────────────────────────────
+
+  describe('sharedOp', () => {
+    it('runs the operation and returns its result', async () => {
+      const result = await engine.sharedOp(scope, 'provider', 'refresh', async () => 42);
+      expect(result).toBe(42);
+    });
+
+    it('coalesces concurrent calls for the same key', async () => {
+      let callCount = 0;
+      let resolve!: (v: boolean) => void;
+      const blocker = new Promise<boolean>((r) => { resolve = r; });
+
+      const fn = () => { callCount++; return blocker; };
+
+      const p1 = engine.sharedOp(scope, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(scope, 'provider', 'refresh', fn);
+
+      resolve(true);
+
+      expect(await p1).toBe(true);
+      expect(await p2).toBe(true);
+      expect(callCount).toBe(1);
+    });
+
+    it('allows new calls after the previous completes', async () => {
+      let callCount = 0;
+      const fn = async () => { callCount++; return true; };
+
+      await engine.sharedOp(scope, 'provider', 'refresh', fn);
+      await engine.sharedOp(scope, 'provider', 'refresh', fn);
+
+      expect(callCount).toBe(2);
+    });
+
+    it('does not coalesce different operation types', async () => {
+      let callCount = 0;
+      let resolve!: (v: boolean) => void;
+      const blocker = new Promise<boolean>((r) => { resolve = r; });
+
+      const fn = () => { callCount++; return blocker; };
+
+      const p1 = engine.sharedOp(scope, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(scope, 'provider', 'store', fn);
+
+      resolve(true);
+
+      await p1;
+      await p2;
+      expect(callCount).toBe(2);
+    });
+
+    it('does not coalesce different providers', async () => {
+      let callCount = 0;
+      let resolve!: (v: boolean) => void;
+      const blocker = new Promise<boolean>((r) => { resolve = r; });
+
+      const fn = () => { callCount++; return blocker; };
+
+      const p1 = engine.sharedOp(scope, 'providerA', 'refresh', fn);
+      const p2 = engine.sharedOp(scope, 'providerB', 'refresh', fn);
+
+      resolve(true);
+
+      await p1;
+      await p2;
+      expect(callCount).toBe(2);
+    });
+
+    it('coalesces groups that resolve to the same credential scope', async () => {
+      // Both groups configured to use default credentials.
+      // Main group resolves directly to 'default' scope.
+      const groupA = asGroupScope('group-a');
+      const groupB = asGroupScope('group-b');
+      engine.setGroupResolver((folder) => ({
+        name: folder as string,
+        folder: folder as string,
+        trigger: '',
+        added_at: '',
+        isMain: true,
+        containerConfig: { useDefaultCredentials: true },
+      }));
+
+      let callCount = 0;
+      let resolve!: (v: boolean) => void;
+      const blocker = new Promise<boolean>((r) => { resolve = r; });
+
+      const fn = () => { callCount++; return blocker; };
+
+      const p1 = engine.sharedOp(groupA, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(groupB, 'provider', 'refresh', fn);
+
+      resolve(true);
+
+      expect(await p1).toBe(true);
+      expect(await p2).toBe(true);
+      expect(callCount).toBe(1);
+    });
+
+    it('propagates errors to all coalesced callers', async () => {
+      let resolve!: () => void;
+      const blocker = new Promise<never>((_, reject) => { resolve = () => reject(new Error('boom')); });
+
+      const p1 = engine.sharedOp(scope, 'provider', 'refresh', () => blocker);
+      const p2 = engine.sharedOp(scope, 'provider', 'refresh', () => blocker);
+
+      resolve();
+
+      await expect(p1).rejects.toThrow('boom');
+      await expect(p2).rejects.toThrow('boom');
+    });
+
+    it('clears inflight entry after error so next call runs fresh', async () => {
+      let callCount = 0;
+
+      await engine.sharedOp(scope, 'provider', 'refresh', async () => {
+        callCount++;
+        throw new Error('fail');
+      }).catch(() => {});
+
+      await engine.sharedOp(scope, 'provider', 'refresh', async () => {
+        callCount++;
+        return true;
+      });
+
+      expect(callCount).toBe(2);
+    });
+  });
 });

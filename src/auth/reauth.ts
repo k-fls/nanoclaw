@@ -6,7 +6,7 @@
 import { logger } from '../logger.js';
 import { getAllProviders } from './registry.js';
 import { execInContainer, authSessionDir } from './exec.js';
-import { deleteCredential } from './store.js';
+import { asGroupScope } from './oauth-types.js';
 import type { AuthContext, AuthExecOpts, AuthOption, ChatIO, ExecHandle } from './types.js';
 import { RESELECT } from './types.js';
 
@@ -22,6 +22,7 @@ export async function runReauth(
   chat: ChatIO,
   reason: string,
   providerHint: string,
+  engine: import('./token-substitute.js').TokenSubstituteEngine,
 ): Promise<boolean> {
   const providers = getAllProviders();
   const allOptions: AuthOption[] = [];
@@ -39,7 +40,7 @@ export async function runReauth(
   // (e.g. missing prerequisite). The menu has Cancel + timeout to exit.
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const result = await showMenuAndRun(scope, chat, reason, allOptions, providerHint);
+    const result = await showMenuAndRun(scope, chat, reason, allOptions, providerHint, engine);
     if (result === 'reselect') continue;
     return result;
   }
@@ -52,6 +53,7 @@ async function showMenuAndRun(
   reason: string,
   allOptions: AuthOption[],
   providerHint: string,
+  engine: import('./token-substitute.js').TokenSubstituteEngine,
 ): Promise<boolean | 'reselect'> {
   // Build numbered menu — each option separated by blank line
   const optionBlocks: string[] = [];
@@ -102,7 +104,7 @@ async function showMenuAndRun(
   if (choice === DELETE_CHOICE) {
     const providers = getAllProviders();
     for (const provider of providers) {
-      deleteCredential(scope, provider.service);
+      engine.revokeByScope(asGroupScope(scope), provider.id);
     }
     await chat.send(`${REAUTH_PREFIX} Credentials deleted for scope *${scope}*.`);
     logger.info({ scope }, 'Credentials deleted via reauth menu');
@@ -138,10 +140,10 @@ async function showMenuAndRun(
       return false;
     }
 
-    selected.provider.storeResult(scope, result);
+    selected.provider.storeResult(scope, result, engine);
     await chat.send(`${REAUTH_PREFIX} Credentials stored for ${selected.provider.displayName}.`);
     logger.info(
-      { scope, provider: selected.provider.service },
+      { scope, provider: selected.provider.id },
       'Reauth completed',
     );
     return true;
@@ -149,7 +151,7 @@ async function showMenuAndRun(
     // Advance cursor even on error to prevent message leakage
     chat.advanceCursor();
     logger.error(
-      { scope, provider: selected.provider.service, err },
+      { scope, provider: selected.provider.id, err },
       'Reauth flow error',
     );
     await chat.send(`${REAUTH_PREFIX} Auth flow error: ${err instanceof Error ? err.message : String(err)}`);

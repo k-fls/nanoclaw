@@ -14,15 +14,13 @@ import path from 'path';
 import {
   decrypt,
   encrypt,
-  hasCredential,
   loadCredential,
-  saveCredential,
 } from '../store.js';
 import { readKeysFile, writeKeysFile } from '../token-substitute.js';
-import { asCredentialScope, toCredentialScope } from '../oauth-types.js';
+import { asCredentialScope, asGroupScope } from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
 import type { GroupScope } from '../oauth-types.js';
-import { authSessionDir, scopeClaudeDir, CLAUDE_CONFIG_STUB, ensureClaudeConfigStub, execInContainer } from '../exec.js';
+import { authSessionDir, scopeClaudeDir, execInContainer } from '../exec.js';
 import {
   ensureGpgKey,
   exportPublicKey,
@@ -499,7 +497,8 @@ async function runOAuthFlow(
 
 // ── Migration: claude_auth.json → claude.keys.json ──────────────────
 
-export const CLAUDE_PROVIDER_ID = 'claude';
+/** Provider ID used as the keys file name and engine key. */
+const PROVIDER_ID = 'claude';
 
 /**
  * If claude.keys.json doesn't exist for a scope but claude_auth.json does,
@@ -509,7 +508,7 @@ export const CLAUDE_PROVIDER_ID = 'claude';
 export function migrateClaudeCredentials(scope: string): void {
   const credScope = asCredentialScope(scope);
   // Already migrated?
-  const existing = readKeysFile(credScope, CLAUDE_PROVIDER_ID);
+  const existing = readKeysFile(credScope, PROVIDER_ID);
   if (Object.keys(existing).length > 0) return;
 
   const cred = loadCredential(scope, SERVICE);
@@ -519,13 +518,13 @@ export function migrateClaudeCredentials(scope: string): void {
 
   switch (cred.auth_type) {
     case 'api_key':
-      writeKeysFile(credScope, CLAUDE_PROVIDER_ID, {
+      writeKeysFile(credScope, PROVIDER_ID, {
         api_key: { value: encrypt(plaintext), updated_ts: Date.now(), expires_ts: 0 },
       });
       break;
 
     case 'setup_token':
-      writeKeysFile(credScope, CLAUDE_PROVIDER_ID, {
+      writeKeysFile(credScope, PROVIDER_ID, {
         access: { value: encrypt(plaintext), updated_ts: Date.now(), expires_ts: 0 },
       });
       break;
@@ -547,7 +546,7 @@ export function migrateClaudeCredentials(scope: string): void {
           expires_ts: 0,
         };
       }
-      writeKeysFile(credScope, CLAUDE_PROVIDER_ID, keys);
+      writeKeysFile(credScope, PROVIDER_ID, keys);
       break;
     }
   }
@@ -570,7 +569,7 @@ export const CLAUDE_SUBSTITUTE_CONFIG = {
 };
 
 export const CLAUDE_OAUTH_PROVIDER: import('../oauth-types.js').OAuthProvider = {
-  id: CLAUDE_PROVIDER_ID,
+  id: PROVIDER_ID,
   rules: [
     // Token exchange at platform.claude.com
     {
@@ -652,28 +651,27 @@ export function registerClaudeBaseUrl(
 // ── Provider ────────────────────────────────────────────────────────
 
 export const claudeProvider: CredentialProvider = {
-  service: SERVICE,
+  id: PROVIDER_ID,
   displayName: 'Claude',
 
-  hasValidCredentials(scope: string): boolean {
-    // Check new store (keys file) first, fall back to old store
-    const keys = readKeysFile(asCredentialScope(scope), CLAUDE_PROVIDER_ID);
-    if (keys.api_key || keys.access) return true;
-    return hasCredential(scope, SERVICE);
-  },
-
-  importEnv(scope: string): void {
-    if (hasCredential(scope, SERVICE)) return;
-
+  importEnv(scope: string, resolver: import('../oauth-types.js').TokenResolver): void {
     const envVars = readEnvFile(ENV_FALLBACK_KEYS);
     if (Object.keys(envVars).length === 0) return;
 
-    saveCredential(scope, SERVICE, {
-      auth_type: 'env_fallback',
-      token: encrypt(JSON.stringify(envVars)),
-      expires_at: null,
-      updated_at: new Date().toISOString(),
-    });
+    const credScope = asCredentialScope(scope);
+
+    // API key takes priority over OAuth tokens (mode exclusivity)
+    if (envVars.ANTHROPIC_API_KEY) {
+      resolver.store(envVars.ANTHROPIC_API_KEY, PROVIDER_ID, credScope, 'api_key');
+    } else {
+      if (envVars.CLAUDE_CODE_OAUTH_TOKEN) {
+        resolver.store(envVars.CLAUDE_CODE_OAUTH_TOKEN, PROVIDER_ID, credScope, 'access');
+      }
+      // ANTHROPIC_AUTH_TOKEN is a fallback for access token
+      if (!envVars.CLAUDE_CODE_OAUTH_TOKEN && envVars.ANTHROPIC_AUTH_TOKEN) {
+        resolver.store(envVars.ANTHROPIC_AUTH_TOKEN, PROVIDER_ID, credScope, 'access');
+      }
+    }
 
     logger.info(
       { scope, keys: Object.keys(envVars) },
@@ -686,23 +684,22 @@ export const claudeProvider: CredentialProvider = {
     const env: Record<string, string> = {};
 
     // API key mode
-    const subApiKey = tokenEngine.getOrCreateSubstitute(CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'api_key');
+    const subApiKey = tokenEngine.getOrCreateSubstitute(PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'api_key');
     if (subApiKey) {
       env.ANTHROPIC_API_KEY = subApiKey;
       return { env };
     }
 
     // OAuth mode
-    const subAccess = tokenEngine.getOrCreateSubstitute(CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'access');
+    const subAccess = tokenEngine.getOrCreateSubstitute(PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'access');
     if (!subAccess) return { env };
 
     env.CLAUDE_CODE_OAUTH_TOKEN = subAccess;
-    const subRefresh = tokenEngine.getOrCreateSubstitute(CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'refresh');
+    const subRefresh = tokenEngine.getOrCreateSubstitute(PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'refresh');
 
     // Write .credentials.json with substitute tokens + real expiresAt
-    // Always write to the group's own session dir regardless of credential source
-    const keys = readKeysFile(toCredentialScope(scope), CLAUDE_PROVIDER_ID);
-    const expiresAt = keys.access?.expires_ts || 0;
+    // Engine resolves the source scope (own or borrowed from default)
+    const expiresAt = tokenEngine.getKeyExpiry(scope, PROVIDER_ID, 'access');
     const credentialsJson = JSON.stringify({
       claudeAiOauth: {
         accessToken: subAccess,
@@ -717,138 +714,36 @@ export const claudeProvider: CredentialProvider = {
     return { env };
   },
 
-  storeResult(scope: string, result: FlowResult): void {
-    saveCredential(scope, SERVICE, {
-      auth_type: result.auth_type,
-      token: encrypt(result.token),
-      expires_at: result.expires_at ?? null,
-      updated_at: new Date().toISOString(),
-    });
-  },
+  storeResult(scope: string, result: FlowResult, tokenEngine: import('../token-substitute.js').TokenSubstituteEngine): void {
+    const credScope = asCredentialScope(scope);
+    const resolver = tokenEngine.getResolver();
 
-  // TODO: remove once bearer-swap 401 → refreshViaTokenEndpoint is proven
-  async refresh(scope: string, force?: boolean): Promise<boolean> {
-    const cred = loadCredential(scope, SERVICE);
-    if (!cred || cred.auth_type !== 'auth_login') return false;
+    // Clear hot cache + keys file (refs stay for running containers)
+    tokenEngine.clearCredentials(asGroupScope(scope), PROVIDER_ID);
 
-    const plaintext = decrypt(cred.token);
-    const parsed = parseCredentialsJson(plaintext);
-    if (!parsed) return false;
-    if (!force && !isExpired(parsed.expiresAt)) return true; // still valid
-
-    logger.info({ scope }, 'Claude access token expired, attempting refresh');
-
-    const sessionDir = authSessionDir(scope);
-    const credsPath = path.join(sessionDir, '.credentials.json');
-
-    // Write stored credentials so the CLI can use the refresh token
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.writeFileSync(credsPath, plaintext, 'utf-8');
-
-    // The CLI expects .claude.json at /home/node/.claude.json (sibling to
-    // .claude/) and loops if missing. Use the shared stub.
-    ensureClaudeConfigStub();
-
-    // Run claude interactively to trigger OAuth token refresh.
-    // `claude -p` does NOT refresh tokens — it just fails with 401.
-    // Interactive mode triggers the refresh on startup, before any prompt.
-    const REFRESH_TIMEOUT_MS = 30_000;
-    const handle = execInContainer(
-      ['script', '-qc', 'stty columns 500 && claude', '/dev/null'],
-      sessionDir,
-      {
-        timeoutMs: REFRESH_TIMEOUT_MS,
-        mounts: [
-          [sessionDir, '/home/node/.claude'],
-          [CLAUDE_CONFIG_STUB, '/home/node/.claude.json', 'ro'],
-        ],
-      },
-    );
-
-    // Wait for the CLI to initialize and refresh the token, then exit.
-    const output = { value: '' };
-    handle.onStdout((chunk) => { output.value += chunk; });
-
-    // Wait for the input prompt (❯ or similar) indicating CLI is ready
-    const ready = await waitForPattern(output, /[❯>]\s/, REFRESH_TIMEOUT_MS);
-    if (!ready) {
-      logger.warn({ scope, output: output.value.slice(-500) }, 'Refresh: CLI did not become ready in time');
-      handle.kill();
-      return false;
-    }
-
-    // Send a prompt that triggers an LLM call — the token refresh
-    // happens when the CLI hits the API, not on startup.
-    handle.stdin.write('reply: hi');
-    await new Promise((r) => setTimeout(r, 200));
-    handle.stdin.write('\r');
-
-    // Wait for: (a) expected "hi" reply = success, (b) any other output = done
-    // (refresh already happened or errored), (c) timeout = give up.
-    const outputAtSend = output.value.length;
-    const anyOutputOrHi = await new Promise<'hi' | 'other' | 'timeout'>((resolve) => {
-      const check = setInterval(() => {
-        const newOutput = output.value.slice(outputAtSend);
-        if (/hi/i.test(newOutput)) {
-          clearInterval(check);
-          clearTimeout(timer);
-          resolve('hi');
-        } else if (newOutput.trim().length > 0) {
-          clearInterval(check);
-          clearTimeout(timer);
-          resolve('other');
+    switch (result.auth_type) {
+      case 'api_key':
+        resolver.store(result.token, PROVIDER_ID, credScope, 'api_key');
+        break;
+      case 'setup_token':
+        resolver.store(result.token, PROVIDER_ID, credScope, 'access');
+        break;
+      case 'auth_login': {
+        const parsed = parseCredentialsJson(result.token);
+        if (!parsed) throw new Error('Invalid .credentials.json in auth_login result');
+        const expiresTs = parsed.expiresAt ? new Date(parsed.expiresAt).getTime() : 0;
+        resolver.store(parsed.accessToken, PROVIDER_ID, credScope, 'access', expiresTs);
+        if (parsed.refreshToken) {
+          resolver.store(parsed.refreshToken, PROVIDER_ID, credScope, 'refresh');
         }
-      }, 500);
-      const timer = setTimeout(() => {
-        clearInterval(check);
-        resolve('timeout');
-      }, REFRESH_TIMEOUT_MS);
-    });
-
-    if (anyOutputOrHi === 'hi') {
-      logger.info({ scope }, 'Refresh: got expected reply');
-    } else if (anyOutputOrHi === 'other') {
-      logger.warn({ scope, output: output.value.slice(-500) }, 'Refresh: got unexpected output');
-    } else {
-      logger.warn({ scope }, 'Refresh: timed out waiting for response');
+        break;
+      }
+      default:
+        throw new Error(`Unknown auth_type: ${result.auth_type}`);
     }
 
-    handle.kill();
-    const result = await handle.wait();
-
-    // Read back potentially refreshed credentials and clean up plaintext
-    let updatedCreds: string | null = null;
-    try {
-      updatedCreds = fs.readFileSync(credsPath, 'utf-8');
-    } catch { /* not found */ }
-    try { fs.unlinkSync(credsPath); } catch { /* ignore */ }
-
-    if (!updatedCreds) {
-      logger.warn({ scope }, 'Refresh: .credentials.json missing after container run');
-      return false;
-    }
-
-    const updatedParsed = parseCredentialsJson(updatedCreds);
-    if (!updatedParsed) {
-      logger.warn({ scope }, 'Refresh: invalid .credentials.json after container run');
-      return false;
-    }
-
-    if (isExpired(updatedParsed.expiresAt)) {
-      logger.warn({ scope, exitCode: result.exitCode }, 'Refresh: token still expired after container run');
-      return false;
-    }
-
-    // Store the refreshed credentials
-    saveCredential(scope, SERVICE, {
-      auth_type: 'auth_login',
-      token: encrypt(updatedCreds),
-      expires_at: updatedParsed.expiresAt,
-      updated_at: new Date().toISOString(),
-    });
-
-    logger.info({ scope }, 'Claude access token refreshed successfully');
-    return true;
+    // Remove orphaned refs for roles that no longer have keys
+    tokenEngine.pruneStaleRefs(asGroupScope(scope), PROVIDER_ID);
   },
 
   authOptions(_scope: string): AuthOption[] {

@@ -27,7 +27,8 @@ import {
 } from './container-runtime.js';
 import { getProxy } from './credential-proxy.js';
 import { getMitmCaCertPath } from './mitm-proxy.js';
-import { getTokenEngine, getAllProviders } from './auth/registry.js';
+import { getAllProviders } from './auth/registry.js';
+import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup, scopeOf } from './types.js';
 
@@ -262,8 +263,7 @@ export function buildVolumeMounts(
  * using the group's flags (useDefaultCredentials, isMain).
  * Providers handle writing any provider-specific files (e.g. .credentials.json).
  */
-function injectSubstituteCredentials(args: string[], group: RegisteredGroup): void {
-  const tokenEngine = getTokenEngine();
+function injectSubstituteCredentials(args: string[], group: RegisteredGroup, tokenEngine: TokenSubstituteEngine): void {
   for (const provider of getAllProviders()) {
     const { env } = provider.provision(group, tokenEngine);
     for (const [key, value] of Object.entries(env)) {
@@ -277,6 +277,7 @@ export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   group: RegisteredGroup,
+  tokenEngine: TokenSubstituteEngine,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -312,7 +313,7 @@ export function buildContainerArgs(
 
   // Generate format-preserving substitute tokens for the container.
   // Real credentials stay on the host; containers only see substitutes.
-  injectSubstituteCredentials(args, group);
+  injectSubstituteCredentials(args, group, tokenEngine);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -344,6 +345,7 @@ export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
+  tokenEngine: TokenSubstituteEngine,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
@@ -354,7 +356,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group);
+  const containerArgs = buildContainerArgs(mounts, containerName, group, tokenEngine);
 
   logger.debug(
     {

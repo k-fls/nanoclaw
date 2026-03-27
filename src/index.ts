@@ -11,7 +11,7 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders, getTokenEngine, getProvider } from './auth/index.js';
+import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders, getTokenEngine } from './auth/index.js';
 import { createAccessCheck } from './auth/provision.js';
 import { claudeProvider, extractUpstreamRequestId } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
@@ -64,10 +64,14 @@ import {
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup, scopeOf } from './types.js';
+import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
+
+/** Shared token engine — set during startup, used by runtime code. */
+let tokenEngine: TokenSubstituteEngine;
 
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
@@ -430,6 +434,7 @@ async function runAgent(
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
+      tokenEngine,
       wrappedOnOutput,
     );
 
@@ -580,7 +585,6 @@ function ensureContainerSystemRunning(): void {
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
   initCredentialStore();
-  importEnvToDefault();
 
   // Create and initialize the credential proxy instance.
   // Must happen before registerProvider() calls so providers can register host rules.
@@ -597,17 +601,16 @@ async function main(): Promise<void> {
   registerBuiltinProviders();
   registerDiscoveryProviders();
 
-  // Wire token engine with group resolver, provider lookup, and access check.
+  // Wire token engine with group resolver and access check.
   // Must happen after providers are registered and before any provision calls.
   {
-    const engine = getTokenEngine();
+    const engine = tokenEngine = getTokenEngine();
     engine.setGroupResolver((folder) => {
       for (const g of Object.values(registeredGroups)) {
         if (g.folder === folder) return g;
       }
       return undefined;
     });
-    engine.setProviderLookup((id) => getProvider(id));
     engine.setAccessCheck(createAccessCheck((folder) => {
       for (const g of Object.values(registeredGroups)) {
         if (g.folder === folder) return g;
@@ -615,6 +618,9 @@ async function main(): Promise<void> {
       return undefined;
     }));
   }
+
+  // Import .env credentials after engine is ready (migration runs inside getTokenEngine)
+  importEnvToDefault(tokenEngine);
 
   // Wire auth error resolver: bearer-swap handler looks up session context by scope
   setAuthErrorResolver((scope) => {
@@ -807,6 +813,7 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
+    tokenEngine,
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: async (jid, rawText) => {

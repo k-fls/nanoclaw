@@ -3,7 +3,7 @@ import https from 'https';
 import http from 'http';
 import { Agent } from 'https';
 
-import { createHandler, setTestUpstreamAgent, setAuthErrorResolver, setTokenFetch } from './universal-oauth-handler.js';
+import { createHandler, setTestUpstreamAgent, setAuthErrorResolver, setOAuthInitiationResolver, setTokenFetch } from './universal-oauth-handler.js';
 import { setUpstreamAgent } from '../credential-proxy.js';
 import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
 import type { OAuthProvider, InterceptRule } from './oauth-types.js';
@@ -114,6 +114,14 @@ function makeTokenExchangeRule(anchor = 'localhost'): InterceptRule {
     anchor,
     pathPattern: /^\/oauth\/token$/,
     mode: 'token-exchange',
+  };
+}
+
+function makeAuthorizeStubRule(anchor = 'localhost'): InterceptRule {
+  return {
+    anchor,
+    pathPattern: /^\/oauth\/authorize/,
+    mode: 'authorize-stub',
   };
 }
 
@@ -504,6 +512,70 @@ describe('universal-oauth-handler', () => {
 
       // Upstream should have received the real refresh token
       expect(lastRequest!.body).toContain(encodeURIComponent(realRefresh));
+    });
+  });
+
+  describe('authorize-stub', () => {
+    it('intercepts authorize URL and returns stub when resolver is set', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const provider = makeProvider('stub-provider');
+      const rule = makeAuthorizeStubRule();
+      const handler = createHandler(provider, rule, engine);
+
+      // Track what the initiation callback receives
+      let capturedUrl = '';
+      let capturedProviderId = '';
+      setOAuthInitiationResolver((scope) => {
+        return (url, providerId, _sourceIP) => {
+          capturedUrl = url;
+          capturedProviderId = providerId;
+        };
+      });
+
+      try {
+        const res = await executeHandler(handler, {
+          method: 'GET',
+          path: '/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A9999%2Fcallback',
+          targetHost: 'auth.example.com',
+          targetPort: serverPort,
+        });
+
+        expect(res.status).toBe(200);
+        const body = JSON.parse(res.body);
+        expect(body.status).toBe('intercepted');
+        expect(body.url).toContain('auth.example.com');
+        expect(body.url).toContain('/oauth/authorize');
+        expect(capturedProviderId).toBe('stub-provider');
+        expect(capturedUrl).toContain('auth.example.com');
+      } finally {
+        setOAuthInitiationResolver(() => null);
+      }
+    });
+
+    it('forwards authorize request when no resolver callback', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const provider = makeProvider('forward-provider');
+      const rule = makeAuthorizeStubRule();
+      const handler = createHandler(provider, rule, engine);
+
+      // No resolver set → callback returns null → passthrough
+      setOAuthInitiationResolver(() => null);
+
+      try {
+        const res = await executeHandler(handler, {
+          method: 'GET',
+          path: '/oauth/authorize?client_id=abc',
+          targetHost: '127.0.0.1',
+          targetPort: serverPort,
+        });
+
+        // Should forward to upstream (test server returns 200 by default)
+        expect(res.status).toBe(200);
+        expect(lastRequest).not.toBeNull();
+        expect(lastRequest!.url).toContain('/oauth/authorize');
+      } finally {
+        setOAuthInitiationResolver(() => null);
+      }
     });
   });
 });

@@ -7,15 +7,17 @@
 import type { RegisteredGroup } from '../types.js';
 import { getAllProviders } from './registry.js';
 import type { ScopeAccessCheck, GroupScope, CredentialScope } from './oauth-types.js';
-import type { GroupResolver } from './token-substitute.js';
+import { asGroupScope } from './oauth-types.js';
+import type { TokenSubstituteEngine, GroupResolver } from './token-substitute.js';
 
 /**
  * Import .env values into the default scope via each provider's importEnv().
- * Called once at startup. Each provider decides whether to skip if already present.
+ * Called once at startup. Skips providers that already have keys stored.
  */
-export function importEnvToDefault(): void {
+export function importEnvToDefault(engine: TokenSubstituteEngine): void {
   for (const provider of getAllProviders()) {
-    provider.importEnv?.('default');
+    if (engine.hasAnyCredential(asGroupScope('default'), provider.id)) continue;
+    provider.importEnv?.('default', engine.getResolver());
   }
 }
 

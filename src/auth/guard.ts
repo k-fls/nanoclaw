@@ -7,7 +7,6 @@ import type { ChatIO, CredentialProvider } from './types.js';
 import { isAuthError, extractStreamRequestId } from './providers/claude.js';
 import { runReauth } from './reauth.js';
 import { getTokenEngine } from './registry.js';
-import { CLAUDE_PROVIDER_ID } from './providers/claude.js';
 import { scopeOf } from '../types.js';
 import type { PendingAuthErrors } from './pending-auth-errors.js';
 import { logger } from '../logger.js';
@@ -66,10 +65,10 @@ export function createAuthGuard(
     async preCheck(): Promise<boolean> {
       // Engine resolves credential scope internally (own → default fallback)
       const engine = getTokenEngine();
-      if (engine.hasCredentials(scopeOf(group), CLAUDE_PROVIDER_ID)) return true;
+      if (engine.hasAnyCredential(scopeOf(group), provider.id, true)) return true;
 
       logger.warn({ group: group.name }, 'No credentials available, starting reauth');
-      return runReauth(group.folder, createChat(), 'No credentials configured', provider.displayName);
+      return runReauth(group.folder, createChat(), 'No credentials configured', provider.displayName, engine);
     },
 
     /** Call from streaming callback. Detects auth errors and kills container. */
@@ -98,8 +97,9 @@ export function createAuthGuard(
       streamedAuthError = null;
       pendingErrors?.clear();
 
+      const engine = getTokenEngine();
       logger.warn({ group: group.name, reason }, 'Auth error detected, starting reauth');
-      const ok = await runReauth(group.folder, createChat(), `Agent failed: ${sanitizeReason(reason)}`, provider.displayName);
+      const ok = await runReauth(group.folder, createChat(), `Agent failed: ${sanitizeReason(reason)}`, provider.displayName, engine);
       return ok ? 'reauth-ok' : 'reauth-failed';
     },
   };

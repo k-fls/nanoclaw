@@ -19,7 +19,6 @@ import { createHandler } from './universal-oauth-handler.js';
 import { registerAuthorizationEndpoint } from './browser-open-handler.js';
 import {
   CLAUDE_OAUTH_PROVIDER,
-  CLAUDE_PROVIDER_ID,
   migrateClaudeCredentials,
   wrapWithApiKeySupport,
 } from './providers/claude.js';
@@ -28,7 +27,7 @@ import { logger } from '../logger.js';
 const registry = new Map<string, CredentialProvider>();
 
 export function registerProvider(provider: CredentialProvider): void {
-  registry.set(provider.service, provider);
+  registry.set(provider.id, provider);
   // Register host rules for transparent proxy routing
   if (provider.hostRules) {
     const proxy = getProxy();

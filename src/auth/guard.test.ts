@@ -15,11 +15,11 @@ vi.mock('./reauth.js', () => ({
   runReauth: vi.fn(async () => true),
 }));
 
-// Mock the token engine's hasCredentials method used by guard.preCheck()
-const mockHasCredentials = vi.fn(() => true);
+// Mock the token engine's hasAnyCredential method used by guard.preCheck()
+const mockHasAnyCredential = vi.fn(() => true);
 vi.mock('./registry.js', () => ({
   getTokenEngine: vi.fn(() => ({
-    hasCredentials: mockHasCredentials,
+    hasAnyCredential: mockHasAnyCredential,
   })),
 }));
 
@@ -46,9 +46,8 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
 
 function mockProvider(overrides: Partial<CredentialProvider> = {}): CredentialProvider {
   return {
-    service: 'claude',
+    id: 'claude',
     displayName: 'Claude',
-    hasValidCredentials: vi.fn(() => true),
     provision: vi.fn(() => ({ env: { ANTHROPIC_API_KEY: 'sk-test' } })),
     storeResult: vi.fn(),
     authOptions: vi.fn(() => []),
@@ -72,7 +71,7 @@ describe('createAuthGuard', () => {
 
   describe('preCheck', () => {
     it('returns true when credentials are available', async () => {
-      mockHasCredentials.mockReturnValue(true);
+      mockHasAnyCredential.mockReturnValue(true);
       const provider = mockProvider();
       const guard = createAuthGuard(group, mockChat, vi.fn(), provider);
 
@@ -80,17 +79,13 @@ describe('createAuthGuard', () => {
       expect(runReauth).not.toHaveBeenCalled();
     });
 
-    it('goes straight to reauth when no credentials (no refresh attempt)', async () => {
-      mockHasCredentials.mockReturnValue(false);
-      const provider = mockProvider({
-        refresh: vi.fn(async () => true),
-      });
+    it('goes straight to reauth when no credentials', async () => {
+      mockHasAnyCredential.mockReturnValue(false);
+      const provider = mockProvider();
       const guard = createAuthGuard(group, () => mockChat(), vi.fn(), provider);
 
       await guard.preCheck();
 
-      // refresh should NOT be called — guard goes straight to reauth
-      expect(provider.refresh).not.toHaveBeenCalled();
       expect(runReauth).toHaveBeenCalled();
     });
   });
@@ -133,12 +128,11 @@ describe('createAuthGuard', () => {
       expect(await guard.handleAuthError('some non-auth error')).toBe('not-auth');
     });
 
-    it('does not attempt container-based refresh', async () => {
+    it('goes straight to reauth on detected auth error', async () => {
       const provider = mockProvider({
         provision: vi.fn()
           .mockReturnValueOnce({ env: { KEY: 'val' } })  // preCheck
           .mockReturnValue({ env: {} }),                   // handleAuthError checks
-        refresh: vi.fn(async () => true),
       });
       const guard = createAuthGuard(group, () => mockChat(), vi.fn(), provider);
 
@@ -146,8 +140,6 @@ describe('createAuthGuard', () => {
 
       await guard.handleAuthError();
 
-      // refresh should NOT be called — goes straight to reauth
-      expect(provider.refresh).not.toHaveBeenCalled();
       expect(runReauth).toHaveBeenCalled();
     });
 

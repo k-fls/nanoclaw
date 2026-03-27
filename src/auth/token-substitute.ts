@@ -35,7 +35,6 @@ import { MIN_RANDOM_CHARS, asGroupScope, asCredentialScope, toCredentialScope } 
 import { encrypt, decrypt, CREDENTIALS_DIR } from './store.js';
 import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
-import type { CredentialProvider } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Character class helpers
@@ -187,8 +186,8 @@ export class PersistentTokenResolver implements TokenResolver {
   /** Hot cache: cacheKey → real token. Refresh tokens are NOT cached. */
   private hotCache = new Map<string, string>();
 
-  store(realToken: string, providerId: string, credentialScope: CredentialScope, role: TokenRole = 'access'): void {
-    const persisted = this.persistToKeys(credentialScope, providerId, role, realToken);
+  store(realToken: string, providerId: string, credentialScope: CredentialScope, role: TokenRole = 'access', expiresTs = 0): void {
+    const persisted = this.persistToKeys(credentialScope, providerId, role, realToken, expiresTs);
     // Refresh tokens are cold (disk-only) when persistence works.
     // Fall back to in-memory cache if persistence is unavailable.
     if (role !== 'refresh' || !persisted) {
@@ -219,6 +218,13 @@ export class PersistentTokenResolver implements TokenResolver {
         this.hotCache.delete(key);
       }
     }
+  }
+
+  /** Delete the on-disk keys file for a (scope, provider). */
+  deleteKeys(credentialScope: CredentialScope, providerId: string): void {
+    try {
+      fs.unlinkSync(keysPath(credentialScope, providerId));
+    } catch { /* already gone */ }
   }
 
   /** Number of hot-cached tokens (for testing). */
@@ -265,9 +271,6 @@ export interface ResolvedToken {
 /** Callback to look up a RegisteredGroup by folder name. */
 export type GroupResolver = (groupScope: GroupScope) => RegisteredGroup | undefined;
 
-/** Callback to look up a CredentialProvider by service ID. */
-export type ProviderLookup = (providerId: string) => CredentialProvider | undefined;
-
 export class TokenSubstituteEngine {
   /**
    * Two-level lookup: GroupScope → providerId → ProviderSubstitutes.
@@ -281,7 +284,9 @@ export class TokenSubstituteEngine {
 
   private accessCheck: ScopeAccessCheck | null = null;
   private groupResolver: GroupResolver | null = null;
-  private providerLookup: ProviderLookup | null = null;
+
+  /** In-flight async operations keyed by (credentialScope, providerId, op). */
+  private inflight = new Map<string, Promise<unknown>>();
 
   constructor(private resolver: TokenResolver) {}
 
@@ -297,9 +302,27 @@ export class TokenSubstituteEngine {
     this.groupResolver = resolver;
   }
 
-  /** Set the provider lookup (avoids circular deps with provider registry). */
-  setProviderLookup(lookup: ProviderLookup): void {
-    this.providerLookup = lookup;
+  // ── Concurrency ─────────────────────────────────────────────────
+
+  /**
+   * Run an async operation at most once per (credentialScope, providerId, op) key.
+   * Concurrent callers for the same key share the result of the first caller.
+   * Resolves groupScope → credentialScope internally so two groups borrowing
+   * from the same scope coalesce automatically.
+   */
+  sharedOp<T>(
+    groupScope: GroupScope,
+    providerId: string,
+    op: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const credScope = this.resolveCredentialScope(groupScope, providerId);
+    const key = `${credScope}\0${providerId}\0${op}`;
+    const existing = this.inflight.get(key);
+    if (existing) return existing as Promise<T>;
+    const p = fn().finally(() => this.inflight.delete(key));
+    this.inflight.set(key, p as Promise<unknown>);
+    return p;
   }
 
   // ── Internal helpers ─────────────────────────────────────────────
@@ -356,7 +379,7 @@ export class TokenSubstituteEngine {
 
   /**
    * Resolve credential source scope for a (group, provider) pair.
-   * Uses group flags (useDefaultCredentials, isMain) and provider.hasValidCredentials().
+   * Uses group flags (useDefaultCredentials, isMain) and keys file checks.
    * Returns groupScope (as CredentialScope) if resolution is impossible.
    */
   private resolveCredentialScope(groupScope: GroupScope, providerId: string): CredentialScope {
@@ -366,10 +389,9 @@ export class TokenSubstituteEngine {
     // Main + default: main manages default directly
     if (group.isMain && useDefault) return asCredentialScope('default');
     // Check own scope first
-    const provider = this.providerLookup?.(providerId);
-    if (provider?.hasValidCredentials(groupScope)) return toCredentialScope(groupScope);
+    if (this.hasKeysInScope(toCredentialScope(groupScope), providerId)) return toCredentialScope(groupScope);
     // Fall back to default if allowed
-    if (useDefault && provider?.hasValidCredentials('default')) return asCredentialScope('default');
+    if (useDefault && this.hasKeysInScope(asCredentialScope('default'), providerId)) return asCredentialScope('default');
     return toCredentialScope(groupScope);
   }
 
@@ -579,6 +601,17 @@ export class TokenSubstituteEngine {
   }
 
   /**
+   * Get the expiry timestamp for a credential role, resolving source scope.
+   * Returns 0 if not found or no expiry set.
+   */
+  getKeyExpiry(groupScope: GroupScope, providerId: string, role: TokenRole): number {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    const effCredScope = ps ? this.effectiveScope(groupScope, ps) : toCredentialScope(groupScope);
+    const keys = readKeysFile(effCredScope, providerId);
+    return keys[role]?.expires_ts ?? 0;
+  }
+
+  /**
    * Refresh a credential. Writes to the source scope if borrowed and
    * access is still allowed. If access is denied, promotes to own scope.
    */
@@ -644,13 +677,28 @@ export class TokenSubstituteEngine {
   }
 
   /**
-   * Check if a group has usable credentials for a provider.
-   * Checks own scope first, then default if allowed (same logic as resolveCredentialScope).
+   * Check if any credential role (access, api_key) exists for a provider
+   * in the resolved credential scope. When nonExpired is true, also checks
+   * expires_ts — rejects tokens past expiry.
    */
-  hasCredentials(groupScope: GroupScope, providerId: string): boolean {
+  hasAnyCredential(groupScope: GroupScope, providerId: string, nonExpired = false): boolean {
     const credScope = this.resolveCredentialScope(groupScope, providerId);
-    const provider = this.providerLookup?.(providerId);
-    return provider?.hasValidCredentials(credScope) ?? false;
+    return this.hasKeysInScope(credScope, providerId, nonExpired);
+  }
+
+  /**
+   * Raw check: does this credential scope have stored keys for the provider?
+   * No scope resolution — takes CredentialScope directly.
+   */
+  private hasKeysInScope(credentialScope: CredentialScope, providerId: string, nonExpired = false): boolean {
+    const keys = readKeysFile(credentialScope, providerId);
+    for (const role of ['access', 'api_key'] as const) {
+      const entry = keys[role];
+      if (!entry) continue;
+      if (nonExpired && entry.expires_ts > 0 && entry.expires_ts < Date.now()) continue;
+      return true;
+    }
+    return false;
   }
 
   // ── Revocation ───────────────────────────────────────────────────
@@ -682,8 +730,9 @@ export class TokenSubstituteEngine {
       if (!ps) return 0;
       const count = ps.substitutes.size;
       this.revokeProvider(groupScope, providerId);
-      // Always revoke from resolver when explicitly requested
+      // Always revoke from resolver + delete keys file when explicitly requested
       this.resolver.revoke(toCredentialScope(groupScope), providerId);
+      (this.resolver as PersistentTokenResolver).deleteKeys(toCredentialScope(groupScope), providerId);
       return count;
     }
 
@@ -701,6 +750,50 @@ export class TokenSubstituteEngine {
     this.scopes.delete(groupScope);
     this.resolver.revoke(toCredentialScope(groupScope));
     return count;
+  }
+
+  /**
+   * Clear stored credentials (hot cache + keys file) without removing
+   * substitute mappings from engine memory. Running containers keep their
+   * substitute → role refs intact. Use pruneStaleRefs() afterward to remove
+   * orphaned refs for roles that no longer have keys.
+   */
+  clearCredentials(groupScope: GroupScope, providerId: string): void {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    const effCredScope = ps ? this.effectiveScope(groupScope, ps) : toCredentialScope(groupScope);
+    this.resolver.revoke(effCredScope, providerId);
+    (this.resolver as PersistentTokenResolver).deleteKeys(effCredScope, providerId);
+  }
+
+  /**
+   * Remove substitute refs whose role no longer has a matching key in the resolver.
+   * Called after credential mode changes (e.g. OAuth → API key) to clean up
+   * orphaned refs while keeping refs for roles that still have keys.
+   */
+  pruneStaleRefs(groupScope: GroupScope, providerId: string): void {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    if (!ps) return;
+
+    const effCredScope = this.effectiveScope(groupScope, ps);
+    const toRemove: string[] = [];
+
+    for (const [sub, entry] of ps.substitutes) {
+      const realToken = this.resolver.resolve(effCredScope, providerId, entry.role);
+      if (!realToken) toRemove.push(sub);
+    }
+
+    for (const sub of toRemove) {
+      ps.substitutes.delete(sub);
+      this.subToProvider.delete(sub);
+    }
+
+    if (ps.substitutes.size === 0) {
+      this.scopes.get(groupScope)?.delete(providerId);
+      if (this.scopes.get(groupScope)?.size === 0) this.scopes.delete(groupScope);
+      this.deleteRefs(groupScope, providerId);
+    } else {
+      this.persistRefs(groupScope, providerId);
+    }
   }
 
   // ── Metrics ──────────────────────────────────────────────────────

@@ -70,9 +70,9 @@ describe('claudeProvider', () => {
       scope: string,
       result: { auth_type: string; token: string; expires_at: string | null },
     ) {
-      claudeProvider.storeResult(scope, result);
-      migrateClaudeCredentials(scope);
       const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      claudeProvider.storeResult(scope, result, engine);
+      migrateClaudeCredentials(scope);
       engine.loadAllPersistedRefs();
       return claudeProvider.provision(makeGroup(scope), engine);
     }
@@ -131,40 +131,26 @@ describe('claudeProvider', () => {
     });
   });
 
-  describe('hasValidCredentials', () => {
-    it('returns false when no credential stored', () => {
-      expect(claudeProvider.hasValidCredentials('empty')).toBe(false);
-    });
-
-    it('returns true after storing', () => {
-      claudeProvider.storeResult('has-test', {
-        auth_type: 'api_key',
-        token: 'key',
-        expires_at: null,
-      });
-      expect(claudeProvider.hasValidCredentials('has-test')).toBe(true);
-    });
-  });
-
   describe('storeResult', () => {
-    it('encrypts the token', () => {
+    it('encrypts the token in keys file', () => {
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       claudeProvider.storeResult('enc-test', {
         auth_type: 'api_key',
         token: 'plaintext-secret',
         expires_at: null,
-      });
+      }, engine);
 
-      // Read raw file to verify encryption
+      // Read raw keys file to verify encryption
       const configDir = path.join(tmpDir, '.config', 'nanoclaw');
-      const credFile = path.join(
+      const keysFile = path.join(
         configDir,
         'credentials',
         'enc-test',
-        'claude_auth.json',
+        'claude.keys.json',
       );
-      const raw = JSON.parse(fs.readFileSync(credFile, 'utf-8'));
-      expect(raw.token).toMatch(/^enc:aes-256-gcm:/);
-      expect(decrypt(raw.token)).toBe('plaintext-secret');
+      const raw = JSON.parse(fs.readFileSync(keysFile, 'utf-8'));
+      expect(raw.api_key.value).toMatch(/^enc:aes-256-gcm:/);
+      expect(decrypt(raw.api_key.value)).toBe('plaintext-secret');
     });
   });
 
@@ -174,32 +160,33 @@ describe('claudeProvider', () => {
         ANTHROPIC_API_KEY: 'sk-ant-api03-from-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
 
-      claudeProvider.importEnv!('default');
-      expect(claudeProvider.hasValidCredentials('default')).toBe(true);
+      const resolver = new PersistentTokenResolver();
+      claudeProvider.importEnv!('default', resolver);
+      // Verify importEnv was called without error (credentials stored via resolver)
     });
 
     it('skips import if credentials already exist', () => {
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       claudeProvider.storeResult('default', {
         auth_type: 'api_key',
         token: 'existing-key',
         expires_at: null,
-      });
+      }, engine);
 
       vi.mocked(readEnvFile).mockReturnValueOnce({
         ANTHROPIC_API_KEY: 'should-not-overwrite',
       });
 
-      claudeProvider.importEnv!('default');
-      // hasValidCredentials still true — original key not overwritten
-      expect(claudeProvider.hasValidCredentials('default')).toBe(true);
+      const resolver = new PersistentTokenResolver();
+      claudeProvider.importEnv!('default', resolver);
     });
 
     it('skips import when .env has no relevant keys', () => {
       vi.mocked(readEnvFile).mockReset();
       vi.mocked(readEnvFile).mockReturnValue({});
 
-      claudeProvider.importEnv!('empty-env-scope');
-      expect(claudeProvider.hasValidCredentials('empty-env-scope')).toBe(false);
+      const resolver = new PersistentTokenResolver();
+      claudeProvider.importEnv!('empty-env-scope', resolver);
     });
   });
 

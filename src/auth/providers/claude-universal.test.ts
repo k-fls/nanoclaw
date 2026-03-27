@@ -8,7 +8,6 @@ import http from 'http';
 
 import {
   CLAUDE_OAUTH_PROVIDER,
-  CLAUDE_PROVIDER_ID,
   CLAUDE_SUBSTITUTE_CONFIG,
   wrapWithApiKeySupport,
   claudeProvider,
@@ -35,7 +34,7 @@ function generateSubstitute(
   realToken: string,
   role: TokenRole = 'access',
 ): { env: Record<string, string> } {
-  engine.generateSubstitute(realToken, CLAUDE_PROVIDER_ID, {}, asGroupScope(scope), CLAUDE_SUBSTITUTE_CONFIG, role);
+  engine.generateSubstitute(realToken, claudeProvider.id, {}, asGroupScope(scope), CLAUDE_SUBSTITUTE_CONFIG, role);
   return claudeProvider.provision(makeGroup(scope), engine);
 }
 
@@ -125,7 +124,7 @@ describe('wrapWithApiKeySupport', () => {
 
   it('resolves x-api-key substitute and delegates to universal handler', async () => {
     const realKey = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const sub = engine.generateSubstitute(realKey, CLAUDE_PROVIDER_ID, {}, asGroupScope('scope'), CLAUDE_SUBSTITUTE_CONFIG, 'api_key')!;
+    const sub = engine.generateSubstitute(realKey, claudeProvider.id, {}, asGroupScope('scope'), CLAUDE_SUBSTITUTE_CONFIG, 'api_key')!;
     expect(sub).not.toBeNull();
 
     // Track what the universal handler receives and verify resolved header

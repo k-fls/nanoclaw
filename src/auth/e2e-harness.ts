@@ -402,7 +402,7 @@ export class OAuthE2EHarness {
     // Use the real container setup from container-runner.ts
     const volumeMounts = buildVolumeMounts(group, false);
     const containerName = `nanoclaw-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const containerArgs = buildContainerArgs(volumeMounts, containerName, group);
+    const containerArgs = buildContainerArgs(volumeMounts, containerName, group, this.tokenEngine);
 
     // Override PROXY_PORT — buildContainerArgs uses CREDENTIAL_PROXY_PORT from config
     // but our test proxy is on a dynamic port.

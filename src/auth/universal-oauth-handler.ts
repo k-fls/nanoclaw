@@ -329,7 +329,9 @@ function createBearerSwapHandler(
           await new Promise<void>((r) => upRes.on('end', r));
           const upstreamBody = Buffer.concat(bodyChunks).toString();
 
-          const refreshed = await refreshViaTokenEndpoint(provider, tokenEngine, groupScope);
+          const refreshed = await tokenEngine.sharedOp(groupScope, provider.id, 'refresh', () =>
+            refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
+          );
 
           if (!refreshed) {
             fireAuthErrorCb(groupScope, upstreamBody, statusCode);

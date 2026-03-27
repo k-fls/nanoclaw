@@ -15,8 +15,8 @@ export type { HostHandler } from '../credential-proxy.js';
 
 /** Pluggable per-service credential provider. */
 export interface CredentialProvider {
-  /** File basename: 'claude_oauth', 'anthropic_api_key' */
-  service: string;
+  /** Provider ID matching the keys file name: 'claude', etc. */
+  id: string;
   displayName: string;
 
   /**
@@ -30,9 +30,6 @@ export interface CredentialProvider {
     handler: import('../credential-proxy.js').HostHandler;
   }>;
 
-  /** Does this scope have usable credentials? */
-  hasValidCredentials(scope: string): boolean;
-
   /**
    * Produce substitute env vars for a container run.
    * Returns substitutes only — never real tokens. The engine resolves
@@ -42,24 +39,18 @@ export interface CredentialProvider {
     env: Record<string, string>;
   };
 
-  /** After flow completes, parse raw result and save to store. */
-  storeResult(scope: string, result: FlowResult): void;
-
-  /**
-   * Refresh credentials if needed. Returns true if credentials are usable.
-   * @param force - skip expiry check and always attempt refresh (e.g. after auth error).
-   */
-  refresh?(scope: string, force?: boolean): Promise<boolean>;
+  /** After flow completes, parse raw result and save via token engine. */
+  storeResult(scope: string, result: FlowResult, tokenEngine: import('./token-substitute.js').TokenSubstituteEngine): void;
 
   /** Auth options for the reauth menu. */
   authOptions(scope: string): AuthOption[];
 
   /**
    * Import credentials from .env into the given scope.
-   * Each provider reads its own keys from .env internally.
+   * Each provider reads its own keys from .env and writes to the resolver.
    * Called once at startup for the 'default' scope.
    */
-  importEnv?(scope: string): void;
+  importEnv?(scope: string, resolver: import('./oauth-types.js').TokenResolver): void;
 }
 
 /** A single auth method offered by a provider. */

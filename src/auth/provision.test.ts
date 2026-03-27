@@ -37,6 +37,7 @@ const { importEnvToDefault, createAccessCheck } = await import('./provision.js')
 import type { CredentialProvider } from './types.js';
 import type { RegisteredGroup } from '../types.js';
 import { asGroupScope, asCredentialScope } from './oauth-types.js';
+import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
 
 function makeGroup(
   folder: string,
@@ -111,9 +112,8 @@ describe('importEnvToDefault', () => {
   it('calls importEnv on providers that have it', () => {
     const importEnvMock = vi.fn();
     const provider: CredentialProvider = {
-      service: 'test-import',
+      id: 'test-import',
       displayName: 'Test',
-      hasValidCredentials: () => false,
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],
@@ -121,22 +121,23 @@ describe('importEnvToDefault', () => {
     };
     registerProvider(provider);
 
-    importEnvToDefault();
-    expect(importEnvMock).toHaveBeenCalledWith('default');
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    importEnvToDefault(engine);
+    expect(importEnvMock).toHaveBeenCalledWith('default', expect.anything());
   });
 
   it('skips providers without importEnv', () => {
     const provider: CredentialProvider = {
-      service: 'test-no-import',
+      id: 'test-no-import',
       displayName: 'Test',
-      hasValidCredentials: () => false,
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],
     };
     registerProvider(provider);
 
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
     // Should not throw
-    importEnvToDefault();
+    importEnvToDefault(engine);
   });
 });
