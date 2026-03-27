@@ -28,9 +28,8 @@ import {
 import { getProxy } from './credential-proxy.js';
 import { getMitmCaCertPath } from './mitm-proxy.js';
 import { getTokenEngine, getAllProviders } from './auth/registry.js';
-import { resolveScope } from './auth/provision.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { RegisteredGroup } from './types.js';
+import { RegisteredGroup, scopeOf } from './types.js';
 
 /** Query a running container's bridge IP via docker inspect. @internal Exported for e2e test reuse. */
 export function getContainerIP(containerName: string): string | null {
@@ -259,15 +258,14 @@ export function buildVolumeMounts(
 
 /**
  * Provision substitute credentials from all providers and inject as env vars.
- * Resolves scope (group folder → 'default' fallback) so credentials are found
- * regardless of which scope they're stored in.
+ * The token engine resolves credential source scopes internally per-provider
+ * using the group's flags (useDefaultCredentials, isMain).
  * Providers handle writing any provider-specific files (e.g. .credentials.json).
  */
 function injectSubstituteCredentials(args: string[], group: RegisteredGroup): void {
-  const scope = resolveScope(group);
   const tokenEngine = getTokenEngine();
   for (const provider of getAllProviders()) {
-    const { env } = provider.provision(scope, tokenEngine);
+    const { env } = provider.provision(group, tokenEngine);
     for (const [key, value] of Object.entries(env)) {
       args.push('-e', `${key}=${value}`);
     }
@@ -397,7 +395,7 @@ export async function runContainerAgent(
     // so it's available immediately after spawn.
     let containerIP = getContainerIP(containerName);
     if (containerIP) {
-      getProxy().registerContainerIP(containerIP, group.folder);
+      getProxy().registerContainerIP(containerIP, scopeOf(group));
     } else {
       logger.warn(
         { group: group.name, containerName },

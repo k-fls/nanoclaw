@@ -1,13 +1,13 @@
 /**
- * Scope resolution for container secrets.
- * Replaces readSecrets() in container-runner.ts.
+ * Credential provisioning helpers.
  *
- * Resolution order:
- * 1. credentials/{group.folder}/ (group-specific)
- * 2. credentials/default/ (if group is allowed via useDefaultCredentials)
+ * importEnvToDefault() — bootstrap .env credentials at startup.
+ * canAccessScope() — access check callback for the token engine.
  */
 import type { RegisteredGroup } from '../types.js';
 import { getAllProviders } from './registry.js';
+import type { ScopeAccessCheck, GroupScope, CredentialScope } from './oauth-types.js';
+import type { GroupResolver } from './token-substitute.js';
 
 /**
  * Import .env values into the default scope via each provider's importEnv().
@@ -19,14 +19,19 @@ export function importEnvToDefault(): void {
   }
 }
 
-/** Resolve which scope holds credentials for this group. */
-export function resolveScope(group: RegisteredGroup): string {
-  const providers = getAllProviders();
-  const useDefault = group.containerConfig?.useDefaultCredentials
-    ?? (group.isMain === true);
-
-  // Group scope wins if any provider has credentials there
-  if (providers.some(p => p.hasValidCredentials(group.folder))) return group.folder;
-  if (useDefault && providers.some(p => p.hasValidCredentials('default'))) return 'default';
-  return group.folder;
+/**
+ * Create a ScopeAccessCheck callback that uses a group resolver.
+ * The returned function checks whether a group is allowed to access
+ * credentials from the given sourceScope.
+ */
+export function createAccessCheck(groupResolver: GroupResolver): ScopeAccessCheck {
+  return (groupScope: GroupScope, sourceScope: CredentialScope): boolean => {
+    if (sourceScope === 'default') {
+      const group = groupResolver(groupScope);
+      if (!group) return false;
+      return group.containerConfig?.useDefaultCredentials ?? (group.isMain === true);
+    }
+    // Non-default sourceScope: only the group itself can access its own scope
+    return (groupScope as string) === (sourceScope as string);
+  };
 }

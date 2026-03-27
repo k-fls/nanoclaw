@@ -5,8 +5,10 @@
 import type { RegisteredGroup } from '../types.js';
 import type { ChatIO, CredentialProvider } from './types.js';
 import { isAuthError, extractStreamRequestId } from './providers/claude.js';
-import { resolveScope } from './provision.js';
 import { runReauth } from './reauth.js';
+import { getTokenEngine } from './registry.js';
+import { CLAUDE_PROVIDER_ID } from './providers/claude.js';
+import { scopeOf } from '../types.js';
 import type { PendingAuthErrors } from './pending-auth-errors.js';
 import { logger } from '../logger.js';
 
@@ -62,10 +64,9 @@ export function createAuthGuard(
   return {
     /** Check credentials before agent run. Returns false if reauth failed. */
     async preCheck(): Promise<boolean> {
-      const scope = resolveScope(group);
-
-      // Check if provider has stored credentials
-      if (provider.hasValidCredentials(scope)) return true;
+      // Engine resolves credential scope internally (own → default fallback)
+      const engine = getTokenEngine();
+      if (engine.hasCredentials(scopeOf(group), CLAUDE_PROVIDER_ID)) return true;
 
       logger.warn({ group: group.name }, 'No credentials available, starting reauth');
       return runReauth(group.folder, createChat(), 'No credentials configured', provider.displayName);

@@ -15,8 +15,12 @@ vi.mock('./reauth.js', () => ({
   runReauth: vi.fn(async () => true),
 }));
 
-vi.mock('./provision.js', () => ({
-  resolveScope: vi.fn((group: any) => group.folder),
+// Mock the token engine's hasCredentials method used by guard.preCheck()
+const mockHasCredentials = vi.fn(() => true);
+vi.mock('./registry.js', () => ({
+  getTokenEngine: vi.fn(() => ({
+    hasCredentials: mockHasCredentials,
+  })),
 }));
 
 const { runReauth } = await import('./reauth.js');
@@ -68,6 +72,7 @@ describe('createAuthGuard', () => {
 
   describe('preCheck', () => {
     it('returns true when credentials are available', async () => {
+      mockHasCredentials.mockReturnValue(true);
       const provider = mockProvider();
       const guard = createAuthGuard(group, mockChat, vi.fn(), provider);
 
@@ -76,8 +81,8 @@ describe('createAuthGuard', () => {
     });
 
     it('goes straight to reauth when no credentials (no refresh attempt)', async () => {
+      mockHasCredentials.mockReturnValue(false);
       const provider = mockProvider({
-        hasValidCredentials: vi.fn(() => false),
         refresh: vi.fn(async () => true),
       });
       const guard = createAuthGuard(group, () => mockChat(), vi.fn(), provider);

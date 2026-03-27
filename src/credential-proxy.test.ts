@@ -7,6 +7,7 @@ vi.mock('./logger.js', () => ({
 }));
 
 import { CredentialProxy } from './credential-proxy.js';
+import { asGroupScope } from './auth/oauth-types.js';
 
 function makeRequest(
   port: number,
@@ -100,19 +101,19 @@ describe('CredentialProxy class', () => {
     });
 
     it('returns registered scope', () => {
-      proxy.registerContainerIP('172.17.0.5', 'test-group');
+      proxy.registerContainerIP('172.17.0.5', asGroupScope('test-group'));
       expect(proxy.resolveScope('172.17.0.5')).toBe('test-group');
     });
 
     it('normalizes IPv4-mapped IPv6', () => {
-      proxy.registerContainerIP('172.17.0.6', 'ipv6-group');
+      proxy.registerContainerIP('172.17.0.6', asGroupScope('ipv6-group'));
       expect(proxy.resolveScope('::ffff:172.17.0.6')).toBe('ipv6-group');
     });
   });
 
   describe('unregisterContainerIP', () => {
     it('removes the mapping', () => {
-      proxy.registerContainerIP('172.17.0.7', 'temp');
+      proxy.registerContainerIP('172.17.0.7', asGroupScope('temp'));
       proxy.unregisterContainerIP('172.17.0.7');
       expect(proxy.resolveScope('172.17.0.7')).toBeNull();
     });
@@ -178,7 +179,7 @@ describe('credential-proxy HTTP server', () => {
   });
 
   it('forwards HTTP proxy requests from known container IP', async () => {
-    proxy.registerContainerIP('127.0.0.1', 'my-group');
+    proxy.registerContainerIP('127.0.0.1', asGroupScope('my-group'));
     proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
     proxyPort = (proxyServer.address() as AddressInfo).port;
 
@@ -192,7 +193,7 @@ describe('credential-proxy HTTP server', () => {
   });
 
   it('does not inject credentials on HTTP proxy requests', async () => {
-    proxy.registerContainerIP('127.0.0.1', 'my-group');
+    proxy.registerContainerIP('127.0.0.1', asGroupScope('my-group'));
     proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
     proxyPort = (proxyServer.address() as AddressInfo).port;
 

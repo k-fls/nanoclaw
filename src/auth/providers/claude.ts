@@ -19,6 +19,9 @@ import {
   saveCredential,
 } from '../store.js';
 import { readKeysFile, writeKeysFile } from '../token-substitute.js';
+import { asCredentialScope, toCredentialScope } from '../oauth-types.js';
+import { scopeOf } from '../../types.js';
+import type { GroupScope } from '../oauth-types.js';
 import { authSessionDir, scopeClaudeDir, CLAUDE_CONFIG_STUB, ensureClaudeConfigStub, execInContainer } from '../exec.js';
 import {
   ensureGpgKey,
@@ -504,8 +507,9 @@ export const CLAUDE_PROVIDER_ID = 'claude';
  * Called once at startup per scope.
  */
 export function migrateClaudeCredentials(scope: string): void {
+  const credScope = asCredentialScope(scope);
   // Already migrated?
-  const existing = readKeysFile(scope, CLAUDE_PROVIDER_ID);
+  const existing = readKeysFile(credScope, CLAUDE_PROVIDER_ID);
   if (Object.keys(existing).length > 0) return;
 
   const cred = loadCredential(scope, SERVICE);
@@ -515,13 +519,13 @@ export function migrateClaudeCredentials(scope: string): void {
 
   switch (cred.auth_type) {
     case 'api_key':
-      writeKeysFile(scope, CLAUDE_PROVIDER_ID, {
+      writeKeysFile(credScope, CLAUDE_PROVIDER_ID, {
         api_key: { value: encrypt(plaintext), updated_ts: Date.now(), expires_ts: 0 },
       });
       break;
 
     case 'setup_token':
-      writeKeysFile(scope, CLAUDE_PROVIDER_ID, {
+      writeKeysFile(credScope, CLAUDE_PROVIDER_ID, {
         access: { value: encrypt(plaintext), updated_ts: Date.now(), expires_ts: 0 },
       });
       break;
@@ -543,7 +547,7 @@ export function migrateClaudeCredentials(scope: string): void {
           expires_ts: 0,
         };
       }
-      writeKeysFile(scope, CLAUDE_PROVIDER_ID, keys);
+      writeKeysFile(credScope, CLAUDE_PROVIDER_ID, keys);
       break;
     }
   }
@@ -653,7 +657,7 @@ export const claudeProvider: CredentialProvider = {
 
   hasValidCredentials(scope: string): boolean {
     // Check new store (keys file) first, fall back to old store
-    const keys = readKeysFile(scope, CLAUDE_PROVIDER_ID);
+    const keys = readKeysFile(asCredentialScope(scope), CLAUDE_PROVIDER_ID);
     if (keys.api_key || keys.access) return true;
     return hasCredential(scope, SERVICE);
   },
@@ -677,7 +681,8 @@ export const claudeProvider: CredentialProvider = {
     );
   },
 
-  provision(scope: string, tokenEngine: import('../token-substitute.js').TokenSubstituteEngine): { env: Record<string, string> } {
+  provision(group: import('../../types.js').RegisteredGroup, tokenEngine: import('../token-substitute.js').TokenSubstituteEngine): { env: Record<string, string> } {
+    const scope = scopeOf(group);
     const env: Record<string, string> = {};
 
     // API key mode
@@ -695,7 +700,8 @@ export const claudeProvider: CredentialProvider = {
     const subRefresh = tokenEngine.getOrCreateSubstitute(CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, 'refresh');
 
     // Write .credentials.json with substitute tokens + real expiresAt
-    const keys = readKeysFile(scope, CLAUDE_PROVIDER_ID);
+    // Always write to the group's own session dir regardless of credential source
+    const keys = readKeysFile(toCredentialScope(scope), CLAUDE_PROVIDER_ID);
     const expiresAt = keys.access?.expires_ts || 0;
     const credentialsJson = JSON.stringify({
       claudeAiOauth: {

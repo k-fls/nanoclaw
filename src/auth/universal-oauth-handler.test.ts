@@ -7,7 +7,7 @@ import { createHandler, setTestUpstreamAgent, setAuthErrorResolver, setTokenFetc
 import { setUpstreamAgent } from '../credential-proxy.js';
 import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
 import type { OAuthProvider, InterceptRule } from './oauth-types.js';
-import { DEFAULT_SUBSTITUTE_CONFIG } from './oauth-types.js';
+import { DEFAULT_SUBSTITUTE_CONFIG, asGroupScope, asCredentialScope } from './oauth-types.js';
 
 // ---------------------------------------------------------------------------
 // Self-signed HTTPS test server
@@ -141,7 +141,7 @@ async function executeHandler(
     body?: string;
     targetHost?: string;
     targetPort?: number;
-    scope?: string;
+    scope?: import('./oauth-types.js').GroupScope;
   } = {},
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
   const {
@@ -151,7 +151,7 @@ async function executeHandler(
     body = '',
     targetHost = '127.0.0.1',
     targetPort = serverPort,
-    scope = 'test-scope',
+    scope = asGroupScope('test-scope'),
   } = opts;
 
   // Create a temporary HTTP server that feeds into the handler
@@ -218,7 +218,7 @@ describe('universal-oauth-handler', () => {
 
       // Register a token
       const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
-      const sub = engine.generateSubstitute(realToken, 'test-provider', {}, 'test-scope', DEFAULT_SUBSTITUTE_CONFIG)!;
+      const sub = engine.generateSubstitute(realToken, 'test-provider', {}, asGroupScope('test-scope'), DEFAULT_SUBSTITUTE_CONFIG)!;
       expect(sub).not.toBeNull();
 
       const res = await executeHandler(handler, {
@@ -271,9 +271,9 @@ describe('universal-oauth-handler', () => {
       };
 
       // Store a refresh token in the resolver so the refresh can find it
-      resolver.store('real_refresh_token_value', 'refreshable', 'test-scope', 'refresh');
+      resolver.store('real_refresh_token_value', 'refreshable', asCredentialScope('test-scope'), 'refresh');
       // Store an access token too
-      resolver.store('real_access_token_value', 'refreshable', 'test-scope', 'access');
+      resolver.store('real_access_token_value', 'refreshable', asCredentialScope('test-scope'), 'access');
 
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine, 'redirect');
@@ -343,7 +343,7 @@ describe('universal-oauth-handler', () => {
       // Token scoped to tenant "acme"
       const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
       const sub = engine.generateSubstitute(
-        realToken, 'test-provider', { subdomain: 'acme' }, 'test-scope', DEFAULT_SUBSTITUTE_CONFIG,
+        realToken, 'test-provider', { subdomain: 'acme' }, asGroupScope('test-scope'), DEFAULT_SUBSTITUTE_CONFIG,
       )!;
 
       // Handler for evil.zendesk.com — same rule pattern, different actual host
@@ -362,10 +362,10 @@ describe('universal-oauth-handler', () => {
       // which means resolveWithRestriction allows it (empty requiredAttrs = no restriction).
       // To properly test cross-tenant: we need the engine's resolveWithRestriction
       // called with mismatched attrs. Test the engine directly instead:
-      const blocked = engine.resolveWithRestriction(sub, 'test-scope', { subdomain: 'evil' });
+      const blocked = engine.resolveWithRestriction(sub, asGroupScope('test-scope'), { subdomain: 'evil' });
       expect(blocked).toBeNull();
 
-      const allowed = engine.resolveWithRestriction(sub, 'test-scope', { subdomain: 'acme' });
+      const allowed = engine.resolveWithRestriction(sub, asGroupScope('test-scope'), { subdomain: 'acme' });
       expect(allowed).not.toBeNull();
       expect(allowed!.realToken).toBe(realToken);
     });
@@ -384,8 +384,8 @@ describe('universal-oauth-handler', () => {
         substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
       };
 
-      resolver.store('real_refresh_value', 'buf-replay', 'test-scope', 'refresh');
-      resolver.store('real_access_value', 'buf-replay', 'test-scope', 'access');
+      resolver.store('real_refresh_value', 'buf-replay', asCredentialScope('test-scope'), 'refresh');
+      resolver.store('real_access_value', 'buf-replay', asCredentialScope('test-scope'), 'access');
 
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine, 'buffer');
@@ -480,7 +480,7 @@ describe('universal-oauth-handler', () => {
       // Pre-register a refresh token substitute
       const realRefresh = 'real_refresh_abcdefghijklmnopqrstuvwxyz1234567890a';
       const subRefresh = engine.generateSubstitute(
-        realRefresh, 'test-provider', {}, 'test-scope', DEFAULT_SUBSTITUTE_CONFIG,
+        realRefresh, 'test-provider', {}, asGroupScope('test-scope'), DEFAULT_SUBSTITUTE_CONFIG,
       )!;
 
       // Upstream returns new tokens

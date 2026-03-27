@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import http from 'http';
 
+import { asGroupScope } from './oauth-types.js';
 import {
   handleBrowserOpen,
   registerAuthorizationEndpoint,
@@ -57,7 +58,7 @@ describe('browser-open-handler', () => {
       const req = mockRequest(JSON.stringify({ url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=foo' }));
       const res = mockResponse();
 
-      await handleBrowserOpen(req, res, 'test-scope');
+      await handleBrowserOpen(req, res, asGroupScope('test-scope'));
 
       expect(res._status).toBe(200);
       const body = JSON.parse(res._body);
@@ -68,7 +69,7 @@ describe('browser-open-handler', () => {
       const req = mockRequest(JSON.stringify({ url: 'https://docs.example.com/help' }));
       const res = mockResponse();
 
-      await handleBrowserOpen(req, res, 'test-scope');
+      await handleBrowserOpen(req, res, asGroupScope('test-scope'));
 
       expect(res._status).toBe(200);
       const body = JSON.parse(res._body);
@@ -79,7 +80,7 @@ describe('browser-open-handler', () => {
       const req = mockRequest('not json');
       const res = mockResponse();
 
-      await handleBrowserOpen(req, res, 'test-scope');
+      await handleBrowserOpen(req, res, asGroupScope('test-scope'));
 
       expect(res._status).toBe(400);
       const body = JSON.parse(res._body);
@@ -90,7 +91,7 @@ describe('browser-open-handler', () => {
       const req = mockRequest(JSON.stringify({ foo: 'bar' }));
       const res = mockResponse();
 
-      await handleBrowserOpen(req, res, 'test-scope');
+      await handleBrowserOpen(req, res, asGroupScope('test-scope'));
 
       expect(res._status).toBe(400);
       const body = JSON.parse(res._body);
@@ -106,7 +107,7 @@ describe('browser-open-handler', () => {
       const req = mockRequest(JSON.stringify({ url: 'https://claude.ai/oauth/authorize?client_id=abc' }));
       const res = mockResponse();
 
-      await handleBrowserOpen(req, res, 'my-group');
+      await handleBrowserOpen(req, res, asGroupScope('my-group'));
 
       expect(events).toHaveLength(1);
       expect(events[0].url).toBe('https://claude.ai/oauth/authorize?client_id=abc');
@@ -125,7 +126,7 @@ describe('browser-open-handler', () => {
       const req = mockRequest(JSON.stringify({ url: 'https://example.com/page' }));
       const res = mockResponse();
 
-      await handleBrowserOpen(req, res, 'test-scope');
+      await handleBrowserOpen(req, res, asGroupScope('test-scope'));
 
       expect(events).toHaveLength(0);
     });
@@ -136,7 +137,7 @@ describe('browser-open-handler', () => {
       const req = mockRequest(JSON.stringify({ url: 'https://custom.idp.com/auth?state=xyz' }));
       const res = mockResponse();
 
-      await handleBrowserOpen(req, res, 'test-scope');
+      await handleBrowserOpen(req, res, asGroupScope('test-scope'));
 
       expect(res._status).toBe(200);
       expect(JSON.parse(res._body).exit_code).toBe(0);

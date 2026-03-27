@@ -35,9 +35,10 @@ export interface CredentialProvider {
 
   /**
    * Produce substitute env vars for a container run.
-   * Returns substitutes only — never real tokens. The engine handles mapping.
+   * Returns substitutes only — never real tokens. The engine resolves
+   * credential source scopes internally using the group's flags.
    */
-  provision(scope: string, tokenEngine: import('./token-substitute.js').TokenSubstituteEngine): {
+  provision(group: import('../types.js').RegisteredGroup, tokenEngine: import('./token-substitute.js').TokenSubstituteEngine): {
     env: Record<string, string>;
   };
 

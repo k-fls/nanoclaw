@@ -30,11 +30,11 @@ export interface TransparentProxyOptions {
   /** MITM context for cert generation. */
   mitmCtx: MitmContext;
   /** Should this hostname be TLS-terminated? null = passthrough, InterceptResult = MITM. */
-  shouldIntercept(hostname: string, scope: string): InterceptResult | null;
+  shouldIntercept(hostname: string, scope: import('./auth/oauth-types.js').GroupScope): InterceptResult | null;
   /** Resolve scope from a container's source IP. Returns null for unknown IPs. */
-  resolveScope(sourceIP: string): string | null;
+  resolveScope(sourceIP: string): import('./auth/oauth-types.js').GroupScope | null;
   /** Emit a TLS socket into the shared MITM dispatcher with connection metadata. */
-  emitMitmConnection(socket: object, targetHost: string, targetPort: number, scope: string, sourceIP?: string, tapResolver?: unknown): void;
+  emitMitmConnection(socket: object, targetHost: string, targetPort: number, scope: import('./auth/oauth-types.js').GroupScope, sourceIP?: string, tapResolver?: unknown): void;
 }
 
 /**

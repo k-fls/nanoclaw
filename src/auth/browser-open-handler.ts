@@ -21,7 +21,7 @@ import { logger } from '../logger.js';
 
 export interface BrowserOpenEvent {
   url: string;
-  scope: string;
+  scope: import('./oauth-types.js').GroupScope;
   /** The container's bridge IP — needed to reach callback ports inside the container. */
   containerIP: string;
   /** The matched provider ID (from discovery files or built-in registration). */
@@ -99,7 +99,7 @@ export function setBrowserOpenCallback(cb: BrowserOpenCallback): void {
 export async function handleBrowserOpen(
   req: IncomingMessage,
   res: ServerResponse,
-  scope: string,
+  scope: import('./oauth-types.js').GroupScope,
   containerIP?: string,
 ): Promise<void> {
   // Buffer request body

@@ -52,6 +52,12 @@ const { claudeProvider, migrateClaudeCredentials, isAuthError, classifyAuthError
   './claude.js'
 );
 const { TokenSubstituteEngine, PersistentTokenResolver } = await import('../token-substitute.js');
+import type { RegisteredGroup } from '../../types.js';
+
+/** Create a minimal RegisteredGroup for test provision calls. */
+function makeGroup(folder: string): RegisteredGroup {
+  return { name: `Group ${folder}`, folder, trigger: '@test', added_at: new Date().toISOString() };
+}
 
 describe('claudeProvider', () => {
   beforeEach(() => {
@@ -68,12 +74,12 @@ describe('claudeProvider', () => {
       migrateClaudeCredentials(scope);
       const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       engine.loadAllPersistedRefs();
-      return claudeProvider.provision(scope, engine);
+      return claudeProvider.provision(makeGroup(scope), engine);
     }
 
     it('returns empty env when no credentials exist', () => {
       const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
-      const result = claudeProvider.provision('nonexistent', engine);
+      const result = claudeProvider.provision(makeGroup('nonexistent'), engine);
       expect(result.env).toEqual({});
     });
 

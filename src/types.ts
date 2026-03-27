@@ -43,6 +43,11 @@ export interface RegisteredGroup {
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
 }
 
+/** Group's folder as a typed GroupScope for engine use. */
+export function scopeOf(group: RegisteredGroup): import('./auth/oauth-types.js').GroupScope {
+  return group.folder as unknown as import('./auth/oauth-types.js').GroupScope;
+}
+
 export interface NewMessage {
   id: string;
   chat_jid: string;

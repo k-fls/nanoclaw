@@ -15,7 +15,14 @@ import {
 } from './claude.js';
 import { TokenSubstituteEngine, PersistentTokenResolver, type TokenRole } from '../token-substitute.js';
 import type { HostHandler } from '../../credential-proxy.js';
-import { DEFAULT_SUBSTITUTE_CONFIG } from '../oauth-types.js';
+import { DEFAULT_SUBSTITUTE_CONFIG, asGroupScope } from '../oauth-types.js';
+import type { GroupScope } from '../oauth-types.js';
+import type { RegisteredGroup } from '../../types.js';
+
+/** Create a minimal RegisteredGroup for test provision calls. */
+function makeGroup(folder: string): RegisteredGroup {
+  return { name: `Group ${folder}`, folder, trigger: '@test', added_at: new Date().toISOString() };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,8 +35,8 @@ function generateSubstitute(
   realToken: string,
   role: TokenRole = 'access',
 ): { env: Record<string, string> } {
-  engine.generateSubstitute(realToken, CLAUDE_PROVIDER_ID, {}, scope, CLAUDE_SUBSTITUTE_CONFIG, role);
-  return claudeProvider.provision(scope, engine);
+  engine.generateSubstitute(realToken, CLAUDE_PROVIDER_ID, {}, asGroupScope(scope), CLAUDE_SUBSTITUTE_CONFIG, role);
+  return claudeProvider.provision(makeGroup(scope), engine);
 }
 
 function mockRequest(headers: Record<string, string> = {}): http.IncomingMessage {
@@ -105,6 +112,8 @@ describe('CLAUDE_OAUTH_PROVIDER', () => {
 // wrapWithApiKeySupport
 // ---------------------------------------------------------------------------
 
+const testScope = asGroupScope('scope');
+
 describe('wrapWithApiKeySupport', () => {
   let resolver: PersistentTokenResolver;
   let engine: TokenSubstituteEngine;
@@ -116,7 +125,7 @@ describe('wrapWithApiKeySupport', () => {
 
   it('resolves x-api-key substitute and delegates to universal handler', async () => {
     const realKey = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const sub = engine.generateSubstitute(realKey, CLAUDE_PROVIDER_ID, {}, 'scope', CLAUDE_SUBSTITUTE_CONFIG, 'api_key')!;
+    const sub = engine.generateSubstitute(realKey, CLAUDE_PROVIDER_ID, {}, asGroupScope('scope'), CLAUDE_SUBSTITUTE_CONFIG, 'api_key')!;
     expect(sub).not.toBeNull();
 
     // Track what the universal handler receives and verify resolved header
@@ -130,7 +139,7 @@ describe('wrapWithApiKeySupport', () => {
     const req = mockRequest({ 'x-api-key': sub });
     const res = mockResponse();
 
-    await handler(req, res, 'api.anthropic.com', 443, 'scope');
+    await handler(req, res, 'api.anthropic.com', 443, testScope);
 
     // x-api-key should be resolved to the real key before delegation
     expect(capturedHeaders['x-api-key']).toBe(realKey);
@@ -145,7 +154,7 @@ describe('wrapWithApiKeySupport', () => {
     const req = mockRequest({ authorization: 'Bearer some-token' });
     const res = mockResponse();
 
-    await handler(req, res, 'api.anthropic.com', 443, 'scope');
+    await handler(req, res, 'api.anthropic.com', 443, testScope);
 
     expect(universalCalled).toBe(true);
   });
@@ -159,7 +168,7 @@ describe('wrapWithApiKeySupport', () => {
     const req = mockRequest({});
     const res = mockResponse();
 
-    await handler(req, res, 'api.anthropic.com', 443, 'scope');
+    await handler(req, res, 'api.anthropic.com', 443, testScope);
 
     expect(universalCalled).toBe(true);
   });
@@ -198,14 +207,14 @@ describe('provision with token engine', () => {
     generateSubstitute(engine, 'scope', realAccess);
     generateSubstitute(engine, 'scope', realRefresh, 'refresh');
 
-    const { env } = claudeProvider.provision('scope', engine);
+    const { env } = claudeProvider.provision(makeGroup('scope'), engine);
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
     expect(env.CLAUDE_REFRESH_TOKEN).toBeUndefined();
   });
 
   it('returns empty env when no substitutes exist', () => {
     const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
-    const { env } = claudeProvider.provision('empty-scope', engine);
+    const { env } = claudeProvider.provision(makeGroup('empty-scope'), engine);
     expect(env).toEqual({});
   });
 });

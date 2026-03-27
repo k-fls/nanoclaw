@@ -28,6 +28,7 @@ import {
   type BrowserOpenEvent,
 } from './browser-open-handler.js';
 import type { OAuthProvider, SubstituteConfig } from './oauth-types.js';
+import { asGroupScope } from './oauth-types.js';
 import type { TokenRole } from './token-substitute.js';
 import {
   buildContainerArgs,
@@ -370,7 +371,7 @@ export class OAuthE2EHarness {
       realToken,
       providerId,
       {},
-      scope,
+      asGroupScope(scope),
       config,
       role,
     );
@@ -460,7 +461,7 @@ export class OAuthE2EHarness {
         containerIP = getContainerIP(containerName);
       }
       if (containerIP) {
-        this.proxy.registerContainerIP(containerIP, scope);
+        this.proxy.registerContainerIP(containerIP, asGroupScope(scope));
       }
 
       let stdout = '';
@@ -544,8 +545,8 @@ export class OAuthE2EHarness {
     this.flowQueue = new FlowQueue();
     // Clear token state to prevent substitute collisions between tests.
     // Uses the same engine instance that handlers captured at registration.
-    this.tokenEngine.revokeByScope('e2e-test');
-    this.tokenEngine.revokeByScope('group-a');
-    this.tokenEngine.revokeByScope('group-b');
+    this.tokenEngine.revokeByScope(asGroupScope('e2e-test'));
+    this.tokenEngine.revokeByScope(asGroupScope('group-a'));
+    this.tokenEngine.revokeByScope(asGroupScope('group-b'));
   }
 }

@@ -5,6 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import type { AddressInfo } from 'net';
+import { asGroupScope } from './auth/oauth-types.js';
 
 vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
@@ -192,7 +193,7 @@ function pipeRequest(
 ): Promise<{ statusCode: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise(async (resolve, reject) => {
     const server = http.createServer((req, res) => {
-      proxyPipe(req, res, '127.0.0.1', upstreamPort, injectHeaders);
+      proxyPipe(req, res, '127.0.0.1', upstreamPort, injectHeaders, asGroupScope('test'));
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as AddressInfo).port;

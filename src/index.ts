@@ -11,8 +11,8 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders } from './auth/index.js';
-import { resolveScope } from './auth/provision.js';
+import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders, getTokenEngine, getProvider } from './auth/index.js';
+import { createAccessCheck } from './auth/provision.js';
 import { claudeProvider, extractUpstreamRequestId } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
 import { AsyncMutex } from './auth/async-mutex.js';
@@ -63,7 +63,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { Channel, NewMessage, RegisteredGroup, scopeOf } from './types.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -207,7 +207,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const isMainGroup = group.isMain === true;
 
   // Create per-session context for auth error correlation and flow queue
-  const scope = resolveScope(group);
+  const scope = scopeOf(group);
   const sessionCtx = createSessionContext(scope, extractUpstreamRequestId);
   const chatLock = new AsyncMutex();
   const flowAbort = new AbortController();
@@ -596,6 +596,25 @@ async function main(): Promise<void> {
   // then discovery-file providers to fill gaps for other OAuth services.
   registerBuiltinProviders();
   registerDiscoveryProviders();
+
+  // Wire token engine with group resolver, provider lookup, and access check.
+  // Must happen after providers are registered and before any provision calls.
+  {
+    const engine = getTokenEngine();
+    engine.setGroupResolver((folder) => {
+      for (const g of Object.values(registeredGroups)) {
+        if (g.folder === folder) return g;
+      }
+      return undefined;
+    });
+    engine.setProviderLookup((id) => getProvider(id));
+    engine.setAccessCheck(createAccessCheck((folder) => {
+      for (const g of Object.values(registeredGroups)) {
+        if (g.folder === folder) return g;
+      }
+      return undefined;
+    }));
+  }
 
   // Wire auth error resolver: bearer-swap handler looks up session context by scope
   setAuthErrorResolver((scope) => {

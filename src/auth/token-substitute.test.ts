@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
 import type { SubstituteConfig } from './oauth-types.js';
-import { DEFAULT_SUBSTITUTE_CONFIG, MIN_RANDOM_CHARS } from './oauth-types.js';
+import { DEFAULT_SUBSTITUTE_CONFIG, MIN_RANDOM_CHARS, asGroupScope, asCredentialScope, toCredentialScope } from './oauth-types.js';
 
 describe('TokenSubstituteEngine', () => {
   let engine: TokenSubstituteEngine;
@@ -14,7 +14,7 @@ describe('TokenSubstituteEngine', () => {
   });
 
   const defaultAttrs = {};
-  const scope = 'test-group';
+  const scope = asGroupScope('test-group');
 
   // ── generateSubstitute ─────────────────────────────────────────────
 
@@ -115,7 +115,7 @@ describe('TokenSubstituteEngine', () => {
       expect(resolved!.realToken).toBe(real);
       expect(resolved!.mapping.providerId).toBe('anthropic');
       expect(resolved!.mapping.scopeAttrs).toEqual({ tenant: 'acme' });
-      expect(resolved!.mapping.containerScope).toBe(scope);
+      expect(resolved!.mapping.credentialScope).toBe(scope);
 
       // Resolver has the real token
       expect(resolver.size).toBe(1);
@@ -130,16 +130,16 @@ describe('TokenSubstituteEngine', () => {
     });
 
     it('returns null for unknown scope', () => {
-      expect(engine.resolveSubstitute('anything', 'nonexistent')).toBeNull();
+      expect(engine.resolveSubstitute('anything', asGroupScope('nonexistent'))).toBeNull();
     });
 
     it('isolates substitutes between scopes', () => {
       const config = DEFAULT_SUBSTITUTE_CONFIG;
       const real = 'tok_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
-      const sub = engine.generateSubstitute(real, 'test', {}, 'scope-A', config)!;
+      const sub = engine.generateSubstitute(real, 'test', {}, asGroupScope('scope-A'), config)!;
 
-      expect(engine.resolveSubstitute(sub, 'scope-A')).not.toBeNull();
-      expect(engine.resolveSubstitute(sub, 'scope-B')).toBeNull();
+      expect(engine.resolveSubstitute(sub, asGroupScope('scope-A'))).not.toBeNull();
+      expect(engine.resolveSubstitute(sub, asGroupScope('scope-B'))).toBeNull();
     });
 
     it('returns null if resolver no longer has the token', () => {
@@ -148,7 +148,7 @@ describe('TokenSubstituteEngine', () => {
       const sub = engine.generateSubstitute(real, 'test', {}, scope, config)!;
 
       // Revoke from resolver directly
-      resolver.revoke(scope);
+      resolver.revoke(toCredentialScope(scope));
 
       // Engine still has mapping, but resolver returns null
       expect(engine.resolveSubstitute(sub, scope)).toBeNull();
@@ -188,8 +188,8 @@ describe('TokenSubstituteEngine', () => {
     });
 
     it('returns null for wrong scope', () => {
-      const sub = engine.generateSubstitute(real, 'test', {}, 'scope-A', config)!;
-      expect(engine.resolveWithRestriction(sub, 'scope-B', {})).toBeNull();
+      const sub = engine.generateSubstitute(real, 'test', {}, asGroupScope('scope-A'), config)!;
+      expect(engine.resolveWithRestriction(sub, asGroupScope('scope-B'), {})).toBeNull();
     });
   });
 
@@ -197,31 +197,31 @@ describe('TokenSubstituteEngine', () => {
 
   describe('PersistentTokenResolver roles', () => {
     it('caches access tokens in memory', () => {
-      resolver.store('real_access', 'provider', 'scope', 'access');
-      expect(resolver.resolve('scope', 'provider', 'access')).toBe('real_access');
+      resolver.store('real_access', 'provider', asCredentialScope('scope'), 'access');
+      expect(resolver.resolve(asCredentialScope('scope'), 'provider', 'access')).toBe('real_access');
     });
 
     it('caches api_key tokens in memory', () => {
-      resolver.store('sk-ant-api03-key', 'provider', 'scope', 'api_key');
-      expect(resolver.resolve('scope', 'provider', 'api_key')).toBe('sk-ant-api03-key');
+      resolver.store('sk-ant-api03-key', 'provider', asCredentialScope('scope'), 'api_key');
+      expect(resolver.resolve(asCredentialScope('scope'), 'provider', 'api_key')).toBe('sk-ant-api03-key');
     });
 
     it('resolves by scope+provider+role', () => {
-      resolver.store('access_tok', 'claude', 'group-a', 'access');
-      resolver.store('refresh_tok', 'claude', 'group-a', 'refresh');
-      resolver.store('access_tok2', 'github', 'group-a', 'access');
+      resolver.store('access_tok', 'claude', asCredentialScope('group-a'), 'access');
+      resolver.store('refresh_tok', 'claude', asCredentialScope('group-a'), 'refresh');
+      resolver.store('access_tok2', 'github', asCredentialScope('group-a'), 'access');
 
-      expect(resolver.resolve('group-a', 'claude', 'access')).toBe('access_tok');
+      expect(resolver.resolve(asCredentialScope('group-a'), 'claude', 'access')).toBe('access_tok');
       // refresh tokens are cold (not in hot cache when persistence fails in test)
       // but without initCredentialStore they fall back to null from disk
-      expect(resolver.resolve('group-a', 'github', 'access')).toBe('access_tok2');
+      expect(resolver.resolve(asCredentialScope('group-a'), 'github', 'access')).toBe('access_tok2');
     });
 
     it('returns null for non-existent combination', () => {
-      resolver.store('tok', 'claude', 'group-a', 'access');
-      expect(resolver.resolve('group-a', 'claude', 'refresh')).toBeNull();
-      expect(resolver.resolve('group-b', 'claude', 'access')).toBeNull();
-      expect(resolver.resolve('group-a', 'github', 'access')).toBeNull();
+      resolver.store('tok', 'claude', asCredentialScope('group-a'), 'access');
+      expect(resolver.resolve(asCredentialScope('group-a'), 'claude', 'refresh')).toBeNull();
+      expect(resolver.resolve(asCredentialScope('group-b'), 'claude', 'access')).toBeNull();
+      expect(resolver.resolve(asCredentialScope('group-a'), 'github', 'access')).toBeNull();
     });
   });
 
@@ -246,7 +246,7 @@ describe('TokenSubstituteEngine', () => {
 
       engine.generateSubstitute(real, 'claude', {}, scope, config);
 
-      expect(resolver.resolve(scope, 'claude', 'access')).toBe(real);
+      expect(resolver.resolve(toCredentialScope(scope), 'claude', 'access')).toBe(real);
     });
   });
 
@@ -264,7 +264,7 @@ describe('TokenSubstituteEngine', () => {
 
       // Update via resolver using mapping identity
       const m = resolved.mapping;
-      resolver.update(m.containerScope, m.providerId, m.role as any, newReal);
+      resolver.update(m.credentialScope, m.providerId, m.role as any, newReal);
 
       // Engine now resolves to new token
       expect(engine.resolveSubstitute(sub, scope)!.realToken).toBe(newReal);
@@ -275,14 +275,14 @@ describe('TokenSubstituteEngine', () => {
       const real = 'tok_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
       const newReal = 'tok_ZZZZZZZZZZZZZZZZZZZZZZZZZZZZzzzzzzzzzzzzzzzzzz';
 
-      const subA = engine.generateSubstitute(real, 'test', {}, 'scope-A', config)!;
-      const subB = engine.generateSubstitute(real, 'test', {}, 'scope-B', config)!;
+      const subA = engine.generateSubstitute(real, 'test', {}, asGroupScope('scope-A'), config)!;
+      const subB = engine.generateSubstitute(real, 'test', {}, asGroupScope('scope-B'), config)!;
 
       // Update only scope-A's token
-      resolver.update('scope-A', 'test', 'access', newReal);
+      resolver.update(asCredentialScope('scope-A'), 'test', 'access', newReal);
 
-      expect(engine.resolveSubstitute(subA, 'scope-A')!.realToken).toBe(newReal);
-      expect(engine.resolveSubstitute(subB, 'scope-B')!.realToken).toBe(real);
+      expect(engine.resolveSubstitute(subA, asGroupScope('scope-A'))!.realToken).toBe(newReal);
+      expect(engine.resolveSubstitute(subB, asGroupScope('scope-B'))!.realToken).toBe(real);
     });
   });
 
@@ -331,7 +331,7 @@ describe('TokenSubstituteEngine', () => {
       // Simulate restart: new engine, load from persisted refs
       const resolver2 = new PersistentTokenResolver();
       // Store the real token so the new resolver can find it
-      resolver2.store(real, 'multi', scope, 'access');
+      resolver2.store(real, 'multi', toCredentialScope(scope), 'access');
       const engine2 = new TokenSubstituteEngine(resolver2);
       engine2.loadPersistedRefs(scope, 'multi');
 
@@ -354,11 +354,11 @@ describe('TokenSubstituteEngine', () => {
     const real2 = 'tok_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJ';
 
     it('revokes all substitutes for a scope', () => {
-      engine.generateSubstitute(real1, 'a', {}, 'group-1', config);
-      engine.generateSubstitute(real2, 'b', {}, 'group-2', config);
+      engine.generateSubstitute(real1, 'a', {}, asGroupScope('group-1'), config);
+      engine.generateSubstitute(real2, 'b', {}, asGroupScope('group-2'), config);
       expect(engine.size).toBe(2);
 
-      const revoked = engine.revokeByScope('group-1');
+      const revoked = engine.revokeByScope(asGroupScope('group-1'));
       expect(revoked).toBe(1);
       expect(engine.size).toBe(1);
       expect(engine.scopeCount).toBe(1);
@@ -377,7 +377,7 @@ describe('TokenSubstituteEngine', () => {
     });
 
     it('returns 0 when nothing matches', () => {
-      expect(engine.revokeByScope('nonexistent')).toBe(0);
+      expect(engine.revokeByScope(asGroupScope('nonexistent'))).toBe(0);
     });
   });
 });

@@ -38,6 +38,7 @@ import { createMitmContext, type MitmContext } from './mitm-proxy.js';
 import { createTransparentServer } from './transparent-proxy.js';
 import { handleBrowserOpen } from './auth/browser-open-handler.js';
 import type { ContainerSessionContext } from './auth/session-context.js';
+import type { GroupScope } from './auth/oauth-types.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ export type HostHandler = (
   clientRes: ServerResponse,
   targetHost: string,
   targetPort: number,
-  scope: string,
+  scope: GroupScope,
   /** Original container bridge IP (from connection time, not the MITM socket). */
   sourceIP?: string,
 ) => Promise<void>;
@@ -70,7 +71,7 @@ interface HostRule {
 interface MitmMeta {
   targetHost: string;
   targetPort: number;
-  scope: string;
+  scope: GroupScope;
   /** Original container bridge IP (resolved at connection time). */
   sourceIP: string;
 }
@@ -116,7 +117,7 @@ export type ProxyResponseHook = (info: {
   targetHost: string;
   targetPort: number;
   /** Scope of the container that made the request. */
-  scope: string;
+  scope: GroupScope;
   method: string;
   path: string;
   requestHeaders: HeaderMap;
@@ -148,7 +149,7 @@ export function proxyPipe(
   targetHost: string,
   targetPort: number,
   injectHeaders: (headers: HeaderMap) => void,
-  scope = '',
+  scope: GroupScope,
 ): void {
   const headers: HeaderMap = { ...(clientReq.headers as Record<string, string>), host: targetHost };
   delete headers['connection'];
@@ -263,7 +264,7 @@ export interface ProxyTapEvent {
   direction: 'inbound' | 'outbound' | 'close';
   targetHost: string;
   targetPort: number;
-  scope: string;
+  scope: GroupScope;
   chunk: Buffer;
 }
 
@@ -276,8 +277,8 @@ export interface ProxyTapEvent {
  *      after MITM setup. Returns the callback that receives raw chunks, or null
  *      to skip tapping this specific connection.
  */
-export type ProxyTapFilter = (hostname: string, scope: string) => ProxyTapResolver | null;
-export type ProxyTapResolver = (targetHost: string, scope: string) => ProxyTapCallback | null;
+export type ProxyTapFilter = (hostname: string, scope: GroupScope) => ProxyTapResolver | null;
+export type ProxyTapResolver = (targetHost: string, scope: GroupScope) => ProxyTapCallback | null;
 export type ProxyTapCallback = (event: ProxyTapEvent) => void;
 
 export class CredentialProxy {
@@ -287,8 +288,8 @@ export class CredentialProxy {
    *   "myco.auth0.com" → tries "auth0.com", then "myco.auth0.com"
    */
   private anchorRules = new Map<string, HostRule[]>();
-  private containerIpToScope = new Map<string, string>();
-  private sessionContexts = new Map<string, ContainerSessionContext>();
+  private containerIpToScope = new Map<string, GroupScope>();
+  private sessionContexts = new Map<GroupScope, ContainerSessionContext>();
   private _mitmCtx: MitmContext | null = null;
   private _tapFilter: ProxyTapFilter | null = null;
 
@@ -330,25 +331,25 @@ export class CredentialProxy {
     this._tapFilter = filter;
   }
 
-  registerContainerIP(ip: string, scope: string): void {
+  registerContainerIP(ip: string, scope: GroupScope): void {
     this.containerIpToScope.set(ip, scope);
     logger.debug({ ip, scope }, 'Registered container IP');
   }
 
   /** Register a session context for a scope. Looked up by auth error resolver. */
-  registerSessionContext(scope: string, ctx: ContainerSessionContext): void {
+  registerSessionContext(scope: GroupScope, ctx: ContainerSessionContext): void {
     this.sessionContexts.set(scope, ctx);
     logger.debug({ scope }, 'Registered session context');
   }
 
   /** Deregister a session context. */
-  deregisterSessionContext(scope: string): void {
+  deregisterSessionContext(scope: GroupScope): void {
     this.sessionContexts.delete(scope);
     logger.debug({ scope }, 'Deregistered session context');
   }
 
   /** Get session context by scope (used by auth error resolver). */
-  getSessionContext(scope: string): ContainerSessionContext | undefined {
+  getSessionContext(scope: GroupScope): ContainerSessionContext | undefined {
     return this.sessionContexts.get(scope);
   }
 
@@ -431,7 +432,7 @@ export class CredentialProxy {
    * Resolve scope from a container's source IP.
    * Returns null for unknown IPs — callers must reject the connection.
    */
-  resolveScope(sourceIP: string): string | null {
+  resolveScope(sourceIP: string): GroupScope | null {
     const ip = normalizeIP(sourceIP);
     const scope = this.containerIpToScope.get(ip);
     if (!scope) {
@@ -468,7 +469,7 @@ export class CredentialProxy {
     socket: object,
     targetHost: string,
     targetPort: number,
-    scope: string,
+    scope: GroupScope,
     sourceIP: string = '',
     tapResolver?: ProxyTapResolver | null,
   ): void {
@@ -497,7 +498,7 @@ export class CredentialProxy {
   private wrapWithTap(
     socket: Socket,
     tapCb: ProxyTapCallback,
-    meta: { targetHost: string; targetPort: number; scope: string },
+    meta: { targetHost: string; targetPort: number; scope: GroupScope },
   ): Duplex {
     const inTap = new PassThrough();  // client → dispatcher (request data)
     const outTap = new PassThrough(); // dispatcher → client (response data)
@@ -556,7 +557,7 @@ export class CredentialProxy {
 
   // ── Caller validation ───────────────────────────────────────────
 
-  private validateCaller(remoteAddress: string | undefined): string | null {
+  private validateCaller(remoteAddress: string | undefined): GroupScope | null {
     const ip = normalizeIP(remoteAddress || '');
     return this.containerIpToScope.get(ip) ?? null;
   }

@@ -5,20 +5,37 @@
  * suffix, delimiter positions, character classes) but with randomized
  * middle sections. Containers never see real tokens — only substitutes.
  *
- * The engine does NOT store credentials. It stores SubstituteMappings
- * (identity info + opaque handle) and delegates real-token storage/retrieval
- * to a pluggable TokenResolver.
+ * The engine does NOT store credentials. It stores ProviderSubstitutes
+ * (per-provider grouping with optional sourceScope for cross-scope
+ * borrowing) and delegates real-token storage/retrieval to a pluggable
+ * TokenResolver.
  *
- * Scoped by containerScope: each container's substitutes are isolated.
+ * Internal structure:
+ *   scopes: Map<GroupScope, Map<providerId, ProviderSubstitutes>>
+ *   subToProvider: Map<substitute, { groupScope, providerId }>  (reverse index)
+ *
+ * Callers always pass GroupScope (= group.folder). The engine internally
+ * resolves CredentialScope using group flags + provider checks.
  */
 import { randomInt } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import type { SubstituteConfig, SubstituteMapping, TokenResolver } from './oauth-types.js';
-import { MIN_RANDOM_CHARS } from './oauth-types.js';
+import type {
+  SubstituteConfig,
+  SubstituteMapping,
+  SubstituteEntry,
+  ProviderSubstitutes,
+  ScopeAccessCheck,
+  TokenResolver,
+  GroupScope,
+  CredentialScope,
+} from './oauth-types.js';
+import { MIN_RANDOM_CHARS, asGroupScope, asCredentialScope, toCredentialScope } from './oauth-types.js';
 import { encrypt, decrypt, CREDENTIALS_DIR } from './store.js';
 import { logger } from '../logger.js';
+import type { RegisteredGroup } from '../types.js';
+import type { CredentialProvider } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Character class helpers
@@ -45,14 +62,9 @@ function randomCharSameClass(ch: string, delimiters: string): string {
 export type TokenRole = 'access' | 'refresh' | 'api_key';
 
 /** Cache key for in-memory hot tokens. */
-function cacheKey(containerScope: string, providerId: string, role: string): string {
-  return `${containerScope}\0${providerId}\0${role}`;
+function cacheKey(credentialScope: CredentialScope, providerId: string, role: string): string {
+  return `${credentialScope}\0${providerId}\0${role}`;
 }
-
-// ---------------------------------------------------------------------------
-// Keys file: credentials/{scope}/{providerId}.keys.json
-// All roles for one provider in one file. No secrets in plaintext.
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Locked JSON file helpers — fd held open between read and write
@@ -115,7 +127,7 @@ function updateJsonFile<T extends object>(filePath: string, update: (data: T) =>
 }
 
 // ---------------------------------------------------------------------------
-// Keys file: credentials/{scope}/{providerId}.keys.json
+// Keys file: credentials/{credentialScope}/{providerId}.keys.json
 // All roles for one provider in one file. No plaintext secrets.
 // ---------------------------------------------------------------------------
 
@@ -127,78 +139,81 @@ export interface KeyEntry {
 
 export type KeysFile = Record<string, KeyEntry>;
 
-export function keysPath(scope: string, providerId: string): string {
-  return path.join(CREDENTIALS_DIR, scope, `${providerId}.keys.json`);
+export function keysPath(credentialScope: CredentialScope, providerId: string): string {
+  return path.join(CREDENTIALS_DIR, credentialScope, `${providerId}.keys.json`);
 }
 
-export function readKeysFile(scope: string, providerId: string): KeysFile {
-  return readJsonFile<KeysFile>(keysPath(scope, providerId));
+export function readKeysFile(credentialScope: CredentialScope, providerId: string): KeysFile {
+  return readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
 }
 
-export function writeKeysFile(scope: string, providerId: string, keys: KeysFile): void {
-  const p = keysPath(scope, providerId);
+export function writeKeysFile(credentialScope: CredentialScope, providerId: string, keys: KeysFile): void {
+  const p = keysPath(credentialScope, providerId);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
 }
 
 // ---------------------------------------------------------------------------
-// Refs file: credentials/{scope}/{providerId}.refs.json
-// Map of substitute string → { role, scopeAttrs }. No secrets.
+// Refs file: credentials/{groupScope}/{providerId}.refs.json
+// Per-provider substitute mappings with optional sourceScope. No secrets.
 // ---------------------------------------------------------------------------
 
-interface RefEntry {
-  role: TokenRole;
-  scopeAttrs: Record<string, string>;
+/** V2 refs file format. */
+interface RefsFileV2 {
+  sourceScope?: string;
+  substitutes: Record<string, { role: TokenRole; scopeAttrs: Record<string, string> }>;
 }
 
-type RefsFile = Record<string, RefEntry>;
-
-function refsPath(scope: string, providerId: string): string {
-  return path.join(CREDENTIALS_DIR, scope, `${providerId}.refs.json`);
+function refsPath(groupScope: GroupScope, providerId: string): string {
+  return path.join(CREDENTIALS_DIR, groupScope, `${providerId}.refs.json`);
 }
+
+// ---------------------------------------------------------------------------
+// Persistent token resolver — keyed by (CredentialScope, providerId, role)
+// ---------------------------------------------------------------------------
 
 /**
- * Persistent token resolver — keyed by (containerScope, providerId, role).
+ * Persistent token resolver.
  *
  * - Access tokens / API keys: cached in memory (hot path, every request)
  *   AND persisted to keys file.
  * - Refresh tokens: persisted only, read from disk on demand (cold path,
  *   only used during token refresh).
  *
- * Keys file: credentials/{scope}/{providerId}.keys.json
+ * Keys file: credentials/{credentialScope}/{providerId}.keys.json
  *   { role: { value: encrypted, updated_ts, expires_ts } }
  */
 export class PersistentTokenResolver implements TokenResolver {
   /** Hot cache: cacheKey → real token. Refresh tokens are NOT cached. */
   private hotCache = new Map<string, string>();
 
-  store(realToken: string, providerId: string, containerScope: string, role: TokenRole = 'access'): void {
-    const persisted = this.persistToKeys(containerScope, providerId, role, realToken);
+  store(realToken: string, providerId: string, credentialScope: CredentialScope, role: TokenRole = 'access'): void {
+    const persisted = this.persistToKeys(credentialScope, providerId, role, realToken);
     // Refresh tokens are cold (disk-only) when persistence works.
     // Fall back to in-memory cache if persistence is unavailable.
     if (role !== 'refresh' || !persisted) {
-      this.hotCache.set(cacheKey(containerScope, providerId, role), realToken);
+      this.hotCache.set(cacheKey(credentialScope, providerId, role), realToken);
     }
   }
 
-  resolve(containerScope: string, providerId: string, role: string): string | null {
+  resolve(credentialScope: CredentialScope, providerId: string, role: string): string | null {
     // Hot path: cached access/api_key tokens
-    const cached = this.hotCache.get(cacheKey(containerScope, providerId, role));
+    const cached = this.hotCache.get(cacheKey(credentialScope, providerId, role));
     if (cached !== undefined) return cached;
     // Cold path: read from disk (refresh tokens, or after restart)
-    return this.loadFromKeys(containerScope, providerId, role as TokenRole);
+    return this.loadFromKeys(credentialScope, providerId, role as TokenRole);
   }
 
   /** Update a real token in place (e.g. after refresh). */
-  update(containerScope: string, providerId: string, role: TokenRole, newRealToken: string, expiresTs = 0): void {
-    this.persistToKeys(containerScope, providerId, role, newRealToken, expiresTs);
+  update(credentialScope: CredentialScope, providerId: string, role: TokenRole, newRealToken: string, expiresTs = 0): void {
+    this.persistToKeys(credentialScope, providerId, role, newRealToken, expiresTs);
     if (role !== 'refresh') {
-      this.hotCache.set(cacheKey(containerScope, providerId, role), newRealToken);
+      this.hotCache.set(cacheKey(credentialScope, providerId, role), newRealToken);
     }
   }
 
-  revoke(containerScope: string, providerId?: string): void {
-    const prefix = containerScope + '\0' + (providerId ?? '');
+  revoke(credentialScope: CredentialScope, providerId?: string): void {
+    const prefix = credentialScope + '\0' + (providerId ?? '');
     for (const key of this.hotCache.keys()) {
       if (key.startsWith(prefix)) {
         this.hotCache.delete(key);
@@ -212,9 +227,9 @@ export class PersistentTokenResolver implements TokenResolver {
   }
 
   /** Locked read-merge-write one role into the provider's keys file. */
-  private persistToKeys(scope: string, providerId: string, role: TokenRole, realToken: string, expiresTs = 0): boolean {
+  private persistToKeys(credentialScope: CredentialScope, providerId: string, role: TokenRole, realToken: string, expiresTs = 0): boolean {
     try {
-      updateJsonFile<KeysFile>(keysPath(scope, providerId), (keys) => {
+      updateJsonFile<KeysFile>(keysPath(credentialScope, providerId), (keys) => {
         keys[role] = {
           value: encrypt(realToken),
           updated_ts: Date.now(),
@@ -223,14 +238,14 @@ export class PersistentTokenResolver implements TokenResolver {
       });
       return true;
     } catch (err) {
-      logger.warn({ err, scope, providerId, role }, 'Token persistence failed');
+      logger.warn({ err, credentialScope, providerId, role }, 'Token persistence failed');
       return false;
     }
   }
 
   /** Read one role from the provider's keys file. */
-  private loadFromKeys(scope: string, providerId: string, role: TokenRole): string | null {
-    const keys = readJsonFile<KeysFile>(keysPath(scope, providerId));
+  private loadFromKeys(credentialScope: CredentialScope, providerId: string, role: TokenRole): string | null {
+    const keys = readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
     const entry = keys[role];
     if (!entry) return null;
     return decrypt(entry.value);
@@ -247,47 +262,139 @@ export interface ResolvedToken {
   mapping: SubstituteMapping;
 }
 
+/** Callback to look up a RegisteredGroup by folder name. */
+export type GroupResolver = (groupScope: GroupScope) => RegisteredGroup | undefined;
+
+/** Callback to look up a CredentialProvider by service ID. */
+export type ProviderLookup = (providerId: string) => CredentialProvider | undefined;
+
 export class TokenSubstituteEngine {
   /**
-   * Two-level lookup: containerScope → substitute → SubstituteMapping.
-   * Each container's substitutes are fully isolated.
-   * No credentials stored here — only identity + handle.
+   * Two-level lookup: GroupScope → providerId → ProviderSubstitutes.
+   * Each group's substitutes are isolated. Per-provider grouping enables
+   * efficient ownership takeover and access revocation.
    */
-  private scopes = new Map<string, Map<string, SubstituteMapping>>();
+  private scopes = new Map<GroupScope, Map<string, ProviderSubstitutes>>();
+
+  /** Reverse index: substitute string → { groupScope, providerId }. O(1) lookup on hot path. */
+  private subToProvider = new Map<string, { groupScope: GroupScope; providerId: string }>();
+
+  private accessCheck: ScopeAccessCheck | null = null;
+  private groupResolver: GroupResolver | null = null;
+  private providerLookup: ProviderLookup | null = null;
 
   constructor(private resolver: TokenResolver) {}
 
-  /** Access the underlying token resolver (e.g. for refresh operations). */
+  // ── Configuration setters (called once at startup) ───────────────
+
+  /** Set the access check callback. */
+  setAccessCheck(check: ScopeAccessCheck): void {
+    this.accessCheck = check;
+  }
+
+  /** Set the group resolver (avoids circular deps with group registry). */
+  setGroupResolver(resolver: GroupResolver): void {
+    this.groupResolver = resolver;
+  }
+
+  /** Set the provider lookup (avoids circular deps with provider registry). */
+  setProviderLookup(lookup: ProviderLookup): void {
+    this.providerLookup = lookup;
+  }
+
+  // ── Internal helpers ─────────────────────────────────────────────
+
+  /** Access the underlying token resolver (e.g. for legacy refresh operations). */
   getResolver(): TokenResolver {
     return this.resolver;
   }
 
-  private scopeMap(containerScope: string): Map<string, SubstituteMapping> {
-    let map = this.scopes.get(containerScope);
+  /** Get or create the provider map for a group scope. */
+  private providerMap(groupScope: GroupScope): Map<string, ProviderSubstitutes> {
+    let map = this.scopes.get(groupScope);
     if (!map) {
       map = new Map();
-      this.scopes.set(containerScope, map);
+      this.scopes.set(groupScope, map);
     }
     return map;
   }
 
+  /** Get or create ProviderSubstitutes for a (group, provider) pair. */
+  private getOrCreateProvSubs(
+    groupScope: GroupScope,
+    providerId: string,
+    sourceScope?: CredentialScope,
+  ): ProviderSubstitutes {
+    const pmap = this.providerMap(groupScope);
+    let ps = pmap.get(providerId);
+    if (!ps) {
+      ps = { sourceScope, substitutes: new Map() };
+      pmap.set(providerId, ps);
+    }
+    return ps;
+  }
+
+  /** Insert a substitute into both forward and reverse maps. */
+  private insertSub(
+    groupScope: GroupScope,
+    providerId: string,
+    substitute: string,
+    entry: SubstituteEntry,
+    sourceScope?: CredentialScope,
+  ): void {
+    const ps = this.getOrCreateProvSubs(groupScope, providerId, sourceScope);
+    ps.substitutes.set(substitute, entry);
+    this.subToProvider.set(substitute, { groupScope, providerId });
+  }
+
+  /** Remove a substitute from both forward and reverse maps. */
+  private removeSub(groupScope: GroupScope, providerId: string, substitute: string): void {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    if (ps) ps.substitutes.delete(substitute);
+    this.subToProvider.delete(substitute);
+  }
+
   /**
-   * Get existing substitute for (scope, providerId, role).
+   * Resolve credential source scope for a (group, provider) pair.
+   * Uses group flags (useDefaultCredentials, isMain) and provider.hasValidCredentials().
+   * Returns groupScope (as CredentialScope) if resolution is impossible.
+   */
+  private resolveCredentialScope(groupScope: GroupScope, providerId: string): CredentialScope {
+    const group = this.groupResolver?.(groupScope);
+    if (!group) return toCredentialScope(groupScope);
+    const useDefault = group.containerConfig?.useDefaultCredentials ?? (group.isMain === true);
+    // Main + default: main manages default directly
+    if (group.isMain && useDefault) return asCredentialScope('default');
+    // Check own scope first
+    const provider = this.providerLookup?.(providerId);
+    if (provider?.hasValidCredentials(groupScope)) return toCredentialScope(groupScope);
+    // Fall back to default if allowed
+    if (useDefault && provider?.hasValidCredentials('default')) return asCredentialScope('default');
+    return toCredentialScope(groupScope);
+  }
+
+  /** Effective credential scope: sourceScope if borrowed, groupScope if own. */
+  private effectiveScope(groupScope: GroupScope, ps: ProviderSubstitutes): CredentialScope {
+    return ps.sourceScope ?? toCredentialScope(groupScope);
+  }
+
+  // ── Public query methods ─────────────────────────────────────────
+
+  /**
+   * Get existing substitute for (providerId, groupScope, role).
    * Returns null if none exists. When multiple exist (from token refreshes),
    * returns the first when sorted — stable and deterministic.
    */
   getSubstitute(
     providerId: string,
-    containerScope: string,
+    groupScope: GroupScope,
     role: TokenRole = 'access',
   ): string | null {
-    const map = this.scopes.get(containerScope);
-    if (!map) return null;
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    if (!ps) return null;
     const matches: string[] = [];
-    for (const [sub, m] of map) {
-      if (m.providerId === providerId && m.role === role) {
-        matches.push(sub);
-      }
+    for (const [sub, entry] of ps.substitutes) {
+      if (entry.role === role) matches.push(sub);
     }
     if (matches.length === 0) return null;
     return matches.sort()[0];
@@ -296,37 +403,49 @@ export class TokenSubstituteEngine {
   /**
    * Get existing substitute, or generate one from the resolver's keys file.
    * Used by providers at container startup — never needs a real token arg.
-   * Returns null if no real token in the resolver and no existing substitute.
+   *
+   * The engine resolves the credential source scope internally using
+   * the group's flags and the provider's hasValidCredentials().
    */
   getOrCreateSubstitute(
     providerId: string,
     scopeAttrs: Record<string, string>,
-    containerScope: string,
+    groupScope: GroupScope,
     config: SubstituteConfig,
     role: TokenRole = 'access',
   ): string | null {
-    const existing = this.getSubstitute(providerId, containerScope, role);
+    const existing = this.getSubstitute(providerId, groupScope, role);
     if (existing) return existing;
 
-    const realToken = this.resolver.resolve(containerScope, providerId, role);
+    // Resolve which scope holds the real credentials
+    const credScope = this.resolveCredentialScope(groupScope, providerId);
+    const ownCredScope = toCredentialScope(groupScope);
+    const sourceScope = credScope !== ownCredScope ? credScope : undefined;
+
+    const realToken = this.resolver.resolve(credScope, providerId, role);
     if (!realToken) return null;
 
-    return this.generateSubstitute(realToken, providerId, scopeAttrs, containerScope, config, role);
+    return this.generateSubstitute(realToken, providerId, scopeAttrs, groupScope, config, role, sourceScope);
   }
 
   /**
    * Generate a format-preserving substitute for a real token.
    *
-   * Stores the real token via the TokenResolver and records the mapping.
-   * Returns null if the token is too short to safely randomize.
+   * Stores the real token via the TokenResolver (under the effective scope)
+   * and records the mapping. Returns null if the token is too short to
+   * safely randomize.
+   *
+   * @param sourceScope — if set, credentials are borrowed from this scope.
+   *   Omit for owned credentials.
    */
   generateSubstitute(
     realToken: string,
     providerId: string,
     scopeAttrs: Record<string, string>,
-    containerScope: string,
+    groupScope: GroupScope,
     config: SubstituteConfig,
     role: TokenRole = 'access',
+    sourceScope?: CredentialScope,
   ): string | null {
     const { prefixLen, suffixLen, delimiters } = config;
 
@@ -349,7 +468,8 @@ export class TokenSubstituteEngine {
       return null;
     }
 
-    const map = this.scopeMap(containerScope);
+    // Check for collision against all substitutes in this group scope
+    const pmap = this.providerMap(groupScope);
 
     for (let attempt = 0; attempt < 3; attempt++) {
       const randomizedMiddle = Array.from(middle)
@@ -359,21 +479,18 @@ export class TokenSubstituteEngine {
       const substitute = prefix + randomizedMiddle + suffix;
 
       if (substitute === realToken) continue;
-      if (map.has(substitute)) continue;
+      if (this.subToProvider.has(substitute)) continue;
 
-      // Persist real token via resolver
-      this.resolver.store(realToken, providerId, containerScope, role);
+      // Persist real token via resolver (under the effective credential scope)
+      const effCredScope: CredentialScope = sourceScope ?? toCredentialScope(groupScope);
+      this.resolver.store(realToken, providerId, effCredScope, role);
 
-      const mapping: SubstituteMapping = {
-        providerId,
-        role,
-        scopeAttrs,
-        containerScope,
-      };
-      map.set(substitute, mapping);
+      // Store in the engine
+      const entry: SubstituteEntry = { role, scopeAttrs };
+      this.insertSub(groupScope, providerId, substitute, entry, sourceScope);
 
       // Persist substitute → role mapping (no secrets)
-      this.persistRef(containerScope, providerId, substitute, role, scopeAttrs);
+      this.persistRefs(groupScope, providerId);
 
       return substitute;
     }
@@ -383,28 +500,54 @@ export class TokenSubstituteEngine {
 
   /**
    * Resolve a substitute to the real token + metadata.
-   * Returns null if unknown substitute, wrong scope, or resolver can't find the token.
+   * Returns null if unknown substitute, access denied, or resolver can't find the token.
+   *
+   * If the substitute belongs to a borrowed provider and the access check
+   * denies access, the substitute is revoked and null is returned.
    */
-  resolveSubstitute(substitute: string, containerScope: string): ResolvedToken | null {
-    const map = this.scopes.get(containerScope);
-    if (!map) return null;
-    const mapping = map.get(substitute);
-    if (!mapping) return null;
-    const realToken = this.resolver.resolve(mapping.containerScope, mapping.providerId, mapping.role);
+  resolveSubstitute(substitute: string, groupScope: GroupScope): ResolvedToken | null {
+    const ref = this.subToProvider.get(substitute);
+    if (!ref || ref.groupScope !== groupScope) return null;
+
+    const ps = this.scopes.get(groupScope)?.get(ref.providerId);
+    if (!ps) return null;
+
+    const entry = ps.substitutes.get(substitute);
+    if (!entry) return null;
+
+    // Access check for borrowed credentials
+    if (ps.sourceScope && this.accessCheck) {
+      if (!this.accessCheck(groupScope, ps.sourceScope)) {
+        // Revoke all substitutes for this borrowed provider
+        this.revokeProvider(groupScope, ref.providerId);
+        return null;
+      }
+    }
+
+    const effCredScope = this.effectiveScope(groupScope, ps);
+    const realToken = this.resolver.resolve(effCredScope, ref.providerId, entry.role);
     if (!realToken) return null;
-    return { realToken, mapping };
+
+    return {
+      realToken,
+      mapping: {
+        providerId: ref.providerId,
+        role: entry.role,
+        scopeAttrs: entry.scopeAttrs,
+        credentialScope: effCredScope,
+      },
+    };
   }
 
   /**
    * Resolve with scope attribute restriction.
-   * See resolveWithRestriction in the previous version for semantics.
    */
   resolveWithRestriction(
     substitute: string,
-    containerScope: string,
+    groupScope: GroupScope,
     requiredAttrs: Record<string, string>,
   ): ResolvedToken | null {
-    const resolved = this.resolveSubstitute(substitute, containerScope);
+    const resolved = this.resolveSubstitute(substitute, groupScope);
     if (!resolved) return null;
 
     const requiredKeys = Object.keys(requiredAttrs);
@@ -420,45 +563,151 @@ export class TokenSubstituteEngine {
     return resolved;
   }
 
-  /** Revoke all substitutes for a container scope (and optionally a provider). */
-  revokeByScope(containerScope: string, providerId?: string): number {
-    // Also revoke from the resolver
-    this.resolver.revoke(containerScope, providerId);
+  // ── Credential operations ────────────────────────────────────────
 
-    if (!providerId) {
-      const map = this.scopes.get(containerScope);
-      if (!map) return 0;
-      // Collect provider IDs for refs cleanup
-      const providerIds = new Set<string>();
-      for (const mapping of map.values()) providerIds.add(mapping.providerId);
-      for (const pid of providerIds) this.deleteRefs(containerScope, pid);
-      const count = map.size;
-      this.scopes.delete(containerScope);
+  /**
+   * Resolve a real token for a (group, provider, role) without going
+   * through a substitute. Used by refresh flows that need the real
+   * refresh token to call a token endpoint.
+   *
+   * Handles sourceScope indirection internally.
+   */
+  resolveRealToken(groupScope: GroupScope, providerId: string, role: TokenRole): string | null {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    const effCredScope = ps ? this.effectiveScope(groupScope, ps) : toCredentialScope(groupScope);
+    return this.resolver.resolve(effCredScope, providerId, role);
+  }
+
+  /**
+   * Refresh a credential. Writes to the source scope if borrowed and
+   * access is still allowed. If access is denied, promotes to own scope.
+   */
+  refreshCredential(
+    groupScope: GroupScope,
+    providerId: string,
+    role: TokenRole,
+    newToken: string,
+    expiresTs = 0,
+  ): void {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    const ownScope = toCredentialScope(groupScope);
+    if (!ps) {
+      // No existing substitutes — store in own scope
+      (this.resolver as PersistentTokenResolver).update(ownScope, providerId, role, newToken, expiresTs);
+      return;
+    }
+
+    if (ps.sourceScope) {
+      // Borrowed credentials — check access
+      if (this.accessCheck && !this.accessCheck(groupScope, ps.sourceScope)) {
+        // Access revoked — promote to own scope
+        (this.resolver as PersistentTokenResolver).update(ownScope, providerId, role, newToken, expiresTs);
+        ps.sourceScope = undefined;
+        this.persistRefs(groupScope, providerId);
+        logger.info({ groupScope, providerId }, 'Credential promoted to own scope (access revoked on refresh)');
+        return;
+      }
+      // Write to source scope
+      (this.resolver as PersistentTokenResolver).update(ps.sourceScope, providerId, role, newToken, expiresTs);
+    } else {
+      // Own credentials
+      (this.resolver as PersistentTokenResolver).update(ownScope, providerId, role, newToken, expiresTs);
+    }
+  }
+
+  /**
+   * Add or update a credential for a group. Always writes to the group's
+   * own scope. If the provider currently has borrowed substitutes, they
+   * are all removed first (ownership takeover).
+   */
+  addOrUpdateCredential(
+    groupScope: GroupScope,
+    providerId: string,
+    role: TokenRole,
+    newToken: string,
+    config: SubstituteConfig,
+    scopeAttrs: Record<string, string> = {},
+    expiresTs = 0,
+  ): string | null {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+
+    // Ownership takeover: remove borrowed substitutes
+    if (ps?.sourceScope) {
+      this.revokeProvider(groupScope, providerId);
+    }
+
+    // Store the real token in the group's own scope
+    (this.resolver as PersistentTokenResolver).update(toCredentialScope(groupScope), providerId, role, newToken, expiresTs);
+
+    // Generate a new substitute (no sourceScope = owned)
+    return this.generateSubstitute(newToken, providerId, scopeAttrs, groupScope, config, role);
+  }
+
+  /**
+   * Check if a group has usable credentials for a provider.
+   * Checks own scope first, then default if allowed (same logic as resolveCredentialScope).
+   */
+  hasCredentials(groupScope: GroupScope, providerId: string): boolean {
+    const credScope = this.resolveCredentialScope(groupScope, providerId);
+    const provider = this.providerLookup?.(providerId);
+    return provider?.hasValidCredentials(credScope) ?? false;
+  }
+
+  // ── Revocation ───────────────────────────────────────────────────
+
+  /** Revoke all substitutes for a single provider within a group scope. */
+  private revokeProvider(groupScope: GroupScope, providerId: string): void {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    if (!ps) return;
+
+    for (const sub of ps.substitutes.keys()) {
+      this.subToProvider.delete(sub);
+    }
+
+    this.scopes.get(groupScope)!.delete(providerId);
+    if (this.scopes.get(groupScope)!.size === 0) this.scopes.delete(groupScope);
+
+    // Don't revoke from resolver if borrowed (those tokens belong to the source scope)
+    if (!ps.sourceScope) {
+      this.resolver.revoke(toCredentialScope(groupScope), providerId);
+    }
+
+    this.deleteRefs(groupScope, providerId);
+  }
+
+  /** Revoke all substitutes for a group scope (and optionally a provider). */
+  revokeByScope(groupScope: GroupScope, providerId?: string): number {
+    if (providerId) {
+      const ps = this.scopes.get(groupScope)?.get(providerId);
+      if (!ps) return 0;
+      const count = ps.substitutes.size;
+      this.revokeProvider(groupScope, providerId);
+      // Always revoke from resolver when explicitly requested
+      this.resolver.revoke(toCredentialScope(groupScope), providerId);
       return count;
     }
 
-    this.deleteRefs(containerScope, providerId);
+    const pmap = this.scopes.get(groupScope);
+    if (!pmap) return 0;
 
-    const map = this.scopes.get(containerScope);
-    if (!map) return 0;
-    let revoked = 0;
-    for (const [sub, mapping] of map) {
-      if (mapping.providerId === providerId) {
-        map.delete(sub);
-        revoked++;
+    let count = 0;
+    for (const [pid, ps] of pmap) {
+      for (const sub of ps.substitutes.keys()) {
+        this.subToProvider.delete(sub);
       }
+      count += ps.substitutes.size;
+      this.deleteRefs(groupScope, pid);
     }
-    if (map.size === 0) this.scopes.delete(containerScope);
-    return revoked;
+    this.scopes.delete(groupScope);
+    this.resolver.revoke(toCredentialScope(groupScope));
+    return count;
   }
+
+  // ── Metrics ──────────────────────────────────────────────────────
 
   /** Number of active substitutes across all scopes. */
   get size(): number {
-    let total = 0;
-    for (const map of this.scopes.values()) {
-      total += map.size;
-    }
-    return total;
+    return this.subToProvider.size;
   }
 
   /** Number of active scopes. */
@@ -466,59 +715,68 @@ export class TokenSubstituteEngine {
     return this.scopes.size;
   }
 
-  // ── Refs persistence ──────────────────────────────────────────────
+  // ── Refs persistence ─────────────────────────────────────────────
 
   /**
-   * Persist a substitute → role mapping to the provider's refs file.
+   * Persist all substitutes for a (scope, provider) to the refs file.
+   * Writes the full file each time (not incremental).
    */
-  private persistRef(
-    containerScope: string,
-    providerId: string,
-    substitute: string,
-    role: TokenRole,
-    scopeAttrs: Record<string, string>,
-  ): void {
+  private persistRefs(groupScope: GroupScope, providerId: string): void {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    if (!ps) return;
+
+    const data: RefsFileV2 = {
+      substitutes: {},
+    };
+    if (ps.sourceScope) data.sourceScope = ps.sourceScope;
+    for (const [sub, entry] of ps.substitutes) {
+      data.substitutes[sub] = { role: entry.role as TokenRole, scopeAttrs: entry.scopeAttrs };
+    }
+
     try {
-      updateJsonFile<RefsFile>(refsPath(containerScope, providerId), (refs) => {
-        // Keep old substitutes — containers may still hold them after restart.
-        // Cleanup happens via revokeByScope / deleteRefs.
-        refs[substitute] = { role, scopeAttrs };
-      });
+      const filePath = refsPath(groupScope, providerId);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
     } catch (err) {
-      logger.warn({ err, containerScope, providerId }, 'Refs persistence failed');
+      logger.warn({ err, groupScope, providerId }, 'Refs persistence failed');
     }
   }
 
-  /**
-   * Delete a provider's refs file for a scope.
-   */
-  private deleteRefs(containerScope: string, providerId: string): void {
+  /** Delete a provider's refs file for a scope. */
+  private deleteRefs(groupScope: GroupScope, providerId: string): void {
     try {
-      fs.unlinkSync(refsPath(containerScope, providerId));
+      fs.unlinkSync(refsPath(groupScope, providerId));
     } catch { /* already gone */ }
   }
 
   /**
-   * Load persisted refs for a given scope and provider, rebuilding the
-   * engine's scopes map. Called on startup for each scope/provider that
-   * has a .refs.json file.
+   * Load persisted refs for a given scope and provider.
+   * Supports only V2 format (has `substitutes` key). Old V1 files are discarded.
    */
-  loadPersistedRefs(containerScope: string, providerId: string): number {
-    const refs = readJsonFile<RefsFile>(refsPath(containerScope, providerId));
-    const entries = Object.entries(refs);
+  loadPersistedRefs(groupScope: GroupScope, providerId: string): number {
+    const raw = readJsonFile<Record<string, unknown>>(refsPath(groupScope, providerId));
+
+    // V2 format: has `substitutes` key
+    if (!raw.substitutes || typeof raw.substitutes !== 'object') {
+      // V1 or empty — discard, will be regenerated on next provision
+      return 0;
+    }
+
+    const data = raw as unknown as RefsFileV2;
+    const entries = Object.entries(data.substitutes);
     if (entries.length === 0) return 0;
 
-    const map = this.scopeMap(containerScope);
+    const sourceScope = data.sourceScope ? asCredentialScope(data.sourceScope) : undefined;
+
     for (const [substitute, entry] of entries) {
-      map.set(substitute, {
-        providerId,
+      this.insertSub(groupScope, providerId, substitute, {
         role: entry.role,
         scopeAttrs: entry.scopeAttrs,
-        containerScope,
-      });
+      }, sourceScope);
     }
+
     logger.debug(
-      { containerScope, providerId, count: entries.length },
+      { groupScope, providerId, count: entries.length, sourceScope },
       'Loaded persisted substitute refs',
     );
     return entries.length;
@@ -540,7 +798,7 @@ export class TokenSubstituteEngine {
         for (const file of files) {
           const m = /^(.+)\.refs\.json$/.exec(file);
           if (m) {
-            total += this.loadPersistedRefs(dir.name, m[1]);
+            total += this.loadPersistedRefs(asGroupScope(dir.name), m[1]);
           }
         }
       }

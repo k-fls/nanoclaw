@@ -30,15 +30,13 @@ vi.mock('../env.js', () => ({
   readEnvFile: vi.fn(() => ({})),
 }));
 
-const { initCredentialStore, encrypt, saveCredential } = await import(
-  './store.js'
-);
-const { registerProvider, getAllProviders } = await import('./registry.js');
-const { resolveScope, importEnvToDefault } = await import('./provision.js');
-const { readEnvFile } = await import('../env.js');
+const { initCredentialStore } = await import('./store.js');
+const { registerProvider } = await import('./registry.js');
+const { importEnvToDefault, createAccessCheck } = await import('./provision.js');
 
 import type { CredentialProvider } from './types.js';
 import type { RegisteredGroup } from '../types.js';
+import { asGroupScope, asCredentialScope } from './oauth-types.js';
 
 function makeGroup(
   folder: string,
@@ -56,59 +54,52 @@ function makeGroup(
   };
 }
 
-describe('resolveScope', () => {
-  const stub = (service: string, hasValid: (scope: string) => boolean): CredentialProvider => ({
-    service,
-    displayName: 'Test',
-    hasValidCredentials: hasValid,
-    provision: () => ({ env: {} }),
-    storeResult: () => {},
-    authOptions: () => [],
+describe('createAccessCheck', () => {
+  const groups = new Map<string, RegisteredGroup>();
+  const resolver = (folder: string) => groups.get(folder);
+  const check = createAccessCheck(resolver);
+
+  beforeEach(() => {
+    groups.clear();
   });
 
-  it('returns group folder when no credentials anywhere', () => {
-    registerProvider(stub('test-none', () => false));
-    expect(resolveScope(makeGroup('no-creds'))).toBe('no-creds');
+  it('allows default scope when useDefaultCredentials is true', () => {
+    groups.set('my-group', makeGroup('my-group', { useDefaultCredentials: true }));
+    expect(check(asGroupScope('my-group'), asCredentialScope('default'))).toBe(true);
   });
 
-  it('returns group folder when group has credentials', () => {
-    registerProvider(stub('test-group', (s) => s === 'my-group'));
-    expect(resolveScope(makeGroup('my-group'))).toBe('my-group');
+  it('allows default scope for main group (implicit useDefaultCredentials)', () => {
+    groups.set('main-group', makeGroup('main-group', { isMain: true }));
+    expect(check(asGroupScope('main-group'), asCredentialScope('default'))).toBe(true);
   });
 
-  it('falls back to default when useDefaultCredentials is true', () => {
-    registerProvider(stub('test-default', (s) => s === 'default'));
-    expect(resolveScope(makeGroup('some-group', { useDefaultCredentials: true }))).toBe('default');
+  it('denies default scope when useDefaultCredentials is false', () => {
+    groups.set('locked', makeGroup('locked', { useDefaultCredentials: false }));
+    expect(check(asGroupScope('locked'), asCredentialScope('default'))).toBe(false);
   });
 
-  it('defaults to useDefaultCredentials=true for main group', () => {
-    registerProvider(stub('test-main', (s) => s === 'default'));
-    expect(resolveScope(makeGroup('main-group', { isMain: true }))).toBe('default');
+  it('denies default scope when useDefaultCredentials is not set (non-main)', () => {
+    groups.set('regular', makeGroup('regular'));
+    expect(check(asGroupScope('regular'), asCredentialScope('default'))).toBe(false);
   });
 
-  it('does NOT default to useDefaultCredentials=true for non-main group', () => {
-    registerProvider(stub('test-nonmain', () => false));
-    expect(resolveScope(makeGroup('other-group'))).toBe('other-group');
+  it('denies default scope for main with explicit useDefaultCredentials=false', () => {
+    groups.set('main-locked', makeGroup('main-locked', { isMain: true, useDefaultCredentials: false }));
+    expect(check(asGroupScope('main-locked'), asCredentialScope('default'))).toBe(false);
   });
 
-  it('explicit useDefaultCredentials=false overrides isMain', () => {
-    registerProvider(stub('test-override', () => false));
-    expect(resolveScope(makeGroup('main-locked', { isMain: true, useDefaultCredentials: false }))).toBe('main-locked');
+  it('denies default scope for unknown group', () => {
+    expect(check(asGroupScope('nonexistent'), asCredentialScope('default'))).toBe(false);
   });
 
-  it('does NOT fall back to default when useDefaultCredentials is not set', () => {
-    registerProvider(stub('test-no-default', () => false));
-    expect(resolveScope(makeGroup('isolated-group'))).toBe('isolated-group');
+  it('allows own scope', () => {
+    groups.set('self', makeGroup('self'));
+    expect(check(asGroupScope('self'), asCredentialScope('self'))).toBe(true);
   });
 
-  it('does NOT fall back to default when useDefaultCredentials is false', () => {
-    registerProvider(stub('test-explicit-false', () => false));
-    expect(resolveScope(makeGroup('locked-group', { useDefaultCredentials: false }))).toBe('locked-group');
-  });
-
-  it('group scope takes precedence over default', () => {
-    registerProvider(stub('test-precedence', () => true));
-    expect(resolveScope(makeGroup('priority-group', { useDefaultCredentials: true }))).toBe('priority-group');
+  it('denies cross-group non-default scope', () => {
+    groups.set('group-a', makeGroup('group-a'));
+    expect(check(asGroupScope('group-a'), asCredentialScope('group-b'))).toBe(false);
   });
 });
 

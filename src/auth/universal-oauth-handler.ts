@@ -13,8 +13,8 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { request as httpsRequest, RequestOptions } from 'https';
 
 import type { InterceptRule, OAuthProvider, RefreshStrategy } from './oauth-types.js';
+import type { GroupScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
-import type { PersistentTokenResolver } from './token-substitute.js';
 import type { HostHandler } from '../credential-proxy.js';
 import { proxyBuffered } from '../credential-proxy.js';
 import { replaceJsonStringValue } from '../oauth-interceptor.js';
@@ -33,7 +33,7 @@ export { setUpstreamAgent } from '../credential-proxy.js';
  * On 401/403 with refresh failure, the bearer-swap handler calls this to
  * get the callback, then invokes it with the buffered upstream body.
  */
-type AuthErrorCallbackResolver = (scope: string) => AuthErrorCallback | null;
+type AuthErrorCallbackResolver = (scope: GroupScope) => AuthErrorCallback | null;
 
 let _authErrorResolver: AuthErrorCallbackResolver | null = null;
 
@@ -47,7 +47,7 @@ export function setAuthErrorResolver(resolver: AuthErrorCallbackResolver): void 
  * The callback pushes to the session's flow queue.
  */
 type OAuthInitiationCallback = (authUrl: string, providerId: string, containerIP: string) => void;
-type OAuthInitiationResolver = (scope: string) => OAuthInitiationCallback | null;
+type OAuthInitiationResolver = (scope: GroupScope) => OAuthInitiationCallback | null;
 
 let _oauthInitiationResolver: OAuthInitiationResolver | null = null;
 
@@ -124,13 +124,13 @@ function findTokenEndpoint(provider: OAuthProvider): string | null {
 async function refreshViaTokenEndpoint(
   provider: OAuthProvider,
   tokenEngine: TokenSubstituteEngine,
-  scope: string,
+  groupScope: GroupScope,
 ): Promise<boolean> {
   const tokenEndpoint = findTokenEndpoint(provider);
   if (!tokenEndpoint) return false;
 
-  const resolver = tokenEngine.getResolver() as PersistentTokenResolver;
-  const realRefreshToken = resolver.resolve(scope, provider.id, 'refresh');
+  // Read refresh token through engine (handles sourceScope indirection internally)
+  const realRefreshToken = tokenEngine.resolveRealToken(groupScope, provider.id, 'refresh');
   if (!realRefreshToken) return false;
 
   try {
@@ -146,7 +146,7 @@ async function refreshViaTokenEndpoint(
 
     if (!response.ok) {
       logger.warn(
-        { provider: provider.id, scope, status: response.status },
+        { provider: provider.id, scope: groupScope, status: response.status },
         'Token refresh: endpoint returned error',
       );
       return false;
@@ -160,21 +160,20 @@ async function refreshViaTokenEndpoint(
 
     if (!tokens.access_token) return false;
 
-    // Update the access token in the resolver
+    // Write refreshed tokens through engine (handles access check + promote-to-own)
     const expiresTs = tokens.expires_in
       ? Date.now() + tokens.expires_in * 1000
       : 0;
-    resolver.update(scope, provider.id, 'access', tokens.access_token, expiresTs);
+    tokenEngine.refreshCredential(groupScope, provider.id, 'access', tokens.access_token, expiresTs);
 
-    // Update the refresh token if a new one was issued
     if (tokens.refresh_token) {
-      resolver.update(scope, provider.id, 'refresh', tokens.refresh_token);
+      tokenEngine.refreshCredential(groupScope, provider.id, 'refresh', tokens.refresh_token);
     }
 
-    logger.info({ provider: provider.id, scope }, 'Token refresh succeeded');
+    logger.info({ provider: provider.id, scope: groupScope }, 'Token refresh succeeded');
     return true;
   } catch (err) {
-    logger.warn({ err, provider: provider.id, scope }, 'Token refresh failed');
+    logger.warn({ err, provider: provider.id, scope: groupScope }, 'Token refresh failed');
     return false;
   }
 }
@@ -206,7 +205,7 @@ const BUFFER_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
  * Must be called BEFORE clientRes.end() so the record exists when
  * the container surfaces the error in stdout.
  */
-function fireAuthErrorCb(scope: string, body: string, statusCode: number): void {
+function fireAuthErrorCb(scope: GroupScope, body: string, statusCode: number): void {
   const authErrorCb = _authErrorResolver?.(scope);
   if (authErrorCb) {
     try {
@@ -255,7 +254,7 @@ function createBearerSwapHandler(
     clientRes: ServerResponse,
     targetHost: string,
     targetPort: number,
-    scope: string,
+    groupScope,
   ): Promise<void> => {
     const scopeAttrs = extractScopeAttrs(targetHost, rule);
     const headers = prepareHeaders(clientReq, targetHost);
@@ -265,7 +264,7 @@ function createBearerSwapHandler(
     const authHeader = headers['authorization'];
     if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
       substitutedToken = authHeader.slice(7);
-      const entry = tokenEngine.resolveWithRestriction(substitutedToken, scope, scopeAttrs);
+      const entry = tokenEngine.resolveWithRestriction(substitutedToken, groupScope, scopeAttrs);
       if (entry) {
         headers['authorization'] = `Bearer ${entry.realToken}`;
       }
@@ -291,7 +290,7 @@ function createBearerSwapHandler(
       if (refreshStrategy === 'buffer' && size > BUFFER_MAX_BYTES) {
         effectiveStrategy = 'passthrough';
         logger.debug(
-          { provider: provider.id, scope, size },
+          { provider: provider.id, scope: groupScope, size },
           'Request body exceeds buffer limit, falling back to passthrough',
         );
       }
@@ -321,7 +320,7 @@ function createBearerSwapHandler(
 
           // Auth error — buffer upstream body for correlation, then attempt refresh
           logger.info(
-            { provider: provider.id, scope, status: statusCode, strategy: effectiveStrategy },
+            { provider: provider.id, scope: groupScope, status: statusCode, strategy: effectiveStrategy },
             'Bearer-swap: auth error, attempting refresh',
           );
 
@@ -330,10 +329,10 @@ function createBearerSwapHandler(
           await new Promise<void>((r) => upRes.on('end', r));
           const upstreamBody = Buffer.concat(bodyChunks).toString();
 
-          const refreshed = await refreshViaTokenEndpoint(provider, tokenEngine, scope);
+          const refreshed = await refreshViaTokenEndpoint(provider, tokenEngine, groupScope);
 
           if (!refreshed) {
-            fireAuthErrorCb(scope, upstreamBody, statusCode);
+            fireAuthErrorCb(groupScope, upstreamBody, statusCode);
             clientRes.writeHead(statusCode, upRes.headers);
             clientRes.end(upstreamBody);
             resolve();
@@ -354,7 +353,7 @@ function createBearerSwapHandler(
               // Replay the original request with the refreshed real token
               try {
                 const freshEntry = substitutedToken
-                  ? tokenEngine.resolveWithRestriction(substitutedToken, scope, scopeAttrs)
+                  ? tokenEngine.resolveWithRestriction(substitutedToken, groupScope, scopeAttrs)
                   : null;
                 const replayHeaders = { ...headers };
                 if (freshEntry) {
@@ -366,7 +365,7 @@ function createBearerSwapHandler(
                 );
                 // If replay also fails with auth error, record for the guard
                 if (replay.statusCode === 401 || replay.statusCode === 403) {
-                  fireAuthErrorCb(scope, replay.body.toString(), replay.statusCode);
+                  fireAuthErrorCb(groupScope, replay.body.toString(), replay.statusCode);
                 }
                 const resHeaders = { ...replay.headers, 'content-length': String(replay.body.length) };
                 delete resHeaders['transfer-encoding'];
@@ -386,7 +385,7 @@ function createBearerSwapHandler(
             case 'passthrough': {
               // Forward the original 401 body. Token is already refreshed,
               // so the client's next request will succeed.
-              fireAuthErrorCb(scope, upstreamBody, statusCode);
+              fireAuthErrorCb(groupScope, upstreamBody, statusCode);
               clientRes.writeHead(statusCode, upRes.headers);
               clientRes.end(upstreamBody);
               resolve();
@@ -429,7 +428,7 @@ function createTokenExchangeHandler(
     clientRes: ServerResponse,
     targetHost: string,
     targetPort: number,
-    scope: string,
+    groupScope,
   ): Promise<void> => {
     const scopeAttrs = extractScopeAttrs(targetHost, rule);
 
@@ -445,7 +444,7 @@ function createTokenExchangeHandler(
         try {
           const parsed = JSON.parse(body);
           if (parsed.grant_type === 'refresh_token' && parsed.refresh_token) {
-            const entry = tokenEngine.resolveSubstitute(parsed.refresh_token, scope);
+            const entry = tokenEngine.resolveSubstitute(parsed.refresh_token, groupScope);
             if (entry) {
               return replaceJsonStringValue(body, 'refresh_token', entry.realToken);
             }
@@ -457,7 +456,7 @@ function createTokenExchangeHandler(
           const params = new URLSearchParams(body);
           const subRefresh = params.get('refresh_token');
           if (subRefresh) {
-            const entry = tokenEngine.resolveSubstitute(subRefresh, scope);
+            const entry = tokenEngine.resolveSubstitute(subRefresh, groupScope);
             if (entry) {
               params.set('refresh_token', entry.realToken);
               return params.toString();
@@ -478,13 +477,13 @@ function createTokenExchangeHandler(
             tokens.access_token,
             provider.id,
             scopeAttrs,
-            scope,
+            groupScope,
             provider.substituteConfig,
           );
 
           if (!subAccess) {
             logger.warn(
-              { provider: provider.id, scope },
+              { provider: provider.id, scope: groupScope },
               'Token-exchange: could not generate substitute for access_token',
             );
             return body;
@@ -498,7 +497,7 @@ function createTokenExchangeHandler(
               tokens.refresh_token,
               provider.id,
               scopeAttrs,
-              scope,
+              groupScope,
               provider.substituteConfig,
               'refresh',
             );
@@ -531,14 +530,14 @@ function createAuthorizeStubHandler(
     clientRes: ServerResponse,
     targetHost: string,
     targetPort: number,
-    scope: string,
+    groupScope,
     sourceIP?: string,
   ): Promise<void> => {
     // Reconstruct the full authorization URL
     const authUrl = `https://${targetHost}${clientReq.url}`;
 
     // Push to flow queue if a session context exists (agent is running)
-    const oauthInitCb = _oauthInitiationResolver?.(scope);
+    const oauthInitCb = _oauthInitiationResolver?.(groupScope);
     if (oauthInitCb) {
       oauthInitCb(authUrl, provider.id, sourceIP || '');
 
@@ -555,7 +554,7 @@ function createAuthorizeStubHandler(
 
     // No session context — forward the authorize request (passthrough).
     const { proxyPipe } = await import('../credential-proxy.js');
-    proxyPipe(clientReq, clientRes, targetHost, targetPort, () => {}, scope);
+    proxyPipe(clientReq, clientRes, targetHost, targetPort, () => {}, groupScope);
   };
 }
 
