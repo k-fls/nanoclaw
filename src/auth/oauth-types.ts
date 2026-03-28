@@ -68,6 +68,24 @@ export interface OAuthProvider {
   /** Which named groups from hostPattern regexes scope credentials. */
   scopeKeys: string[];
   substituteConfig: SubstituteConfig;
+  /**
+   * Controls which fields are captured from token-exchange requests/responses
+   * and stored alongside tokens for use in refresh requests.
+   *
+   * Default (no config): auto-captures non-transient fields from request body,
+   * and `scope` from response body.
+   *
+   * Setting `fromRequest` or `fromResponse` disables auto-capture for that
+   * direction and captures only the listed fields.
+   *
+   * `scopeExclude`/`scopeInclude` are always applied to the final `scope` value.
+   */
+  tokenFieldCapture?: {
+    fromRequest?: string[];
+    fromResponse?: string[];
+    scopeExclude?: string[];
+    scopeInclude?: string[];
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +170,7 @@ export interface TokenResolver {
     credentialScope: CredentialScope,
     role?: string,
     expiresTs?: number,
+    authFields?: Record<string, string>,
   ): void;
   /** Retrieve the current real token. Returns null if not found or revoked. */
   resolve(

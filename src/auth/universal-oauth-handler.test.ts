@@ -29,6 +29,7 @@ import {
   asGroupScope,
   asCredentialScope,
 } from './oauth-types.js';
+import { muteLogger, restoreLogger } from '../test-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Self-signed HTTPS test server
@@ -656,6 +657,288 @@ describe('universal-oauth-handler', () => {
 
       // Upstream should have received the real refresh token
       expect(lastRequest!.body).toContain(encodeURIComponent(realRefresh));
+    });
+
+    // -----------------------------------------------------------------------
+    // Token field capture
+    // -----------------------------------------------------------------------
+
+    it('auto-captures client_id from request and scope from response', async () => {
+      const spies = muteLogger();
+      try {
+        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const provider = makeProvider();
+        const rule = makeTokenExchangeRule();
+        const handler = createHandler(provider, rule, engine);
+
+        serverResponseOverride = {
+          status: 200,
+          body: JSON.stringify({
+            access_token: 'real_access_abcdefghijklmnopqrstuvwxyz1234567890ab',
+            refresh_token: 'real_refresh_abcdefghijklmnopqrstuvwxyz1234567890a',
+            token_type: 'Bearer',
+            expires_in: 3600,
+            scope: 'read write',
+          }),
+        };
+
+        const res = await executeHandler(handler, {
+          method: 'POST',
+          path: '/oauth/token',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code: 'auth_code_123',
+            client_id: 'my-client',
+          }),
+        });
+
+        expect(res.status).toBe(200);
+
+        const entry = engine.getKeyEntry(
+          asGroupScope('test-scope'),
+          'test-provider',
+          'access',
+        );
+        expect(entry).not.toBeNull();
+        expect(entry!.authFields).toBeDefined();
+        expect(entry!.authFields!.client_id).toBe('my-client');
+        expect(entry!.authFields!.scope).toBe('read write');
+      } finally {
+        restoreLogger(spies);
+      }
+    });
+
+    it('excludes transient fields from auto-capture', async () => {
+      const spies = muteLogger();
+      try {
+        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const provider = makeProvider();
+        const rule = makeTokenExchangeRule();
+        const handler = createHandler(provider, rule, engine);
+
+        serverResponseOverride = {
+          status: 200,
+          body: JSON.stringify({
+            access_token: 'real_access_abcdefghijklmnopqrstuvwxyz1234567890ab',
+            token_type: 'Bearer',
+          }),
+        };
+
+        const res = await executeHandler(handler, {
+          method: 'POST',
+          path: '/oauth/token',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code: 'auth_code_xyz',
+            code_verifier: 'verifier_abc',
+            client_id: 'my-client',
+          }),
+        });
+
+        expect(res.status).toBe(200);
+
+        const entry = engine.getKeyEntry(
+          asGroupScope('test-scope'),
+          'test-provider',
+          'access',
+        );
+        expect(entry).not.toBeNull();
+        expect(entry!.authFields).toBeDefined();
+        expect(entry!.authFields!.client_id).toBe('my-client');
+        // Transient fields must not be captured
+        expect(entry!.authFields!.grant_type).toBeUndefined();
+        expect(entry!.authFields!.code).toBeUndefined();
+        expect(entry!.authFields!.code_verifier).toBeUndefined();
+      } finally {
+        restoreLogger(spies);
+      }
+    });
+
+    it('explicit fromRequest disables auto-capture', async () => {
+      const spies = muteLogger();
+      try {
+        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const provider: OAuthProvider = {
+          ...makeProvider(),
+          tokenFieldCapture: { fromRequest: ['client_id'] },
+        };
+        const rule = makeTokenExchangeRule();
+        const handler = createHandler(provider, rule, engine);
+
+        serverResponseOverride = {
+          status: 200,
+          body: JSON.stringify({
+            access_token: 'real_access_abcdefghijklmnopqrstuvwxyz1234567890ab',
+            token_type: 'Bearer',
+          }),
+        };
+
+        const res = await executeHandler(handler, {
+          method: 'POST',
+          path: '/oauth/token',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code: 'auth_code_xyz',
+            client_id: 'my-client',
+            audience: 'https://api.example.com',
+          }),
+        });
+
+        expect(res.status).toBe(200);
+
+        const entry = engine.getKeyEntry(
+          asGroupScope('test-scope'),
+          'test-provider',
+          'access',
+        );
+        expect(entry).not.toBeNull();
+        expect(entry!.authFields).toBeDefined();
+        expect(entry!.authFields!.client_id).toBe('my-client');
+        // audience would be auto-captured, but explicit fromRequest disables auto
+        expect(entry!.authFields!.audience).toBeUndefined();
+      } finally {
+        restoreLogger(spies);
+      }
+    });
+
+    it('explicit fromResponse overrides auto', async () => {
+      const spies = muteLogger();
+      try {
+        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const provider: OAuthProvider = {
+          ...makeProvider(),
+          tokenFieldCapture: { fromResponse: ['scope', 'organization'] },
+        };
+        const rule = makeTokenExchangeRule();
+        const handler = createHandler(provider, rule, engine);
+
+        serverResponseOverride = {
+          status: 200,
+          body: JSON.stringify({
+            access_token: 'real_access_abcdefghijklmnopqrstuvwxyz1234567890ab',
+            token_type: 'Bearer',
+            scope: 'read write',
+            organization: 'acme-corp',
+          }),
+        };
+
+        const res = await executeHandler(handler, {
+          method: 'POST',
+          path: '/oauth/token',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code: 'auth_code_xyz',
+          }),
+        });
+
+        expect(res.status).toBe(200);
+
+        const entry = engine.getKeyEntry(
+          asGroupScope('test-scope'),
+          'test-provider',
+          'access',
+        );
+        expect(entry).not.toBeNull();
+        expect(entry!.authFields).toBeDefined();
+        expect(entry!.authFields!.scope).toBe('read write');
+        expect(entry!.authFields!.organization).toBe('acme-corp');
+      } finally {
+        restoreLogger(spies);
+      }
+    });
+
+    it('scopeInclude adds scopes', async () => {
+      const spies = muteLogger();
+      try {
+        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const provider: OAuthProvider = {
+          ...makeProvider(),
+          tokenFieldCapture: { scopeInclude: ['user:file_upload'] },
+        };
+        const rule = makeTokenExchangeRule();
+        const handler = createHandler(provider, rule, engine);
+
+        serverResponseOverride = {
+          status: 200,
+          body: JSON.stringify({
+            access_token: 'real_access_abcdefghijklmnopqrstuvwxyz1234567890ab',
+            token_type: 'Bearer',
+            scope: 'user:profile',
+          }),
+        };
+
+        const res = await executeHandler(handler, {
+          method: 'POST',
+          path: '/oauth/token',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code: 'auth_code_xyz',
+          }),
+        });
+
+        expect(res.status).toBe(200);
+
+        const entry = engine.getKeyEntry(
+          asGroupScope('test-scope'),
+          'test-provider',
+          'access',
+        );
+        expect(entry).not.toBeNull();
+        expect(entry!.authFields).toBeDefined();
+        expect(entry!.authFields!.scope).toBe('user:profile user:file_upload');
+      } finally {
+        restoreLogger(spies);
+      }
+    });
+
+    it('scopeExclude removes scopes', async () => {
+      const spies = muteLogger();
+      try {
+        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const provider: OAuthProvider = {
+          ...makeProvider(),
+          tokenFieldCapture: { scopeExclude: ['org:create_api_key'] },
+        };
+        const rule = makeTokenExchangeRule();
+        const handler = createHandler(provider, rule, engine);
+
+        serverResponseOverride = {
+          status: 200,
+          body: JSON.stringify({
+            access_token: 'real_access_abcdefghijklmnopqrstuvwxyz1234567890ab',
+            token_type: 'Bearer',
+            scope: 'org:create_api_key user:profile',
+          }),
+        };
+
+        const res = await executeHandler(handler, {
+          method: 'POST',
+          path: '/oauth/token',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code: 'auth_code_xyz',
+          }),
+        });
+
+        expect(res.status).toBe(200);
+
+        const entry = engine.getKeyEntry(
+          asGroupScope('test-scope'),
+          'test-provider',
+          'access',
+        );
+        expect(entry).not.toBeNull();
+        expect(entry!.authFields).toBeDefined();
+        expect(entry!.authFields!.scope).toBe('user:profile');
+      } finally {
+        restoreLogger(spies);
+      }
     });
   });
 

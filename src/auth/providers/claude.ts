@@ -399,9 +399,7 @@ function callbackHandler(oauthUrl: string, port: number): CodeDeliveryHandler {
 }
 
 /** Parse .credentials.json content to extract tokens and expiry. */
-function parseCredentialsJson(
-  json: string,
-): {
+function parseCredentialsJson(json: string): {
   accessToken: string;
   refreshToken?: string;
   expiresAt: string | null;
@@ -662,6 +660,9 @@ export const CLAUDE_OAUTH_PROVIDER: import('../oauth-types.js').OAuthProvider =
     ],
     scopeKeys: [],
     substituteConfig: CLAUDE_SUBSTITUTE_CONFIG,
+    tokenFieldCapture: {
+      scopeInclude: ['user:file_upload'],
+    },
   };
 
 /**

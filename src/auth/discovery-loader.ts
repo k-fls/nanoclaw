@@ -173,6 +173,12 @@ export interface DiscoveryFile {
     delimiters?: string;
   };
   _host_patterns?: string[];
+  _token_field_capture?: {
+    from_request?: string[];
+    from_response?: string[];
+    scope_exclude?: string[];
+    scope_include?: string[];
+  };
 }
 
 /**
@@ -292,11 +298,23 @@ export function parseDiscoveryFile(
     };
   }
 
+  let tokenFieldCapture: OAuthProvider['tokenFieldCapture'];
+  if (data._token_field_capture) {
+    const c = data._token_field_capture;
+    tokenFieldCapture = {
+      ...(c.from_request && { fromRequest: c.from_request }),
+      ...(c.from_response && { fromResponse: c.from_response }),
+      ...(c.scope_exclude && { scopeExclude: c.scope_exclude }),
+      ...(c.scope_include && { scopeInclude: c.scope_include }),
+    };
+  }
+
   return {
     id,
     rules,
     scopeKeys: [...allScopeKeys],
     substituteConfig,
+    ...(tokenFieldCapture && { tokenFieldCapture }),
   };
 }
 

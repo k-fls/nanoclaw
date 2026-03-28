@@ -146,10 +146,14 @@ function updateJsonFile<T extends object>(
 // All roles for one provider in one file. No plaintext secrets.
 // ---------------------------------------------------------------------------
 
-export interface KeyEntry {
+export interface AuthToken {
   value: string; // encrypted token
-  updated_ts: number; // epoch ms
   expires_ts: number; // epoch ms, 0 = no expiry
+  authFields?: Record<string, string>; // captured fields for refresh (client_id, scope, etc.)
+}
+
+export interface KeyEntry extends AuthToken {
+  updated_ts: number; // epoch ms — per role
 }
 
 export type KeysFile = Record<string, KeyEntry>;
@@ -214,6 +218,8 @@ function refsPath(groupScope: GroupScope, providerId: string): string {
 export class PersistentTokenResolver implements TokenResolver {
   /** Hot cache: cacheKey → real token. Refresh tokens are NOT cached. */
   private hotCache = new Map<string, string>();
+  /** Auth fields cache: cacheKey → authFields. Mirrors hot cache lifetime. */
+  private authFieldsCache = new Map<string, Record<string, string>>();
 
   store(
     realToken: string,
@@ -221,6 +227,7 @@ export class PersistentTokenResolver implements TokenResolver {
     credentialScope: CredentialScope,
     role: TokenRole = 'access',
     expiresTs = 0,
+    authFields?: Record<string, string>,
   ): void {
     const persisted = this.persistToKeys(
       credentialScope,
@@ -228,11 +235,16 @@ export class PersistentTokenResolver implements TokenResolver {
       role,
       realToken,
       expiresTs,
+      authFields,
     );
     // Refresh tokens are cold (disk-only) when persistence works.
     // Fall back to in-memory cache if persistence is unavailable.
+    const ck = cacheKey(credentialScope, providerId, role);
     if (role !== 'refresh' || !persisted) {
-      this.hotCache.set(cacheKey(credentialScope, providerId, role), realToken);
+      this.hotCache.set(ck, realToken);
+    }
+    if (authFields) {
+      this.authFieldsCache.set(ck, authFields);
     }
   }
 
@@ -257,6 +269,7 @@ export class PersistentTokenResolver implements TokenResolver {
     role: TokenRole,
     newRealToken: string,
     expiresTs = 0,
+    authFields?: Record<string, string>,
   ): void {
     this.persistToKeys(
       credentialScope,
@@ -264,12 +277,14 @@ export class PersistentTokenResolver implements TokenResolver {
       role,
       newRealToken,
       expiresTs,
+      authFields,
     );
+    const ck = cacheKey(credentialScope, providerId, role);
     if (role !== 'refresh') {
-      this.hotCache.set(
-        cacheKey(credentialScope, providerId, role),
-        newRealToken,
-      );
+      this.hotCache.set(ck, newRealToken);
+    }
+    if (authFields) {
+      this.authFieldsCache.set(ck, authFields);
     }
   }
 
@@ -278,6 +293,7 @@ export class PersistentTokenResolver implements TokenResolver {
     for (const key of this.hotCache.keys()) {
       if (key.startsWith(prefix)) {
         this.hotCache.delete(key);
+        this.authFieldsCache.delete(key);
       }
     }
   }
@@ -296,6 +312,22 @@ export class PersistentTokenResolver implements TokenResolver {
     return this.hotCache.size;
   }
 
+  /** Read the full KeyEntry for a role (includes authFields). Checks disk first, falls back to memory. */
+  resolveKeyEntry(
+    credentialScope: CredentialScope,
+    providerId: string,
+    role: TokenRole,
+  ): KeyEntry | null {
+    const keys = readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
+    if (keys[role]) return keys[role];
+    // Fall back to in-memory authFields (e.g. when credential store isn't initialized)
+    const ck = cacheKey(credentialScope, providerId, role);
+    const cached = this.authFieldsCache.get(ck);
+    if (cached)
+      return { value: '', updated_ts: 0, expires_ts: 0, authFields: cached };
+    return null;
+  }
+
   /** Locked read-merge-write one role into the provider's keys file. */
   private persistToKeys(
     credentialScope: CredentialScope,
@@ -303,6 +335,7 @@ export class PersistentTokenResolver implements TokenResolver {
     role: TokenRole,
     realToken: string,
     expiresTs = 0,
+    authFields?: Record<string, string>,
   ): boolean {
     try {
       updateJsonFile<KeysFile>(
@@ -312,6 +345,7 @@ export class PersistentTokenResolver implements TokenResolver {
             value: encrypt(realToken),
             updated_ts: Date.now(),
             expires_ts: expiresTs,
+            ...(authFields && { authFields }),
           };
         },
       );
@@ -579,6 +613,7 @@ export class TokenSubstituteEngine {
     config: SubstituteConfig,
     role: TokenRole = 'access',
     sourceScope?: CredentialScope,
+    authFields?: Record<string, string>,
   ): string | null {
     const { prefixLen, suffixLen, delimiters } = config;
 
@@ -618,7 +653,14 @@ export class TokenSubstituteEngine {
       // Persist real token via resolver (under the effective credential scope)
       const effCredScope: CredentialScope =
         sourceScope ?? toCredentialScope(groupScope);
-      this.resolver.store(realToken, providerId, effCredScope, role);
+      this.resolver.store(
+        realToken,
+        providerId,
+        effCredScope,
+        role,
+        0,
+        authFields,
+      );
 
       // Store in the engine
       const entry: SubstituteEntry = { role, scopeAttrs };
@@ -726,6 +768,23 @@ export class TokenSubstituteEngine {
     return this.resolver.resolve(effCredScope, providerId, role);
   }
 
+  /** Get the full KeyEntry for a role, resolving source scope. */
+  getKeyEntry(
+    groupScope: GroupScope,
+    providerId: string,
+    role: TokenRole,
+  ): KeyEntry | null {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    const effCredScope = ps
+      ? this.effectiveScope(groupScope, ps)
+      : toCredentialScope(groupScope);
+    return (this.resolver as PersistentTokenResolver).resolveKeyEntry(
+      effCredScope,
+      providerId,
+      role,
+    );
+  }
+
   /**
    * Get the expiry timestamp for a credential role, resolving source scope.
    * Returns 0 if not found or no expiry set.
@@ -753,31 +812,31 @@ export class TokenSubstituteEngine {
     role: TokenRole,
     newToken: string,
     expiresTs = 0,
+    authFields?: Record<string, string>,
   ): void {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     const ownScope = toCredentialScope(groupScope);
     if (!ps) {
-      // No existing substitutes — store in own scope
       (this.resolver as PersistentTokenResolver).update(
         ownScope,
         providerId,
         role,
         newToken,
         expiresTs,
+        authFields,
       );
       return;
     }
 
     if (ps.sourceScope) {
-      // Borrowed credentials — check access
       if (this.accessCheck && !this.accessCheck(groupScope, ps.sourceScope)) {
-        // Access revoked — promote to own scope
         (this.resolver as PersistentTokenResolver).update(
           ownScope,
           providerId,
           role,
           newToken,
           expiresTs,
+          authFields,
         );
         ps.sourceScope = undefined;
         this.persistRefs(groupScope, providerId);
@@ -787,22 +846,22 @@ export class TokenSubstituteEngine {
         );
         return;
       }
-      // Write to source scope
       (this.resolver as PersistentTokenResolver).update(
         ps.sourceScope,
         providerId,
         role,
         newToken,
         expiresTs,
+        authFields,
       );
     } else {
-      // Own credentials
       (this.resolver as PersistentTokenResolver).update(
         ownScope,
         providerId,
         role,
         newToken,
         expiresTs,
+        authFields,
       );
     }
   }

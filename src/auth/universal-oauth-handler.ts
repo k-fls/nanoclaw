@@ -156,11 +156,20 @@ async function refreshViaTokenEndpoint(
   );
   if (!realRefreshToken) return false;
 
+  // Read captured authFields (client_id, scope, etc.) from the refresh token entry
+  const refreshEntry = tokenEngine.getKeyEntry(
+    groupScope,
+    provider.id,
+    'refresh',
+  );
+  const authFields = refreshEntry?.authFields ?? {};
+
   try {
     const response = await _tokenFetch(tokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        ...authFields,
         grant_type: 'refresh_token',
         refresh_token: realRefreshToken,
       }),
@@ -183,7 +192,7 @@ async function refreshViaTokenEndpoint(
 
     if (!tokens.access_token) return false;
 
-    // Write refreshed tokens through engine (handles access check + promote-to-own)
+    // Write refreshed tokens through engine, preserving authFields for future refreshes
     const expiresTs = tokens.expires_in
       ? Date.now() + tokens.expires_in * 1000
       : 0;
@@ -193,6 +202,7 @@ async function refreshViaTokenEndpoint(
       'access',
       tokens.access_token,
       expiresTs,
+      authFields,
     );
 
     if (tokens.refresh_token) {
@@ -201,6 +211,8 @@ async function refreshViaTokenEndpoint(
         provider.id,
         'refresh',
         tokens.refresh_token,
+        0,
+        authFields,
       );
     }
 
@@ -574,6 +586,75 @@ function createBearerSwapHandler(
 // Token-exchange handler
 // ---------------------------------------------------------------------------
 
+/** Fields excluded from auto-capture (transient or contain secrets). */
+const TRANSIENT_FIELDS = new Set([
+  'grant_type',
+  'code',
+  'code_verifier',
+  'state',
+  'redirect_uri',
+  'refresh_token',
+  'access_token',
+  'token_type',
+  'expires_in',
+]);
+
+/**
+ * Build authFields from request + response bodies according to provider config.
+ * Auto-capture is the default; explicit fromRequest/fromResponse disables it.
+ */
+function captureAuthFields(
+  reqBody: Record<string, unknown> | null,
+  respBody: Record<string, unknown>,
+  provider: OAuthProvider,
+): Record<string, string> | undefined {
+  const fields: Record<string, string> = {};
+  const cap = provider.tokenFieldCapture;
+
+  // From request
+  if (reqBody) {
+    if (cap?.fromRequest) {
+      for (const f of cap.fromRequest) {
+        const v = reqBody[f];
+        if (typeof v === 'string') fields[f] = v;
+      }
+    } else {
+      for (const [k, v] of Object.entries(reqBody)) {
+        if (!TRANSIENT_FIELDS.has(k) && typeof v === 'string') fields[k] = v;
+      }
+    }
+  }
+
+  // From response
+  if (cap?.fromResponse) {
+    for (const f of cap.fromResponse) {
+      const v = respBody[f];
+      if (typeof v === 'string') fields[f] = v;
+    }
+  } else {
+    if (typeof respBody.scope === 'string') fields['scope'] = respBody.scope;
+  }
+
+  // Apply scope modifiers
+  if (fields['scope']) {
+    let parts = fields['scope'].split(/\s+/);
+    if (cap?.scopeExclude) {
+      const ex = new Set(cap.scopeExclude);
+      parts = parts.filter((s) => !ex.has(s));
+    }
+    if (cap?.scopeInclude) {
+      const inc = new Set(cap.scopeInclude);
+      for (const s of inc) {
+        if (!parts.includes(s)) parts.push(s);
+      }
+    }
+    fields['scope'] = parts.join(' ');
+    if (!fields['scope']) delete fields['scope'];
+  }
+
+  return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
 function createTokenExchangeHandler(
   provider: OAuthProvider,
   rule: InterceptRule,
@@ -587,6 +668,7 @@ function createTokenExchangeHandler(
     groupScope,
   ): Promise<void> => {
     const scopeAttrs = extractScopeAttrs(targetHost, rule);
+    let capturedReqBody: Record<string, unknown> | null = null;
 
     await proxyBuffered(
       clientReq,
@@ -598,10 +680,11 @@ function createTokenExchangeHandler(
       (headers) => {
         delete headers['accept-encoding'];
       },
-      // Request transform: swap substitute refresh_token → real
+      // Request transform: swap substitute refresh_token → real, capture fields
       (body) => {
         try {
           const parsed = JSON.parse(body);
+          capturedReqBody = parsed;
           if (parsed.grant_type === 'refresh_token' && parsed.refresh_token) {
             const entry = tokenEngine.resolveSubstitute(
               parsed.refresh_token,
@@ -625,6 +708,7 @@ function createTokenExchangeHandler(
           body.includes('refresh_token=')
         ) {
           const params = new URLSearchParams(body);
+          capturedReqBody = Object.fromEntries(params);
           const subRefresh = params.get('refresh_token');
           if (subRefresh) {
             const entry = tokenEngine.resolveSubstitute(subRefresh, groupScope);
@@ -637,11 +721,17 @@ function createTokenExchangeHandler(
 
         return body;
       },
-      // Response transform: capture real tokens, return substitutes
+      // Response transform: capture real tokens + authFields, return substitutes
       (body, _statusCode) => {
         try {
           const tokens = JSON.parse(body);
           if (!tokens.access_token) return body;
+
+          const authFields = captureAuthFields(
+            capturedReqBody,
+            tokens,
+            provider,
+          );
 
           // Generate substitute for access token
           const subAccess = tokenEngine.generateSubstitute(
@@ -650,6 +740,9 @@ function createTokenExchangeHandler(
             scopeAttrs,
             groupScope,
             provider.substituteConfig,
+            'access',
+            undefined,
+            authFields,
           );
 
           if (!subAccess) {
@@ -671,6 +764,8 @@ function createTokenExchangeHandler(
               groupScope,
               provider.substituteConfig,
               'refresh',
+              undefined,
+              authFields,
             );
             if (subRefresh) {
               result = replaceJsonStringValue(
