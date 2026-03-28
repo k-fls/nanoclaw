@@ -32,6 +32,19 @@ import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup, scopeOf } from './types.js';
 
+/** Query a running container's status via docker inspect. */
+function getContainerStatus(containerName: string): string | null {
+  try {
+    return execFileSync(
+      CONTAINER_RUNTIME_BIN,
+      ['inspect', '--format', '{{.State.Status}}', containerName],
+      { encoding: 'utf-8', timeout: 5000 },
+    ).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Query a running container's bridge IP via docker inspect. @internal Exported for e2e test reuse. */
 export function getContainerIP(containerName: string): string | null {
   try {
@@ -65,6 +78,8 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  /** True for infrastructure failures where retrying the message won't help. */
+  fatal?: boolean;
 }
 
 interface VolumeMount {
@@ -217,6 +232,17 @@ export function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount tsconfig.json so the entrypoint can compile from /app (image root).
+  // Only package*.json are COPY'd into the image; tsconfig.json is not.
+  const agentRunnerTsconfig = path.join(projectRoot, 'container', 'agent-runner', 'tsconfig.json');
+  if (fs.existsSync(agentRunnerTsconfig)) {
+    mounts.push({
+      hostPath: agentRunnerTsconfig,
+      containerPath: '/app/tsconfig.json',
+      readonly: true,
+    });
+  }
+
   // Mount xdg-open shim so any tool (GitHub CLI, gcloud, etc.) that triggers
   // OAuth has its browser-open intercepted by the credential proxy.
   const xdgOpenShim = path.join(projectRoot, 'container', 'shims', 'xdg-open');
@@ -320,11 +346,19 @@ export function buildContainerArgs(
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
-  // or when getuid is unavailable (native Windows without WSL).
+  // when getuid is unavailable (native Windows without WSL), or when the
+  // transparent proxy is active (entrypoint must start as root for iptables).
   const hostUid = process.getuid?.();
   const hostGid = process.getgid?.();
   if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-    args.push('--user', `${hostUid}:${hostGid}`);
+    if (mitmCtx) {
+      // Transparent proxy: entrypoint starts as root for iptables, then drops
+      // privileges via setpriv. Pass host uid/gid so it drops to the right user.
+      args.push('-e', `HOST_UID=${hostUid}`);
+      args.push('-e', `HOST_GID=${hostGid}`);
+    } else {
+      args.push('--user', `${hostUid}:${hostGid}`);
+    }
     args.push('-e', 'HOME=/home/node');
   }
 
@@ -384,26 +418,54 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  onProcess(container, containerName);
+
+  // Capture early stderr from Docker (e.g. mount errors, image not found)
+  // before entering the IP-wait loop, so failures are not silently lost.
+  let earlyStderr = '';
+  const earlyStderrHandler = (data: Buffer) => { earlyStderr += data.toString(); };
+  container.stderr.on('data', earlyStderrHandler);
+
+  // Register this container's bridge IP so the credential proxy can
+  // identify it and inject the correct group's credentials.
+  // Wait for container to reach Running state, then read its bridge IP.
+  // Docker transitions Created → Running before the entrypoint starts;
+  // if it exits or is never found, bail out early instead of looping.
+  let containerIP: string | null = null;
+  await new Promise<void>((res) => {
+    let attempts = 0;
+    let seenContainer = false;
+    const retry = () => {
+      const status = getContainerStatus(containerName);
+      if (status) seenContainer = true;
+      // If we previously saw the container but now it's gone/exited, stop retrying
+      if (seenContainer && (!status || status === 'exited' || status === 'dead')) return res();
+      if (status === 'running') {
+        containerIP = getContainerIP(containerName);
+        if (containerIP) return res();
+      }
+      if (++attempts >= 20) return res();
+      setTimeout(retry, 500);
+    };
+    setTimeout(retry, 500);
+  });
+  container.stderr.off('data', earlyStderrHandler);
+  if (!containerIP) {
+    const status = getContainerStatus(containerName);
+    logger.error(
+      { group: group.name, containerName, status, earlyStderr: earlyStderr.trim() },
+      'Could not determine container IP — killing container',
+    );
+    container.kill();
+    return { status: 'error', result: null, error: `Could not determine container IP (status: ${status}): ${earlyStderr.trim()}`, fatal: true };
+  }
+  getProxy().registerContainerIP(containerIP, scopeOf(group));
+
   return new Promise((resolve) => {
-    const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    onProcess(container, containerName);
-
-    // Register this container's bridge IP so the credential proxy can
-    // identify it and inject the correct group's credentials.
-    // Docker assigns the IP at container creation (before the process starts),
-    // so it's available immediately after spawn.
-    let containerIP = getContainerIP(containerName);
-    if (containerIP) {
-      getProxy().registerContainerIP(containerIP, scopeOf(group));
-    } else {
-      logger.warn(
-        { group: group.name, containerName },
-        'Could not determine container IP — proxy will use default credentials',
-      );
-    }
 
     let stdout = '';
     let stderr = '';

@@ -11,6 +11,9 @@
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 import { request as httpsRequest, RequestOptions } from 'https';
+import { gunzipSync } from 'zlib';
+import { mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
 
 import type { InterceptRule, OAuthProvider, RefreshStrategy } from './oauth-types.js';
 import type { GroupScope } from './oauth-types.js';
@@ -256,6 +259,38 @@ function createBearerSwapHandler(
     targetPort: number,
     groupScope,
   ): Promise<void> => {
+    // Capture body chunks immediately — the MITM HTTP parser drains the
+    // IncomingMessage at any microtask boundary, so we must attach listeners
+    // before doing any work. Chunks queue until a consumer (upstream request
+    // or buffer) is connected via pipeTo()/collect().
+    const pending: Buffer[] = [];
+    let ended = false;
+    let sink: ((chunk: Buffer) => void) | null = null;
+    let onEnd: (() => void) | null = null;
+
+    clientReq.on('data', (c: Buffer) => {
+      pending.push(c);
+      sink?.(c);
+    });
+    clientReq.on('end', () => {
+      ended = true;
+      onEnd?.();
+    });
+
+    /** Pipe queued + future chunks to a writable. Ends it when source ends. */
+    function pipeTo(dest: import('http').ClientRequest): void {
+      for (const c of pending) dest.write(c);
+      if (ended) { dest.end(); return; }
+      sink = (c) => dest.write(c);
+      onEnd = () => dest.end();
+    }
+
+    /** Wait for all data and return as a single Buffer. */
+    function collect(): Promise<Buffer> {
+      if (ended) return Promise.resolve(Buffer.concat(pending));
+      return new Promise<Buffer>((res) => { onEnd = () => res(Buffer.concat(pending)); });
+    }
+
     const scopeAttrs = extractScopeAttrs(targetHost, rule);
     const headers = prepareHeaders(clientReq, targetHost);
 
@@ -270,33 +305,22 @@ function createBearerSwapHandler(
       }
     }
 
-    // Buffer request body when strategy may need replay (buffer/passthrough).
-    // For redirect, pipe straight through (no replay needed).
+    // Buffer strategy: collect full body for potential replay after refresh.
     let reqBody: Buffer | null = null;
     let effectiveStrategy = refreshStrategy;
 
-    if (refreshStrategy !== 'redirect') {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      await new Promise<void>((resolve) => {
-        clientReq.on('data', (c: Buffer) => {
-          chunks.push(c);
-          size += c.length;
-        });
-        clientReq.on('end', resolve);
-      });
-      reqBody = Buffer.concat(chunks);
-      // Fall back to passthrough if body exceeds buffer limit
-      if (refreshStrategy === 'buffer' && size > BUFFER_MAX_BYTES) {
+    if (refreshStrategy === 'buffer') {
+      reqBody = await collect();
+      if (reqBody.length > BUFFER_MAX_BYTES) {
         effectiveStrategy = 'passthrough';
         logger.debug(
-          { provider: provider.id, scope: groupScope, size },
+          { provider: provider.id, scope: groupScope, size: reqBody.length },
           'Request body exceeds buffer limit, falling back to passthrough',
         );
       }
     }
 
-    // Send request upstream — DON'T pipe response yet, check status first
+    // Send request upstream — DON'T pipe response yet, check status first.
     await new Promise<void>((resolve) => {
       const upstream = httpsRequest(
         {
@@ -311,14 +335,14 @@ function createBearerSwapHandler(
           const statusCode = upRes.statusCode!;
 
           // Happy path: not an auth error, pipe through
-          if (statusCode !== 401 && statusCode !== 403) {
+          if (statusCode !== 401) {
             clientRes.writeHead(statusCode, upRes.headers);
             upRes.pipe(clientRes);
             resolve();
             return;
           }
 
-          // Auth error — buffer upstream body for correlation, then attempt refresh
+          // Auth error (401 only) — buffer upstream body, then attempt refresh
           logger.info(
             { provider: provider.id, scope: groupScope, status: statusCode, strategy: effectiveStrategy },
             'Bearer-swap: auth error, attempting refresh',
@@ -327,16 +351,34 @@ function createBearerSwapHandler(
           const bodyChunks: Buffer[] = [];
           upRes.on('data', (c) => bodyChunks.push(c));
           await new Promise<void>((r) => upRes.on('end', r));
-          const upstreamBody = Buffer.concat(bodyChunks).toString();
+          const upstreamBodyBuf = Buffer.concat(bodyChunks);
 
           const refreshed = await tokenEngine.sharedOp(groupScope, provider.id, 'refresh', () =>
             refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
           );
 
+          // Decode body text for error callbacks (may be gzip-compressed)
+          const decodeBody = (buf: Buffer, headers: typeof upRes.headers): string => {
+            if (headers['content-encoding'] === 'gzip') {
+              try { return gunzipSync(buf).toString(); } catch { /* fall through */ }
+            }
+            return buf.toString();
+          };
+
+          // Forward a buffered upstream response with correct content-length.
+          // Keep original encoding intact (don't decompress) — just fix the
+          // transfer-encoding since we're sending the whole body at once.
+          const forwardBuffered = (status: number, rawHeaders: typeof upRes.headers, body: Buffer) => {
+            const h = { ...rawHeaders };
+            delete h['transfer-encoding'];
+            h['content-length'] = String(body.length);
+            clientRes.writeHead(status, h);
+            clientRes.end(body);
+          };
+
           if (!refreshed) {
-            fireAuthErrorCb(groupScope, upstreamBody, statusCode);
-            clientRes.writeHead(statusCode, upRes.headers);
-            clientRes.end(upstreamBody);
+            fireAuthErrorCb(groupScope, decodeBody(upstreamBodyBuf, upRes.headers), statusCode);
+            forwardBuffered(statusCode, upRes.headers, upstreamBodyBuf);
             resolve();
             return;
           }
@@ -367,12 +409,9 @@ function createBearerSwapHandler(
                 );
                 // If replay also fails with auth error, record for the guard
                 if (replay.statusCode === 401 || replay.statusCode === 403) {
-                  fireAuthErrorCb(groupScope, replay.body.toString(), replay.statusCode);
+                  fireAuthErrorCb(groupScope, decodeBody(replay.body, replay.headers), replay.statusCode);
                 }
-                const resHeaders = { ...replay.headers, 'content-length': String(replay.body.length) };
-                delete resHeaders['transfer-encoding'];
-                clientRes.writeHead(replay.statusCode, resHeaders);
-                clientRes.end(replay.body);
+                forwardBuffered(replay.statusCode, replay.headers, replay.body);
               } catch (err) {
                 logger.error({ err, provider: provider.id }, 'Buffer replay failed');
                 if (!clientRes.headersSent) {
@@ -387,9 +426,8 @@ function createBearerSwapHandler(
             case 'passthrough': {
               // Forward the original 401 body. Token is already refreshed,
               // so the client's next request will succeed.
-              fireAuthErrorCb(groupScope, upstreamBody, statusCode);
-              clientRes.writeHead(statusCode, upRes.headers);
-              clientRes.end(upstreamBody);
+              fireAuthErrorCb(groupScope, decodeBody(upstreamBodyBuf, upRes.headers), statusCode);
+              forwardBuffered(statusCode, upRes.headers, upstreamBodyBuf);
               resolve();
               break;
             }
@@ -406,11 +444,11 @@ function createBearerSwapHandler(
         resolve();
       });
 
-      // Send request body
+      // Send request body: buffered for buffer strategy, piped for others
       if (reqBody) {
         upstream.end(reqBody);
       } else {
-        clientReq.pipe(upstream);
+        pipeTo(upstream);
       }
     });
   };
@@ -439,8 +477,9 @@ function createTokenExchangeHandler(
       clientRes,
       targetHost,
       targetPort,
-      // Header injection: resolve substitute refresh tokens in auth headers
-      (_headers) => {},
+      // Header injection: strip accept-encoding so upstream sends plaintext
+      // (proxyBuffered does toString() which corrupts gzip binary)
+      (headers) => { delete headers['accept-encoding']; },
       // Request transform: swap substitute refresh_token → real
       (body) => {
         try {

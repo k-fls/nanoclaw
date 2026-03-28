@@ -350,6 +350,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       return false;
     }
 
+    // Fatal infrastructure errors (e.g. container IP not detected) — retrying won't help.
+    if (agentResult.fatal) return true;
+
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -381,7 +384,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-): Promise<{ status: 'success' | 'error'; error?: string }> {
+): Promise<{ status: 'success' | 'error'; error?: string; fatal?: boolean }> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
@@ -448,7 +451,7 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
-      return { status: 'error', error: output.error };
+      return { status: 'error', error: output.error, fatal: output.fatal };
     }
 
     return { status: 'success' };

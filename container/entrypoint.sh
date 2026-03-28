@@ -21,6 +21,12 @@ cd /app && npx tsc --outDir /tmp/dist 2>&1 >&2
 ln -s /app/node_modules /tmp/dist/node_modules
 chmod -R a-w /tmp/dist
 
-# Drop ALL capabilities, switch to unprivileged user, run agent
-exec setpriv --reuid=node --regid=node --clear-groups --inh-caps=-all \
-  -- node /tmp/dist/index.js
+# Drop ALL capabilities, switch to unprivileged user, run agent.
+# If HOST_UID/HOST_GID are set (transparent proxy mode, started as root),
+# use setpriv to drop privileges. Otherwise already running as the right user.
+if [ -n "$HOST_UID" ]; then
+  exec setpriv --reuid=$HOST_UID --regid=${HOST_GID:-$HOST_UID} --clear-groups --inh-caps=-all \
+    -- node /tmp/dist/index.js
+else
+  exec node /tmp/dist/index.js
+fi

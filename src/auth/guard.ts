@@ -65,7 +65,7 @@ export function createAuthGuard(
     async preCheck(): Promise<boolean> {
       // Engine resolves credential scope internally (own → default fallback)
       const engine = getTokenEngine();
-      if (engine.hasAnyCredential(scopeOf(group), provider.id, true)) return true;
+      if (engine.hasAnyCredential(scopeOf(group), provider.id)) return true;
 
       logger.warn({ group: group.name }, 'No credentials available, starting reauth');
       return runReauth(group.folder, createChat(), 'No credentials configured', provider.displayName, engine);

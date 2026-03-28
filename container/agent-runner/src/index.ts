@@ -449,13 +449,25 @@ async function runQuery(
 
     if (message.type === 'result') {
       resultCount++;
+      const subtype = message.subtype;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
+      const stopReason = 'stop_reason' in message ? (message as { stop_reason?: string }).stop_reason : null;
+      log(`Result #${resultCount}: subtype=${subtype}${stopReason ? ` stop_reason=${stopReason}` : ''}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      if (subtype === 'success') {
+        writeOutput({
+          status: 'success',
+          result: textResult || null,
+          newSessionId
+        });
+      } else {
+        // error_during_execution, error_max_turns, etc.
+        writeOutput({
+          status: 'error',
+          result: null,
+          newSessionId,
+          error: textResult || `Agent failed: ${subtype}${stopReason ? ` (${stopReason})` : ''}`
+        });
+      }
     }
   }
 
@@ -507,11 +519,13 @@ async function main(): Promise<void> {
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
+  let hadResults = false;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
       const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      hadResults = true;
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -545,12 +559,16 @@ async function main(): Promise<void> {
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    writeOutput({
-      status: 'error',
-      result: null,
-      newSessionId: sessionId,
-      error: errorMessage
-    });
+    // Only emit error if we haven't already (the SDK throws after emitting
+    // an error result, so we may have already written the error output above)
+    if (!hadResults || !errorMessage.includes('exited with code')) {
+      writeOutput({
+        status: 'error',
+        result: null,
+        newSessionId: sessionId,
+        error: errorMessage
+      });
+    }
     process.exit(1);
   }
 }

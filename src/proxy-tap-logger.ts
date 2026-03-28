@@ -1,5 +1,5 @@
 /**
- * JSONL logger for proxy traffic — logs HTTP request/response URLs + headers.
+ * JSONL logger for proxy traffic — logs HTTP request/response URLs, headers, and bodies.
  *
  * Activated by two env vars:
  *   PROXY_TAP_DOMAIN  — hostname filter (substring match, e.g. "anthropic.com")
@@ -70,8 +70,11 @@ function parseHead(raw: string): ParsedHead | null {
   return null;
 }
 
+/** Max body size to capture (prevent unbounded memory for large streaming responses). */
+const MAX_BODY_CAPTURE = 64 * 1024; // 64 KB
+
 /**
- * Create a ProxyTapCallback that parses HTTP heads and writes JSONL.
+ * Create a ProxyTapCallback that parses HTTP heads + bodies and writes JSONL.
  */
 function createTapCallback(
   fd: number,
@@ -79,29 +82,17 @@ function createTapCallback(
   scope: string,
   pathRe: RegExp,
 ): ProxyTapCallback {
-  // Per-direction buffer — accumulate until headers are complete.
-  const bufs: Record<string, string> = { inbound: '', outbound: '' };
-  const emitted: Record<string, boolean> = { inbound: false, outbound: false };
+  // Per-direction state
+  const bufs: Record<string, Buffer[]> = { inbound: [], outbound: [] };
+  const headParsed: Record<string, ParsedHead | null> = { inbound: null, outbound: null };
+  const headEmitted: Record<string, boolean> = { inbound: false, outbound: false };
+  const bodyBufs: Record<string, Buffer[]> = { inbound: [], outbound: [] };
+  const bodyLen: Record<string, number> = { inbound: 0, outbound: 0 };
+  const expectedLen: Record<string, number> = { inbound: -1, outbound: -1 };
+  const bodyEmitted: Record<string, boolean> = { inbound: false, outbound: false };
   let pathMatched = false;
 
-  return (event: ProxyTapEvent) => {
-    const { direction, chunk } = event;
-    if (direction === 'close') return;
-    if (emitted[direction]) return; // already logged this direction's head
-
-    bufs[direction] += chunk.toString('utf-8');
-    const parsed = parseHead(bufs[direction]);
-    if (!parsed) return; // headers not yet complete
-
-    emitted[direction] = true;
-    bufs[direction] = ''; // free memory
-
-    // Apply path filter on the request; skip both request and response if no match
-    if (parsed.kind === 'request') {
-      pathMatched = !parsed.url || pathRe.test(parsed.url);
-    }
-    if (!pathMatched) return;
-
+  function emitHead(direction: string, parsed: ParsedHead) {
     const entry = {
       ts: new Date().toISOString(),
       scope,
@@ -112,10 +103,136 @@ function createTapCallback(
       ...(parsed.statusCode != null && { statusCode: parsed.statusCode }),
       headers: parsed.headers,
     };
+    try { fs.writeSync(fd, JSON.stringify(entry) + '\n'); } catch {}
+  }
 
-    try {
-      fs.writeSync(fd, JSON.stringify(entry) + '\n');
-    } catch {}
+  function emitBody(direction: string, parsed: ParsedHead, rawBody: Buffer) {
+    let body: string;
+    const isChunked = parsed.headers['transfer-encoding'] === 'chunked';
+
+    // Strip chunked framing if present (hex-length\r\n...data...\r\n)
+    let bodyBuf = rawBody;
+    if (isChunked) {
+      try {
+        const dechunked: Buffer[] = [];
+        let pos = 0;
+        const raw = rawBody;
+        while (pos < raw.length) {
+          const lineEnd = raw.indexOf('\r\n', pos);
+          if (lineEnd < 0) break;
+          const chunkSize = parseInt(raw.subarray(pos, lineEnd).toString('ascii'), 16);
+          if (chunkSize === 0) break;
+          pos = lineEnd + 2;
+          if (pos + chunkSize > raw.length) {
+            dechunked.push(raw.subarray(pos));
+            break;
+          }
+          dechunked.push(raw.subarray(pos, pos + chunkSize));
+          pos = pos + chunkSize + 2; // skip trailing \r\n
+        }
+        bodyBuf = Buffer.concat(dechunked);
+      } catch {
+        // Fall through with raw body
+      }
+    }
+
+    body = bodyBuf.toString('base64');
+
+    const entry = {
+      ts: new Date().toISOString(),
+      scope,
+      host,
+      direction,
+      type: 'body' as const,
+      ...(parsed.method && { method: parsed.method }),
+      ...(parsed.url && { url: parsed.url }),
+      ...(parsed.statusCode != null && { statusCode: parsed.statusCode }),
+      body,
+    };
+    try { fs.writeSync(fd, JSON.stringify(entry) + '\n'); } catch {}
+  }
+
+  return (event: ProxyTapEvent) => {
+    const { direction, chunk } = event;
+
+    if (direction === 'close') {
+      // On close, flush any partially accumulated body
+      for (const dir of ['inbound', 'outbound']) {
+        if (headParsed[dir] && !bodyEmitted[dir] && bodyLen[dir] > 0 && pathMatched) {
+          bodyEmitted[dir] = true;
+          emitBody(dir, headParsed[dir]!, Buffer.concat(bodyBufs[dir]));
+        }
+      }
+      return;
+    }
+
+    // Phase 1: accumulate until headers are complete
+    if (!headParsed[direction]) {
+      // Ensure we have a real Buffer (not a string masquerading as one)
+      const safeChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as unknown as string, 'latin1');
+      bufs[direction].push(safeChunk);
+      const fullBuf = Buffer.concat(bufs[direction]);
+      const raw = fullBuf.toString('latin1');
+      const parsed = parseHead(raw);
+      if (!parsed) return; // headers not yet complete
+
+      headParsed[direction] = parsed;
+
+      // Extract body portion from the same buffer before freeing
+      const headerEndByte = fullBuf.indexOf('\r\n\r\n');
+      if (headerEndByte >= 0) {
+        const bodyStart = headerEndByte + 4;
+        if (bodyStart < fullBuf.length) {
+          const bodyChunk = fullBuf.subarray(bodyStart);
+          bodyBufs[direction].push(Buffer.from(bodyChunk));
+          bodyLen[direction] += bodyChunk.length;
+        }
+      }
+      bufs[direction] = []; // free header buffers
+
+      // Apply path filter on the request
+      if (parsed.kind === 'request') {
+        pathMatched = !parsed.url || pathRe.test(parsed.url);
+      }
+
+      if (pathMatched && !headEmitted[direction]) {
+        headEmitted[direction] = true;
+        emitHead(direction, parsed);
+      }
+
+      // Determine expected body length from content-length header
+      const cl = parsed.headers['content-length'];
+      if (cl) {
+        expectedLen[direction] = parseInt(cl, 10);
+      }
+
+      // Check if body is already complete
+      if (expectedLen[direction] >= 0 && bodyLen[direction] >= expectedLen[direction] && pathMatched) {
+        bodyEmitted[direction] = true;
+        emitBody(direction, parsed, Buffer.concat(bodyBufs[direction]));
+      }
+      return;
+    }
+
+    // Phase 2: accumulate body chunks
+    if (bodyEmitted[direction]) return;
+    if (bodyLen[direction] >= MAX_BODY_CAPTURE) {
+      if (pathMatched) {
+        bodyEmitted[direction] = true;
+        emitBody(direction, headParsed[direction]!, Buffer.concat(bodyBufs[direction]));
+      }
+      return;
+    }
+
+    const safeBodyChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as unknown as string, 'latin1');
+    bodyBufs[direction].push(safeBodyChunk);
+    bodyLen[direction] += safeBodyChunk.length;
+
+    // Emit body when content-length is reached
+    if (expectedLen[direction] >= 0 && bodyLen[direction] >= expectedLen[direction] && pathMatched) {
+      bodyEmitted[direction] = true;
+      emitBody(direction, headParsed[direction]!, Buffer.concat(bodyBufs[direction]));
+    }
   };
 }
 
