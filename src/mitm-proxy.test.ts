@@ -6,7 +6,11 @@ import path from 'path';
 import os from 'os';
 import type { AddressInfo } from 'net';
 
-import { startMitmProxy, getMitmCaCertPath, CredentialRule } from './mitm-proxy.js';
+import {
+  startMitmProxy,
+  getMitmCaCertPath,
+  CredentialRule,
+} from './mitm-proxy.js';
 
 import forge from 'node-forge';
 
@@ -49,7 +53,11 @@ function proxyRequest(
     body?: string;
     caCert?: string;
   } = {},
-): Promise<{ statusCode: number; body: string; headers: http.IncomingHttpHeaders }> {
+): Promise<{
+  statusCode: number;
+  body: string;
+  headers: http.IncomingHttpHeaders;
+}> {
   const method = opts.method || 'GET';
   return new Promise((resolve, reject) => {
     const connectReq = http.request({
@@ -123,7 +131,11 @@ describe('mitm-proxy static rules', () => {
 
     const rules = new Map<string, CredentialRule[]>();
     rules.set('127.0.0.1', [
-      { header: 'authorization', value: 'Bearer secret-injected-token', stripExisting: true },
+      {
+        header: 'authorization',
+        value: 'Bearer secret-injected-token',
+        stripExisting: true,
+      },
     ]);
 
     proxyServer = await startMitmProxy({
@@ -146,20 +158,38 @@ describe('mitm-proxy static rules', () => {
 
   it('injects credentials on targeted host', async () => {
     const caCertPem = fs.readFileSync(getMitmCaCertPath(caDir), 'utf-8');
-    const res = await proxyRequest('127.0.0.1', proxyPort, '127.0.0.1', upstreamPort, '/v1/test', {
-      headers: { authorization: 'Bearer placeholder' },
-      caCert: caCertPem,
-    });
+    const res = await proxyRequest(
+      '127.0.0.1',
+      proxyPort,
+      '127.0.0.1',
+      upstreamPort,
+      '/v1/test',
+      {
+        headers: { authorization: 'Bearer placeholder' },
+        caCert: caCertPem,
+      },
+    );
     expect(res.statusCode).toBe(200);
-    expect(lastUpstreamHeaders['authorization']).toBe('Bearer secret-injected-token');
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      'Bearer secret-injected-token',
+    );
   });
 
   it('TCP tunnels non-targeted hosts', async () => {
-    const res = await proxyRequest('127.0.0.1', proxyPort, 'localhost', upstreamPort, '/tunneled', {
-      headers: { authorization: 'Bearer should-not-be-stripped' },
-    });
+    const res = await proxyRequest(
+      '127.0.0.1',
+      proxyPort,
+      'localhost',
+      upstreamPort,
+      '/tunneled',
+      {
+        headers: { authorization: 'Bearer should-not-be-stripped' },
+      },
+    );
     expect(res.statusCode).toBe(200);
-    expect(lastUpstreamHeaders['authorization']).toBe('Bearer should-not-be-stripped');
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      'Bearer should-not-be-stripped',
+    );
   });
 
   it('CA cert file is persisted', () => {
@@ -182,7 +212,12 @@ describe('mitm-proxy OAuth', () => {
   const upstreamCert = createSelfSignedCert();
 
   // Track what upstream received
-  let lastUpstreamReq: { method: string; url: string; headers: http.IncomingHttpHeaders; body: string };
+  let lastUpstreamReq: {
+    method: string;
+    url: string;
+    headers: http.IncomingHttpHeaders;
+    body: string;
+  };
 
   // Token storage (simulates host-side credential store)
   const tokenStore = {
@@ -226,23 +261,27 @@ describe('mitm-proxy OAuth', () => {
             const body = lastUpstreamReq.body;
             if (body.includes('grant_type=authorization_code')) {
               res.writeHead(200, { 'content-type': 'application/json' });
-              res.end(JSON.stringify({
-                access_token: tokenStore.realAccess,
-                refresh_token: tokenStore.realRefresh,
-                expires_in: 3600,
-                token_type: 'Bearer',
-                scope: 'openid email',
-              }));
+              res.end(
+                JSON.stringify({
+                  access_token: tokenStore.realAccess,
+                  refresh_token: tokenStore.realRefresh,
+                  expires_in: 3600,
+                  token_type: 'Bearer',
+                  scope: 'openid email',
+                }),
+              );
               return;
             }
             if (body.includes('grant_type=refresh_token')) {
               res.writeHead(200, { 'content-type': 'application/json' });
-              res.end(JSON.stringify({
-                access_token: tokenStore.realAccess2,
-                refresh_token: tokenStore.realRefresh,
-                expires_in: 3600,
-                token_type: 'Bearer',
-              }));
+              res.end(
+                JSON.stringify({
+                  access_token: tokenStore.realAccess2,
+                  refresh_token: tokenStore.realRefresh,
+                  expires_in: 3600,
+                  token_type: 'Bearer',
+                }),
+              );
               return;
             }
           }
@@ -289,19 +328,27 @@ describe('mitm-proxy OAuth', () => {
               // Store real tokens, return substitutes
               return {
                 ...real,
-                access_token: tokensCallCount === 1 ? tokenStore.subAccess : tokenStore.subAccess2,
-                refresh_token: real.refresh_token ? tokenStore.subRefresh : undefined,
+                access_token:
+                  tokensCallCount === 1
+                    ? tokenStore.subAccess
+                    : tokenStore.subAccess2,
+                refresh_token: real.refresh_token
+                  ? tokenStore.subRefresh
+                  : undefined,
               };
             },
             async resolveRefreshToken(substitute) {
               resolveRefreshCount++;
-              if (substitute === tokenStore.subRefresh) return tokenStore.realRefresh;
+              if (substitute === tokenStore.subRefresh)
+                return tokenStore.realRefresh;
               return substitute;
             },
             async resolveAccessToken(substitute) {
               resolveAccessCount++;
-              if (substitute === tokenStore.subAccess) return tokenStore.realAccess;
-              if (substitute === tokenStore.subAccess2) return tokenStore.realAccess2;
+              if (substitute === tokenStore.subAccess)
+                return tokenStore.realAccess;
+              if (substitute === tokenStore.subAccess2)
+                return tokenStore.realAccess2;
               return null;
             },
           },
@@ -322,7 +369,10 @@ describe('mitm-proxy OAuth', () => {
 
   it('authorize-stub: returns stub for authorize endpoint', async () => {
     const res = await proxyRequest(
-      '127.0.0.1', proxyPort, '127.0.0.1', upstreamPort,
+      '127.0.0.1',
+      proxyPort,
+      '127.0.0.1',
+      upstreamPort,
       '/authorize?client_id=myapp&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fcallback&response_type=code&scope=openid&state=xyz123',
       { caCert: caCertPem },
     );
@@ -336,7 +386,10 @@ describe('mitm-proxy OAuth', () => {
 
   it('token-exchange: token exchange — captures real tokens, returns substitutes', async () => {
     const res = await proxyRequest(
-      '127.0.0.1', proxyPort, '127.0.0.1', upstreamPort,
+      '127.0.0.1',
+      proxyPort,
+      '127.0.0.1',
+      upstreamPort,
       '/token',
       {
         method: 'POST',
@@ -366,7 +419,10 @@ describe('mitm-proxy OAuth', () => {
 
   it('token-exchange: refresh — swaps substitute refresh token outbound, captures new tokens', async () => {
     const res = await proxyRequest(
-      '127.0.0.1', proxyPort, '127.0.0.1', upstreamPort,
+      '127.0.0.1',
+      proxyPort,
+      '127.0.0.1',
+      upstreamPort,
       '/token',
       {
         method: 'POST',
@@ -385,7 +441,9 @@ describe('mitm-proxy OAuth', () => {
     expect(body.refresh_token).toBe(tokenStore.subRefresh);
 
     // Upstream received the REAL refresh token (not substitute)
-    expect(lastUpstreamReq.body).toContain(`refresh_token=${encodeURIComponent(tokenStore.realRefresh)}`);
+    expect(lastUpstreamReq.body).toContain(
+      `refresh_token=${encodeURIComponent(tokenStore.realRefresh)}`,
+    );
     // Client secret preserved untouched
     expect(lastUpstreamReq.body).toContain('client_secret=mysecret');
 
@@ -395,7 +453,10 @@ describe('mitm-proxy OAuth', () => {
 
   it('bearer-swap: swaps Bearer header on API calls, pipes body', async () => {
     const res = await proxyRequest(
-      '127.0.0.1', proxyPort, '127.0.0.1', upstreamPort,
+      '127.0.0.1',
+      proxyPort,
+      '127.0.0.1',
+      upstreamPort,
       '/api/v1/resources',
       {
         headers: { authorization: `Bearer ${tokenStore.subAccess}` },
@@ -405,13 +466,18 @@ describe('mitm-proxy OAuth', () => {
 
     expect(res.statusCode).toBe(200);
     // Upstream received the REAL access token
-    expect(lastUpstreamReq.headers['authorization']).toBe(`Bearer ${tokenStore.realAccess}`);
+    expect(lastUpstreamReq.headers['authorization']).toBe(
+      `Bearer ${tokenStore.realAccess}`,
+    );
     expect(resolveAccessCount).toBe(1);
   });
 
   it('bearer-swap: unknown substitute token passed through', async () => {
     const res = await proxyRequest(
-      '127.0.0.1', proxyPort, '127.0.0.1', upstreamPort,
+      '127.0.0.1',
+      proxyPort,
+      '127.0.0.1',
+      upstreamPort,
       '/api/v1/resources',
       {
         headers: { authorization: 'Bearer unknown-token-xyz' },
@@ -421,12 +487,17 @@ describe('mitm-proxy OAuth', () => {
 
     expect(res.statusCode).toBe(200);
     // resolveAccessToken returned null, so header passed through unmodified
-    expect(lastUpstreamReq.headers['authorization']).toBe('Bearer unknown-token-xyz');
+    expect(lastUpstreamReq.headers['authorization']).toBe(
+      'Bearer unknown-token-xyz',
+    );
   });
 
   it('non-matching URL falls through to no modification', async () => {
     const res = await proxyRequest(
-      '127.0.0.1', proxyPort, '127.0.0.1', upstreamPort,
+      '127.0.0.1',
+      proxyPort,
+      '127.0.0.1',
+      upstreamPort,
       '/some/other/path',
       {
         headers: { authorization: 'Bearer whatever' },

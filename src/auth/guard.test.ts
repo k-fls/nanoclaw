@@ -34,8 +34,12 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
   const chat = {
     sent: [] as string[],
     replies: [] as string[],
-    async send(text: string) { chat.sent.push(text); },
-    async sendRaw(text: string) { chat.sent.push(text); },
+    async send(text: string) {
+      chat.sent.push(text);
+    },
+    async sendRaw(text: string) {
+      chat.sent.push(text);
+    },
     async receive(_timeoutMs?: number): Promise<string | null> {
       return chat.replies.shift() ?? null;
     },
@@ -44,7 +48,9 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
   return chat;
 }
 
-function mockProvider(overrides: Partial<CredentialProvider> = {}): CredentialProvider {
+function mockProvider(
+  overrides: Partial<CredentialProvider> = {},
+): CredentialProvider {
   return {
     id: 'claude',
     displayName: 'Claude',
@@ -55,7 +61,12 @@ function mockProvider(overrides: Partial<CredentialProvider> = {}): CredentialPr
   };
 }
 
-const group = { name: 'test-group', folder: 'test-group', trigger: '', added_at: '' };
+const group = {
+  name: 'test-group',
+  folder: 'test-group',
+  trigger: '',
+  added_at: '',
+};
 
 /** Build a realistic auth error string that matches the strict API_ERROR_RE regex. */
 function authError(requestId = 'req_abc'): string {
@@ -67,7 +78,9 @@ function authError(requestId = 'req_abc'): string {
 // ---------------------------------------------------------------------------
 
 describe('createAuthGuard', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
   describe('preCheck', () => {
     it('returns true when credentials are available', async () => {
@@ -93,7 +106,12 @@ describe('createAuthGuard', () => {
   describe('onStreamResult', () => {
     it('detects auth error and calls closeStdin', () => {
       const closeStdin = vi.fn();
-      const guard = createAuthGuard(group, mockChat, closeStdin, mockProvider());
+      const guard = createAuthGuard(
+        group,
+        mockChat,
+        closeStdin,
+        mockProvider(),
+      );
 
       guard.onStreamResult({ status: 'error', error: authError() });
 
@@ -104,7 +122,13 @@ describe('createAuthGuard', () => {
       const closeStdin = vi.fn();
       const pending = new PendingAuthErrors();
       pending.record('req_abc');
-      const guard = createAuthGuard(group, mockChat, closeStdin, mockProvider(), pending);
+      const guard = createAuthGuard(
+        group,
+        mockChat,
+        closeStdin,
+        mockProvider(),
+        pending,
+      );
 
       guard.onStreamResult({ status: 'error', error: authError() });
 
@@ -113,7 +137,12 @@ describe('createAuthGuard', () => {
 
     it('ignores non-auth errors', () => {
       const closeStdin = vi.fn();
-      const guard = createAuthGuard(group, mockChat, closeStdin, mockProvider());
+      const guard = createAuthGuard(
+        group,
+        mockChat,
+        closeStdin,
+        mockProvider(),
+      );
 
       guard.onStreamResult({ status: 'error', error: 'some random error' });
 
@@ -123,16 +152,24 @@ describe('createAuthGuard', () => {
 
   describe('handleAuthError', () => {
     it('returns not-auth when no auth error detected', async () => {
-      const guard = createAuthGuard(group, () => mockChat(), vi.fn(), mockProvider());
+      const guard = createAuthGuard(
+        group,
+        () => mockChat(),
+        vi.fn(),
+        mockProvider(),
+      );
 
-      expect(await guard.handleAuthError('some non-auth error')).toBe('not-auth');
+      expect(await guard.handleAuthError('some non-auth error')).toBe(
+        'not-auth',
+      );
     });
 
     it('goes straight to reauth on detected auth error', async () => {
       const provider = mockProvider({
-        provision: vi.fn()
-          .mockReturnValueOnce({ env: { KEY: 'val' } })  // preCheck
-          .mockReturnValue({ env: {} }),                   // handleAuthError checks
+        provision: vi
+          .fn()
+          .mockReturnValueOnce({ env: { KEY: 'val' } }) // preCheck
+          .mockReturnValue({ env: {} }), // handleAuthError checks
       });
       const guard = createAuthGuard(group, () => mockChat(), vi.fn(), provider);
 
@@ -145,13 +182,12 @@ describe('createAuthGuard', () => {
 
     it('goes straight to reauth on auth error', async () => {
       const provider = mockProvider({
-        provision: vi.fn()
+        provision: vi
+          .fn()
           .mockReturnValueOnce({ env: { KEY: 'val' } })
           .mockReturnValue({ env: {} }),
       });
-      const guard = createAuthGuard(
-        group, () => mockChat(), vi.fn(), provider,
-      );
+      const guard = createAuthGuard(group, () => mockChat(), vi.fn(), provider);
 
       guard.onStreamResult({ status: 'error', error: authError() });
 
@@ -167,12 +203,17 @@ describe('createAuthGuard', () => {
       pending.record('req_2');
 
       const provider = mockProvider({
-        provision: vi.fn()
+        provision: vi
+          .fn()
           .mockReturnValueOnce({ env: { KEY: 'val' } })
           .mockReturnValue({ env: {} }),
       });
       const guard = createAuthGuard(
-        group, () => mockChat(), vi.fn(), provider, pending,
+        group,
+        () => mockChat(),
+        vi.fn(),
+        provider,
+        pending,
       );
 
       guard.onStreamResult({

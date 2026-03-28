@@ -51,20 +51,33 @@ function parseHead(raw: string): ParsedHead | null {
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(':');
     if (colon > 0) {
-      headers[lines[i].slice(0, colon).trim().toLowerCase()] = lines[i].slice(colon + 1).trim();
+      headers[lines[i].slice(0, colon).trim().toLowerCase()] = lines[i]
+        .slice(colon + 1)
+        .trim();
     }
   }
 
   // Request: "METHOD /path HTTP/1.1"
   const reqMatch = startLine.match(/^([A-Z]+)\s+(\S+)\s+HTTP\//);
   if (reqMatch) {
-    return { kind: 'request', startLine, headers, method: reqMatch[1], url: reqMatch[2] };
+    return {
+      kind: 'request',
+      startLine,
+      headers,
+      method: reqMatch[1],
+      url: reqMatch[2],
+    };
   }
 
   // Response: "HTTP/1.1 STATUS REASON"
   const resMatch = startLine.match(/^HTTP\/\S+\s+(\d+)/);
   if (resMatch) {
-    return { kind: 'response', startLine, headers, statusCode: parseInt(resMatch[1], 10) };
+    return {
+      kind: 'response',
+      startLine,
+      headers,
+      statusCode: parseInt(resMatch[1], 10),
+    };
   }
 
   return null;
@@ -84,12 +97,21 @@ function createTapCallback(
 ): ProxyTapCallback {
   // Per-direction state
   const bufs: Record<string, Buffer[]> = { inbound: [], outbound: [] };
-  const headParsed: Record<string, ParsedHead | null> = { inbound: null, outbound: null };
-  const headEmitted: Record<string, boolean> = { inbound: false, outbound: false };
+  const headParsed: Record<string, ParsedHead | null> = {
+    inbound: null,
+    outbound: null,
+  };
+  const headEmitted: Record<string, boolean> = {
+    inbound: false,
+    outbound: false,
+  };
   const bodyBufs: Record<string, Buffer[]> = { inbound: [], outbound: [] };
   const bodyLen: Record<string, number> = { inbound: 0, outbound: 0 };
   const expectedLen: Record<string, number> = { inbound: -1, outbound: -1 };
-  const bodyEmitted: Record<string, boolean> = { inbound: false, outbound: false };
+  const bodyEmitted: Record<string, boolean> = {
+    inbound: false,
+    outbound: false,
+  };
   let pathMatched = false;
 
   function emitHead(direction: string, parsed: ParsedHead) {
@@ -103,7 +125,9 @@ function createTapCallback(
       ...(parsed.statusCode != null && { statusCode: parsed.statusCode }),
       headers: parsed.headers,
     };
-    try { fs.writeSync(fd, JSON.stringify(entry) + '\n'); } catch {}
+    try {
+      fs.writeSync(fd, JSON.stringify(entry) + '\n');
+    } catch {}
   }
 
   function emitBody(direction: string, parsed: ParsedHead, rawBody: Buffer) {
@@ -120,7 +144,10 @@ function createTapCallback(
         while (pos < raw.length) {
           const lineEnd = raw.indexOf('\r\n', pos);
           if (lineEnd < 0) break;
-          const chunkSize = parseInt(raw.subarray(pos, lineEnd).toString('ascii'), 16);
+          const chunkSize = parseInt(
+            raw.subarray(pos, lineEnd).toString('ascii'),
+            16,
+          );
           if (chunkSize === 0) break;
           pos = lineEnd + 2;
           if (pos + chunkSize > raw.length) {
@@ -149,7 +176,9 @@ function createTapCallback(
       ...(parsed.statusCode != null && { statusCode: parsed.statusCode }),
       body,
     };
-    try { fs.writeSync(fd, JSON.stringify(entry) + '\n'); } catch {}
+    try {
+      fs.writeSync(fd, JSON.stringify(entry) + '\n');
+    } catch {}
   }
 
   return (event: ProxyTapEvent) => {
@@ -158,7 +187,12 @@ function createTapCallback(
     if (direction === 'close') {
       // On close, flush any partially accumulated body
       for (const dir of ['inbound', 'outbound']) {
-        if (headParsed[dir] && !bodyEmitted[dir] && bodyLen[dir] > 0 && pathMatched) {
+        if (
+          headParsed[dir] &&
+          !bodyEmitted[dir] &&
+          bodyLen[dir] > 0 &&
+          pathMatched
+        ) {
           bodyEmitted[dir] = true;
           emitBody(dir, headParsed[dir]!, Buffer.concat(bodyBufs[dir]));
         }
@@ -169,7 +203,9 @@ function createTapCallback(
     // Phase 1: accumulate until headers are complete
     if (!headParsed[direction]) {
       // Ensure we have a real Buffer (not a string masquerading as one)
-      const safeChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as unknown as string, 'latin1');
+      const safeChunk = Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(chunk as unknown as string, 'latin1');
       bufs[direction].push(safeChunk);
       const fullBuf = Buffer.concat(bufs[direction]);
       const raw = fullBuf.toString('latin1');
@@ -207,7 +243,11 @@ function createTapCallback(
       }
 
       // Check if body is already complete
-      if (expectedLen[direction] >= 0 && bodyLen[direction] >= expectedLen[direction] && pathMatched) {
+      if (
+        expectedLen[direction] >= 0 &&
+        bodyLen[direction] >= expectedLen[direction] &&
+        pathMatched
+      ) {
         bodyEmitted[direction] = true;
         emitBody(direction, parsed, Buffer.concat(bodyBufs[direction]));
       }
@@ -219,19 +259,33 @@ function createTapCallback(
     if (bodyLen[direction] >= MAX_BODY_CAPTURE) {
       if (pathMatched) {
         bodyEmitted[direction] = true;
-        emitBody(direction, headParsed[direction]!, Buffer.concat(bodyBufs[direction]));
+        emitBody(
+          direction,
+          headParsed[direction]!,
+          Buffer.concat(bodyBufs[direction]),
+        );
       }
       return;
     }
 
-    const safeBodyChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as unknown as string, 'latin1');
+    const safeBodyChunk = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(chunk as unknown as string, 'latin1');
     bodyBufs[direction].push(safeBodyChunk);
     bodyLen[direction] += safeBodyChunk.length;
 
     // Emit body when content-length is reached
-    if (expectedLen[direction] >= 0 && bodyLen[direction] >= expectedLen[direction] && pathMatched) {
+    if (
+      expectedLen[direction] >= 0 &&
+      bodyLen[direction] >= expectedLen[direction] &&
+      pathMatched
+    ) {
       bodyEmitted[direction] = true;
-      emitBody(direction, headParsed[direction]!, Buffer.concat(bodyBufs[direction]));
+      emitBody(
+        direction,
+        headParsed[direction]!,
+        Buffer.concat(bodyBufs[direction]),
+      );
     }
   };
 }

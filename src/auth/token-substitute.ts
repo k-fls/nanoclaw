@@ -31,7 +31,12 @@ import type {
   GroupScope,
   CredentialScope,
 } from './oauth-types.js';
-import { MIN_RANDOM_CHARS, asGroupScope, asCredentialScope, toCredentialScope } from './oauth-types.js';
+import {
+  MIN_RANDOM_CHARS,
+  asGroupScope,
+  asCredentialScope,
+  toCredentialScope,
+} from './oauth-types.js';
 import { encrypt, decrypt, CREDENTIALS_DIR } from './store.js';
 import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
@@ -61,7 +66,11 @@ function randomCharSameClass(ch: string, delimiters: string): string {
 export type TokenRole = 'access' | 'refresh' | 'api_key';
 
 /** Cache key for in-memory hot tokens. */
-function cacheKey(credentialScope: CredentialScope, providerId: string, role: string): string {
+function cacheKey(
+  credentialScope: CredentialScope,
+  providerId: string,
+  role: string,
+): string {
   return `${credentialScope}\0${providerId}\0${role}`;
 }
 
@@ -90,7 +99,10 @@ function readJsonFile<T extends object>(filePath: string): T {
  * Note: no advisory lock (flock) — safe within single-threaded Node
  * but not across multiple NanoClaw processes.
  */
-function updateJsonFile<T extends object>(filePath: string, update: (data: T) => void): void {
+function updateJsonFile<T extends object>(
+  filePath: string,
+  update: (data: T) => void,
+): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
   let fd: number;
@@ -100,7 +112,11 @@ function updateJsonFile<T extends object>(filePath: string, update: (data: T) =>
     fd = fs.openSync(filePath, 'r+');
   } catch (err: any) {
     if (err.code !== 'ENOENT') throw err;
-    fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT, 0o600);
+    fd = fs.openSync(
+      filePath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT,
+      0o600,
+    );
   }
 
   try {
@@ -131,22 +147,32 @@ function updateJsonFile<T extends object>(filePath: string, update: (data: T) =>
 // ---------------------------------------------------------------------------
 
 export interface KeyEntry {
-  value: string;      // encrypted token
-  updated_ts: number;  // epoch ms
-  expires_ts: number;  // epoch ms, 0 = no expiry
+  value: string; // encrypted token
+  updated_ts: number; // epoch ms
+  expires_ts: number; // epoch ms, 0 = no expiry
 }
 
 export type KeysFile = Record<string, KeyEntry>;
 
-export function keysPath(credentialScope: CredentialScope, providerId: string): string {
+export function keysPath(
+  credentialScope: CredentialScope,
+  providerId: string,
+): string {
   return path.join(CREDENTIALS_DIR, credentialScope, `${providerId}.keys.json`);
 }
 
-export function readKeysFile(credentialScope: CredentialScope, providerId: string): KeysFile {
+export function readKeysFile(
+  credentialScope: CredentialScope,
+  providerId: string,
+): KeysFile {
   return readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
 }
 
-export function writeKeysFile(credentialScope: CredentialScope, providerId: string, keys: KeysFile): void {
+export function writeKeysFile(
+  credentialScope: CredentialScope,
+  providerId: string,
+  keys: KeysFile,
+): void {
   const p = keysPath(credentialScope, providerId);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
@@ -160,7 +186,10 @@ export function writeKeysFile(credentialScope: CredentialScope, providerId: stri
 /** V2 refs file format. */
 interface RefsFileV2 {
   sourceScope?: string;
-  substitutes: Record<string, { role: TokenRole; scopeAttrs: Record<string, string> }>;
+  substitutes: Record<
+    string,
+    { role: TokenRole; scopeAttrs: Record<string, string> }
+  >;
 }
 
 function refsPath(groupScope: GroupScope, providerId: string): string {
@@ -186,8 +215,20 @@ export class PersistentTokenResolver implements TokenResolver {
   /** Hot cache: cacheKey → real token. Refresh tokens are NOT cached. */
   private hotCache = new Map<string, string>();
 
-  store(realToken: string, providerId: string, credentialScope: CredentialScope, role: TokenRole = 'access', expiresTs = 0): void {
-    const persisted = this.persistToKeys(credentialScope, providerId, role, realToken, expiresTs);
+  store(
+    realToken: string,
+    providerId: string,
+    credentialScope: CredentialScope,
+    role: TokenRole = 'access',
+    expiresTs = 0,
+  ): void {
+    const persisted = this.persistToKeys(
+      credentialScope,
+      providerId,
+      role,
+      realToken,
+      expiresTs,
+    );
     // Refresh tokens are cold (disk-only) when persistence works.
     // Fall back to in-memory cache if persistence is unavailable.
     if (role !== 'refresh' || !persisted) {
@@ -195,19 +236,40 @@ export class PersistentTokenResolver implements TokenResolver {
     }
   }
 
-  resolve(credentialScope: CredentialScope, providerId: string, role: string): string | null {
+  resolve(
+    credentialScope: CredentialScope,
+    providerId: string,
+    role: string,
+  ): string | null {
     // Hot path: cached access/api_key tokens
-    const cached = this.hotCache.get(cacheKey(credentialScope, providerId, role));
+    const cached = this.hotCache.get(
+      cacheKey(credentialScope, providerId, role),
+    );
     if (cached !== undefined) return cached;
     // Cold path: read from disk (refresh tokens, or after restart)
     return this.loadFromKeys(credentialScope, providerId, role as TokenRole);
   }
 
   /** Update a real token in place (e.g. after refresh). */
-  update(credentialScope: CredentialScope, providerId: string, role: TokenRole, newRealToken: string, expiresTs = 0): void {
-    this.persistToKeys(credentialScope, providerId, role, newRealToken, expiresTs);
+  update(
+    credentialScope: CredentialScope,
+    providerId: string,
+    role: TokenRole,
+    newRealToken: string,
+    expiresTs = 0,
+  ): void {
+    this.persistToKeys(
+      credentialScope,
+      providerId,
+      role,
+      newRealToken,
+      expiresTs,
+    );
     if (role !== 'refresh') {
-      this.hotCache.set(cacheKey(credentialScope, providerId, role), newRealToken);
+      this.hotCache.set(
+        cacheKey(credentialScope, providerId, role),
+        newRealToken,
+      );
     }
   }
 
@@ -224,7 +286,9 @@ export class PersistentTokenResolver implements TokenResolver {
   deleteKeys(credentialScope: CredentialScope, providerId: string): void {
     try {
       fs.unlinkSync(keysPath(credentialScope, providerId));
-    } catch { /* already gone */ }
+    } catch {
+      /* already gone */
+    }
   }
 
   /** Number of hot-cached tokens (for testing). */
@@ -233,24 +297,40 @@ export class PersistentTokenResolver implements TokenResolver {
   }
 
   /** Locked read-merge-write one role into the provider's keys file. */
-  private persistToKeys(credentialScope: CredentialScope, providerId: string, role: TokenRole, realToken: string, expiresTs = 0): boolean {
+  private persistToKeys(
+    credentialScope: CredentialScope,
+    providerId: string,
+    role: TokenRole,
+    realToken: string,
+    expiresTs = 0,
+  ): boolean {
     try {
-      updateJsonFile<KeysFile>(keysPath(credentialScope, providerId), (keys) => {
-        keys[role] = {
-          value: encrypt(realToken),
-          updated_ts: Date.now(),
-          expires_ts: expiresTs,
-        };
-      });
+      updateJsonFile<KeysFile>(
+        keysPath(credentialScope, providerId),
+        (keys) => {
+          keys[role] = {
+            value: encrypt(realToken),
+            updated_ts: Date.now(),
+            expires_ts: expiresTs,
+          };
+        },
+      );
       return true;
     } catch (err) {
-      logger.warn({ err, credentialScope, providerId, role }, 'Token persistence failed');
+      logger.warn(
+        { err, credentialScope, providerId, role },
+        'Token persistence failed',
+      );
       return false;
     }
   }
 
   /** Read one role from the provider's keys file. */
-  private loadFromKeys(credentialScope: CredentialScope, providerId: string, role: TokenRole): string | null {
+  private loadFromKeys(
+    credentialScope: CredentialScope,
+    providerId: string,
+    role: TokenRole,
+  ): string | null {
     const keys = readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
     const entry = keys[role];
     if (!entry) return null;
@@ -269,7 +349,9 @@ export interface ResolvedToken {
 }
 
 /** Callback to look up a RegisteredGroup by folder name. */
-export type GroupResolver = (groupScope: GroupScope) => RegisteredGroup | undefined;
+export type GroupResolver = (
+  groupScope: GroupScope,
+) => RegisteredGroup | undefined;
 
 export class TokenSubstituteEngine {
   /**
@@ -280,7 +362,10 @@ export class TokenSubstituteEngine {
   private scopes = new Map<GroupScope, Map<string, ProviderSubstitutes>>();
 
   /** Reverse index: substitute string → { groupScope, providerId }. O(1) lookup on hot path. */
-  private subToProvider = new Map<string, { groupScope: GroupScope; providerId: string }>();
+  private subToProvider = new Map<
+    string,
+    { groupScope: GroupScope; providerId: string }
+  >();
 
   private accessCheck: ScopeAccessCheck | null = null;
   private groupResolver: GroupResolver | null = null;
@@ -333,7 +418,9 @@ export class TokenSubstituteEngine {
   }
 
   /** Get or create the provider map for a group scope. */
-  private providerMap(groupScope: GroupScope): Map<string, ProviderSubstitutes> {
+  private providerMap(
+    groupScope: GroupScope,
+  ): Map<string, ProviderSubstitutes> {
     let map = this.scopes.get(groupScope);
     if (!map) {
       map = new Map();
@@ -371,7 +458,11 @@ export class TokenSubstituteEngine {
   }
 
   /** Remove a substitute from both forward and reverse maps. */
-  private removeSub(groupScope: GroupScope, providerId: string, substitute: string): void {
+  private removeSub(
+    groupScope: GroupScope,
+    providerId: string,
+    substitute: string,
+  ): void {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     if (ps) ps.substitutes.delete(substitute);
     this.subToProvider.delete(substitute);
@@ -382,21 +473,33 @@ export class TokenSubstituteEngine {
    * Uses group flags (useDefaultCredentials, isMain) and keys file checks.
    * Returns groupScope (as CredentialScope) if resolution is impossible.
    */
-  private resolveCredentialScope(groupScope: GroupScope, providerId: string): CredentialScope {
+  private resolveCredentialScope(
+    groupScope: GroupScope,
+    providerId: string,
+  ): CredentialScope {
     const group = this.groupResolver?.(groupScope);
     if (!group) return toCredentialScope(groupScope);
-    const useDefault = group.containerConfig?.useDefaultCredentials ?? (group.isMain === true);
+    const useDefault =
+      group.containerConfig?.useDefaultCredentials ?? group.isMain === true;
     // Main + default: main manages default directly
     if (group.isMain && useDefault) return asCredentialScope('default');
     // Check own scope first
-    if (this.hasKeysInScope(toCredentialScope(groupScope), providerId)) return toCredentialScope(groupScope);
+    if (this.hasKeysInScope(toCredentialScope(groupScope), providerId))
+      return toCredentialScope(groupScope);
     // Fall back to default if allowed
-    if (useDefault && this.hasKeysInScope(asCredentialScope('default'), providerId)) return asCredentialScope('default');
+    if (
+      useDefault &&
+      this.hasKeysInScope(asCredentialScope('default'), providerId)
+    )
+      return asCredentialScope('default');
     return toCredentialScope(groupScope);
   }
 
   /** Effective credential scope: sourceScope if borrowed, groupScope if own. */
-  private effectiveScope(groupScope: GroupScope, ps: ProviderSubstitutes): CredentialScope {
+  private effectiveScope(
+    groupScope: GroupScope,
+    ps: ProviderSubstitutes,
+  ): CredentialScope {
     return ps.sourceScope ?? toCredentialScope(groupScope);
   }
 
@@ -447,7 +550,15 @@ export class TokenSubstituteEngine {
     const realToken = this.resolver.resolve(credScope, providerId, role);
     if (!realToken) return null;
 
-    return this.generateSubstitute(realToken, providerId, scopeAttrs, groupScope, config, role, sourceScope);
+    return this.generateSubstitute(
+      realToken,
+      providerId,
+      scopeAttrs,
+      groupScope,
+      config,
+      role,
+      sourceScope,
+    );
   }
 
   /**
@@ -477,9 +588,10 @@ export class TokenSubstituteEngine {
 
     const prefix = realToken.slice(0, prefixLen);
     const suffix = suffixLen > 0 ? realToken.slice(-suffixLen) : '';
-    const middle = suffixLen > 0
-      ? realToken.slice(prefixLen, -suffixLen)
-      : realToken.slice(prefixLen);
+    const middle =
+      suffixLen > 0
+        ? realToken.slice(prefixLen, -suffixLen)
+        : realToken.slice(prefixLen);
 
     let randomizable = 0;
     for (const ch of middle) {
@@ -504,7 +616,8 @@ export class TokenSubstituteEngine {
       if (this.subToProvider.has(substitute)) continue;
 
       // Persist real token via resolver (under the effective credential scope)
-      const effCredScope: CredentialScope = sourceScope ?? toCredentialScope(groupScope);
+      const effCredScope: CredentialScope =
+        sourceScope ?? toCredentialScope(groupScope);
       this.resolver.store(realToken, providerId, effCredScope, role);
 
       // Store in the engine
@@ -527,7 +640,10 @@ export class TokenSubstituteEngine {
    * If the substitute belongs to a borrowed provider and the access check
    * denies access, the substitute is revoked and null is returned.
    */
-  resolveSubstitute(substitute: string, groupScope: GroupScope): ResolvedToken | null {
+  resolveSubstitute(
+    substitute: string,
+    groupScope: GroupScope,
+  ): ResolvedToken | null {
     const ref = this.subToProvider.get(substitute);
     if (!ref || ref.groupScope !== groupScope) return null;
 
@@ -547,7 +663,11 @@ export class TokenSubstituteEngine {
     }
 
     const effCredScope = this.effectiveScope(groupScope, ps);
-    const realToken = this.resolver.resolve(effCredScope, ref.providerId, entry.role);
+    const realToken = this.resolver.resolve(
+      effCredScope,
+      ref.providerId,
+      entry.role,
+    );
     if (!realToken) return null;
 
     return {
@@ -594,9 +714,15 @@ export class TokenSubstituteEngine {
    *
    * Handles sourceScope indirection internally.
    */
-  resolveRealToken(groupScope: GroupScope, providerId: string, role: TokenRole): string | null {
+  resolveRealToken(
+    groupScope: GroupScope,
+    providerId: string,
+    role: TokenRole,
+  ): string | null {
     const ps = this.scopes.get(groupScope)?.get(providerId);
-    const effCredScope = ps ? this.effectiveScope(groupScope, ps) : toCredentialScope(groupScope);
+    const effCredScope = ps
+      ? this.effectiveScope(groupScope, ps)
+      : toCredentialScope(groupScope);
     return this.resolver.resolve(effCredScope, providerId, role);
   }
 
@@ -604,9 +730,15 @@ export class TokenSubstituteEngine {
    * Get the expiry timestamp for a credential role, resolving source scope.
    * Returns 0 if not found or no expiry set.
    */
-  getKeyExpiry(groupScope: GroupScope, providerId: string, role: TokenRole): number {
+  getKeyExpiry(
+    groupScope: GroupScope,
+    providerId: string,
+    role: TokenRole,
+  ): number {
     const ps = this.scopes.get(groupScope)?.get(providerId);
-    const effCredScope = ps ? this.effectiveScope(groupScope, ps) : toCredentialScope(groupScope);
+    const effCredScope = ps
+      ? this.effectiveScope(groupScope, ps)
+      : toCredentialScope(groupScope);
     const keys = readKeysFile(effCredScope, providerId);
     return keys[role]?.expires_ts ?? 0;
   }
@@ -626,7 +758,13 @@ export class TokenSubstituteEngine {
     const ownScope = toCredentialScope(groupScope);
     if (!ps) {
       // No existing substitutes — store in own scope
-      (this.resolver as PersistentTokenResolver).update(ownScope, providerId, role, newToken, expiresTs);
+      (this.resolver as PersistentTokenResolver).update(
+        ownScope,
+        providerId,
+        role,
+        newToken,
+        expiresTs,
+      );
       return;
     }
 
@@ -634,17 +772,38 @@ export class TokenSubstituteEngine {
       // Borrowed credentials — check access
       if (this.accessCheck && !this.accessCheck(groupScope, ps.sourceScope)) {
         // Access revoked — promote to own scope
-        (this.resolver as PersistentTokenResolver).update(ownScope, providerId, role, newToken, expiresTs);
+        (this.resolver as PersistentTokenResolver).update(
+          ownScope,
+          providerId,
+          role,
+          newToken,
+          expiresTs,
+        );
         ps.sourceScope = undefined;
         this.persistRefs(groupScope, providerId);
-        logger.info({ groupScope, providerId }, 'Credential promoted to own scope (access revoked on refresh)');
+        logger.info(
+          { groupScope, providerId },
+          'Credential promoted to own scope (access revoked on refresh)',
+        );
         return;
       }
       // Write to source scope
-      (this.resolver as PersistentTokenResolver).update(ps.sourceScope, providerId, role, newToken, expiresTs);
+      (this.resolver as PersistentTokenResolver).update(
+        ps.sourceScope,
+        providerId,
+        role,
+        newToken,
+        expiresTs,
+      );
     } else {
       // Own credentials
-      (this.resolver as PersistentTokenResolver).update(ownScope, providerId, role, newToken, expiresTs);
+      (this.resolver as PersistentTokenResolver).update(
+        ownScope,
+        providerId,
+        role,
+        newToken,
+        expiresTs,
+      );
     }
   }
 
@@ -670,10 +829,23 @@ export class TokenSubstituteEngine {
     }
 
     // Store the real token in the group's own scope
-    (this.resolver as PersistentTokenResolver).update(toCredentialScope(groupScope), providerId, role, newToken, expiresTs);
+    (this.resolver as PersistentTokenResolver).update(
+      toCredentialScope(groupScope),
+      providerId,
+      role,
+      newToken,
+      expiresTs,
+    );
 
     // Generate a new substitute (no sourceScope = owned)
-    return this.generateSubstitute(newToken, providerId, scopeAttrs, groupScope, config, role);
+    return this.generateSubstitute(
+      newToken,
+      providerId,
+      scopeAttrs,
+      groupScope,
+      config,
+      role,
+    );
   }
 
   /**
@@ -681,7 +853,11 @@ export class TokenSubstituteEngine {
    * in the resolved credential scope. When nonExpired is true, also checks
    * expires_ts — rejects tokens past expiry.
    */
-  hasAnyCredential(groupScope: GroupScope, providerId: string, nonExpired = false): boolean {
+  hasAnyCredential(
+    groupScope: GroupScope,
+    providerId: string,
+    nonExpired = false,
+  ): boolean {
     const credScope = this.resolveCredentialScope(groupScope, providerId);
     return this.hasKeysInScope(credScope, providerId, nonExpired);
   }
@@ -690,12 +866,17 @@ export class TokenSubstituteEngine {
    * Raw check: does this credential scope have stored keys for the provider?
    * No scope resolution — takes CredentialScope directly.
    */
-  private hasKeysInScope(credentialScope: CredentialScope, providerId: string, nonExpired = false): boolean {
+  private hasKeysInScope(
+    credentialScope: CredentialScope,
+    providerId: string,
+    nonExpired = false,
+  ): boolean {
     const keys = readKeysFile(credentialScope, providerId);
     for (const role of ['access', 'api_key'] as const) {
       const entry = keys[role];
       if (!entry) continue;
-      if (nonExpired && entry.expires_ts > 0 && entry.expires_ts < Date.now()) continue;
+      if (nonExpired && entry.expires_ts > 0 && entry.expires_ts < Date.now())
+        continue;
       return true;
     }
     return false;
@@ -732,7 +913,10 @@ export class TokenSubstituteEngine {
       this.revokeProvider(groupScope, providerId);
       // Always revoke from resolver + delete keys file when explicitly requested
       this.resolver.revoke(toCredentialScope(groupScope), providerId);
-      (this.resolver as PersistentTokenResolver).deleteKeys(toCredentialScope(groupScope), providerId);
+      (this.resolver as PersistentTokenResolver).deleteKeys(
+        toCredentialScope(groupScope),
+        providerId,
+      );
       return count;
     }
 
@@ -760,9 +944,14 @@ export class TokenSubstituteEngine {
    */
   clearCredentials(groupScope: GroupScope, providerId: string): void {
     const ps = this.scopes.get(groupScope)?.get(providerId);
-    const effCredScope = ps ? this.effectiveScope(groupScope, ps) : toCredentialScope(groupScope);
+    const effCredScope = ps
+      ? this.effectiveScope(groupScope, ps)
+      : toCredentialScope(groupScope);
     this.resolver.revoke(effCredScope, providerId);
-    (this.resolver as PersistentTokenResolver).deleteKeys(effCredScope, providerId);
+    (this.resolver as PersistentTokenResolver).deleteKeys(
+      effCredScope,
+      providerId,
+    );
   }
 
   /**
@@ -778,7 +967,11 @@ export class TokenSubstituteEngine {
     const toRemove: string[] = [];
 
     for (const [sub, entry] of ps.substitutes) {
-      const realToken = this.resolver.resolve(effCredScope, providerId, entry.role);
+      const realToken = this.resolver.resolve(
+        effCredScope,
+        providerId,
+        entry.role,
+      );
       if (!realToken) toRemove.push(sub);
     }
 
@@ -789,7 +982,8 @@ export class TokenSubstituteEngine {
 
     if (ps.substitutes.size === 0) {
       this.scopes.get(groupScope)?.delete(providerId);
-      if (this.scopes.get(groupScope)?.size === 0) this.scopes.delete(groupScope);
+      if (this.scopes.get(groupScope)?.size === 0)
+        this.scopes.delete(groupScope);
       this.deleteRefs(groupScope, providerId);
     } else {
       this.persistRefs(groupScope, providerId);
@@ -823,13 +1017,18 @@ export class TokenSubstituteEngine {
     };
     if (ps.sourceScope) data.sourceScope = ps.sourceScope;
     for (const [sub, entry] of ps.substitutes) {
-      data.substitutes[sub] = { role: entry.role as TokenRole, scopeAttrs: entry.scopeAttrs };
+      data.substitutes[sub] = {
+        role: entry.role as TokenRole,
+        scopeAttrs: entry.scopeAttrs,
+      };
     }
 
     try {
       const filePath = refsPath(groupScope, providerId);
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', {
+        mode: 0o600,
+      });
     } catch (err) {
       logger.warn({ err, groupScope, providerId }, 'Refs persistence failed');
     }
@@ -839,7 +1038,9 @@ export class TokenSubstituteEngine {
   private deleteRefs(groupScope: GroupScope, providerId: string): void {
     try {
       fs.unlinkSync(refsPath(groupScope, providerId));
-    } catch { /* already gone */ }
+    } catch {
+      /* already gone */
+    }
   }
 
   /**
@@ -847,7 +1048,9 @@ export class TokenSubstituteEngine {
    * Supports only V2 format (has `substitutes` key). Old V1 files are discarded.
    */
   loadPersistedRefs(groupScope: GroupScope, providerId: string): number {
-    const raw = readJsonFile<Record<string, unknown>>(refsPath(groupScope, providerId));
+    const raw = readJsonFile<Record<string, unknown>>(
+      refsPath(groupScope, providerId),
+    );
 
     // V2 format: has `substitutes` key
     if (!raw.substitutes || typeof raw.substitutes !== 'object') {
@@ -859,13 +1062,21 @@ export class TokenSubstituteEngine {
     const entries = Object.entries(data.substitutes);
     if (entries.length === 0) return 0;
 
-    const sourceScope = data.sourceScope ? asCredentialScope(data.sourceScope) : undefined;
+    const sourceScope = data.sourceScope
+      ? asCredentialScope(data.sourceScope)
+      : undefined;
 
     for (const [substitute, entry] of entries) {
-      this.insertSub(groupScope, providerId, substitute, {
-        role: entry.role,
-        scopeAttrs: entry.scopeAttrs,
-      }, sourceScope);
+      this.insertSub(
+        groupScope,
+        providerId,
+        substitute,
+        {
+          role: entry.role,
+          scopeAttrs: entry.scopeAttrs,
+        },
+        sourceScope,
+      );
     }
 
     logger.debug(
@@ -883,7 +1094,9 @@ export class TokenSubstituteEngine {
     let total = 0;
     try {
       if (!fs.existsSync(CREDENTIALS_DIR)) return 0;
-      const scopeDirs = fs.readdirSync(CREDENTIALS_DIR, { withFileTypes: true });
+      const scopeDirs = fs.readdirSync(CREDENTIALS_DIR, {
+        withFileTypes: true,
+      });
       for (const dir of scopeDirs) {
         if (!dir.isDirectory()) continue;
         const scopePath = path.join(CREDENTIALS_DIR, dir.name);

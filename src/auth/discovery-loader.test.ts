@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 
-import { buildHostMatch, buildPathPattern, parseDiscoveryFile } from './discovery-loader.js';
+import {
+  buildHostMatch,
+  buildPathPattern,
+  parseDiscoveryFile,
+} from './discovery-loader.js';
 import type { DiscoveryFile } from './discovery-loader.js';
 
 // ---------------------------------------------------------------------------
@@ -40,8 +44,12 @@ describe('buildHostMatch', () => {
     expect(result!.scopeKeys).toContain('domain');
     expect(result!.scopeKeys).toContain('region');
 
-    expect(result!.hostPattern!.test('myapp.auth.us-east-1.amazoncognito.com')).toBe(true);
-    const match = 'myapp.auth.us-east-1.amazoncognito.com'.match(result!.hostPattern!);
+    expect(
+      result!.hostPattern!.test('myapp.auth.us-east-1.amazoncognito.com'),
+    ).toBe(true);
+    const match = 'myapp.auth.us-east-1.amazoncognito.com'.match(
+      result!.hostPattern!,
+    );
     expect(match?.groups?.domain).toBe('myapp');
     expect(match?.groups?.region).toBe('us-east-1');
   });
@@ -157,7 +165,8 @@ describe('parseDiscoveryFile', () => {
 
   it('parses zendesk.json (scoped attrs from templated host)', () => {
     const data: DiscoveryFile = {
-      authorization_endpoint: 'https://{subdomain}.zendesk.com/oauth/authorizations/new',
+      authorization_endpoint:
+        'https://{subdomain}.zendesk.com/oauth/authorizations/new',
       token_endpoint: 'https://{subdomain}.zendesk.com/oauth/tokens',
       api_base_url: 'https://{subdomain}.zendesk.com/api/v2',
     };
@@ -233,8 +242,10 @@ describe('parseDiscoveryFile', () => {
 
   it('handles cognito (multi-placeholder)', () => {
     const data: DiscoveryFile = {
-      authorization_endpoint: 'https://{domain}.auth.{region}.amazoncognito.com/oauth2/authorize',
-      token_endpoint: 'https://{domain}.auth.{region}.amazoncognito.com/oauth2/token',
+      authorization_endpoint:
+        'https://{domain}.auth.{region}.amazoncognito.com/oauth2/authorize',
+      token_endpoint:
+        'https://{domain}.auth.{region}.amazoncognito.com/oauth2/token',
     };
     const provider = parseDiscoveryFile('cognito', data);
     expect(provider).not.toBeNull();

@@ -9,7 +9,12 @@
  */
 import { Server } from 'http';
 import { TLSSocket } from 'tls';
-import { createServer as createNetServer, connect as netConnect, Socket, Server as NetServer } from 'net';
+import {
+  createServer as createNetServer,
+  connect as netConnect,
+  Socket,
+  Server as NetServer,
+} from 'net';
 import { Duplex } from 'stream';
 
 import { logger } from './logger.js';
@@ -30,24 +35,48 @@ export interface TransparentProxyOptions {
   /** MITM context for cert generation. */
   mitmCtx: MitmContext;
   /** Should this hostname be TLS-terminated? null = passthrough, InterceptResult = MITM. */
-  shouldIntercept(hostname: string, scope: import('./auth/oauth-types.js').GroupScope): InterceptResult | null;
+  shouldIntercept(
+    hostname: string,
+    scope: import('./auth/oauth-types.js').GroupScope,
+  ): InterceptResult | null;
   /** Resolve scope from a container's source IP. Returns null for unknown IPs. */
-  resolveScope(sourceIP: string): import('./auth/oauth-types.js').GroupScope | null;
+  resolveScope(
+    sourceIP: string,
+  ): import('./auth/oauth-types.js').GroupScope | null;
   /** Emit a TLS socket into the shared MITM dispatcher with connection metadata. */
-  emitMitmConnection(socket: object, targetHost: string, targetPort: number, scope: import('./auth/oauth-types.js').GroupScope, sourceIP?: string, tapResolver?: unknown): void;
+  emitMitmConnection(
+    socket: object,
+    targetHost: string,
+    targetPort: number,
+    scope: import('./auth/oauth-types.js').GroupScope,
+    sourceIP?: string,
+    tapResolver?: unknown,
+  ): void;
 }
 
 /**
  * Create a net.Server that dispatches by first byte:
  * TLS → transparent interception, HTTP → delegate to httpServer.
  */
-export function createTransparentServer(opts: TransparentProxyOptions): NetServer {
+export function createTransparentServer(
+  opts: TransparentProxyOptions,
+): NetServer {
   const { httpServer, mitmCtx } = opts;
 
   return createNetServer((socket: Socket) => {
-    logger.debug({ remoteIP: socket.remoteAddress }, 'Transparent: new connection');
+    logger.debug(
+      { remoteIP: socket.remoteAddress },
+      'Transparent: new connection',
+    );
     socket.once('data', (firstChunk: Buffer) => {
-      logger.debug({ byte0: firstChunk[0], len: firstChunk.length, remoteIP: socket.remoteAddress }, 'Transparent: first chunk');
+      logger.debug(
+        {
+          byte0: firstChunk[0],
+          len: firstChunk.length,
+          remoteIP: socket.remoteAddress,
+        },
+        'Transparent: first chunk',
+      );
       if (firstChunk[0] !== 0x16) {
         // Not TLS — push data back and let HTTP server handle it
         socket.unshift(firstChunk);
@@ -66,11 +95,17 @@ export function createTransparentServer(opts: TransparentProxyOptions): NetServe
         socket.destroy();
         return;
       }
-      logger.debug({ hostname, remoteIP: socket.remoteAddress }, 'Transparent: SNI parsed');
+      logger.debug(
+        { hostname, remoteIP: socket.remoteAddress },
+        'Transparent: SNI parsed',
+      );
 
       const scope = opts.resolveScope(socket.remoteAddress || '');
       if (!scope) {
-        logger.warn({ remoteIP: socket.remoteAddress, host: hostname }, 'Rejecting connection from unknown container');
+        logger.warn(
+          { remoteIP: socket.remoteAddress, host: hostname },
+          'Rejecting connection from unknown container',
+        );
         socket.destroy();
         return;
       }
@@ -81,7 +116,10 @@ export function createTransparentServer(opts: TransparentProxyOptions): NetServe
         // NOTE: DNS re-resolves the hostname on the host. Split-horizon DNS
         // (hostnames only resolvable in the container's network) won't work.
         // Using SO_ORIGINAL_DST from iptables would fix this but is overkill.
-        logger.debug({ hostname, remoteIP: socket.remoteAddress }, 'Transparent: PASSTHROUGH (no intercept rule)');
+        logger.debug(
+          { hostname, remoteIP: socket.remoteAddress },
+          'Transparent: PASSTHROUGH (no intercept rule)',
+        );
         socket.resume();
         const upstream = netConnect(443, hostname, () => {
           upstream.write(firstChunk);
@@ -89,7 +127,10 @@ export function createTransparentServer(opts: TransparentProxyOptions): NetServe
           upstream.pipe(socket);
         });
         upstream.on('error', (err) => {
-          logger.debug({ err, host: hostname }, 'Transparent passthrough error');
+          logger.debug(
+            { err, host: hostname },
+            'Transparent passthrough error',
+          );
           socket.destroy();
         });
         socket.on('error', () => upstream.destroy());
@@ -149,7 +190,14 @@ export function createTransparentServer(opts: TransparentProxyOptions): NetServe
         socket.destroy();
       });
 
-      opts.emitMitmConnection(tlsSocket, hostname, 443, scope, socket.remoteAddress || '', interceptResult.tapResolver);
+      opts.emitMitmConnection(
+        tlsSocket,
+        hostname,
+        443,
+        scope,
+        socket.remoteAddress || '',
+        interceptResult.tapResolver,
+      );
     });
   });
 }

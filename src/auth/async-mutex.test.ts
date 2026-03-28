@@ -41,9 +41,18 @@ describe('AsyncMutex', () => {
 
     await mutex.acquire();
 
-    const p1 = mutex.acquire().then(() => { order.push(1); mutex.release(); });
-    const p2 = mutex.acquire().then(() => { order.push(2); mutex.release(); });
-    const p3 = mutex.acquire().then(() => { order.push(3); mutex.release(); });
+    const p1 = mutex.acquire().then(() => {
+      order.push(1);
+      mutex.release();
+    });
+    const p2 = mutex.acquire().then(() => {
+      order.push(2);
+      mutex.release();
+    });
+    const p3 = mutex.acquire().then(() => {
+      order.push(3);
+      mutex.release();
+    });
 
     mutex.release();
     await Promise.all([p1, p2, p3]);

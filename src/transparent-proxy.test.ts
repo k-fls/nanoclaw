@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  beforeAll,
+  afterAll,
+  vi,
+} from 'vitest';
 import https from 'https';
 import http from 'http';
 import fs from 'fs';
@@ -11,7 +19,11 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { proxyPipe, proxyBuffered, setUpstreamAgent } from './credential-proxy.js';
+import {
+  proxyPipe,
+  proxyBuffered,
+  setUpstreamAgent,
+} from './credential-proxy.js';
 
 // ---------------------------------------------------------------------------
 // proxyPipe / proxyBuffered — tested against a local HTTPS upstream
@@ -41,7 +53,9 @@ describe('proxy helpers', () => {
     cert.serialNumber = '01';
     cert.validity.notBefore = new Date();
     cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
+    cert.validity.notAfter.setFullYear(
+      cert.validity.notBefore.getFullYear() + 1,
+    );
     cert.setSubject([{ name: 'commonName', value: '127.0.0.1' }]);
     cert.setIssuer([{ name: 'commonName', value: '127.0.0.1' }]);
     cert.setExtensions([
@@ -56,17 +70,22 @@ describe('proxy helpers', () => {
     fs.writeFileSync(path.join(caDir, 'key.pem'), keyPem);
     fs.writeFileSync(path.join(caDir, 'cert.pem'), certPem);
 
-    upstreamServer = https.createServer({ key: keyPem, cert: certPem }, (req, res) => {
-      lastUpstreamHeaders = { ...req.headers };
-      lastUpstreamPath = req.url || '';
-      const chunks: Buffer[] = [];
-      req.on('data', (c) => chunks.push(c));
-      req.on('end', () => {
-        lastUpstreamBody = Buffer.concat(chunks).toString();
-        res.writeHead(upstreamStatusCode, { 'content-type': 'application/json' });
-        res.end(upstreamResponseBody);
-      });
-    });
+    upstreamServer = https.createServer(
+      { key: keyPem, cert: certPem },
+      (req, res) => {
+        lastUpstreamHeaders = { ...req.headers };
+        lastUpstreamPath = req.url || '';
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+          lastUpstreamBody = Buffer.concat(chunks).toString();
+          res.writeHead(upstreamStatusCode, {
+            'content-type': 'application/json',
+          });
+          res.end(upstreamResponseBody);
+        });
+      },
+    );
     await new Promise<void>((resolve) =>
       upstreamServer.listen(0, '127.0.0.1', resolve),
     );
@@ -88,11 +107,21 @@ describe('proxy helpers', () => {
 
   describe('proxyPipe', () => {
     it('injects headers and pipes body', async () => {
-      const { statusCode, body, headers: resHeaders } = await pipeRequest(
+      const {
+        statusCode,
+        body,
+        headers: resHeaders,
+      } = await pipeRequest(
         upstreamPort,
-        { method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json', 'x-api-key': 'fake' } },
+        {
+          method: 'POST',
+          path: '/v1/messages',
+          headers: { 'content-type': 'application/json', 'x-api-key': 'fake' },
+        },
         '{"prompt":"hello"}',
-        (h) => { h['x-api-key'] = 'real-key'; },
+        (h) => {
+          h['x-api-key'] = 'real-key';
+        },
       );
 
       expect(statusCode).toBe(200);
@@ -104,7 +133,11 @@ describe('proxy helpers', () => {
     it('strips connection and keep-alive headers', async () => {
       await pipeRequest(
         upstreamPort,
-        { method: 'GET', path: '/', headers: { 'keep-alive': 'timeout=5', 'x-custom': 'preserved' } },
+        {
+          method: 'GET',
+          path: '/',
+          headers: { 'keep-alive': 'timeout=5', 'x-custom': 'preserved' },
+        },
         '',
         () => {},
       );
@@ -124,11 +157,21 @@ describe('proxy helpers', () => {
 
       const { statusCode, body } = await bufferedRequest(
         upstreamPort,
-        { method: 'POST', path: '/api/oauth/token', headers: { 'content-type': 'application/json' } },
-        JSON.stringify({ grant_type: 'refresh_token', refresh_token: 'substitute' }),
+        {
+          method: 'POST',
+          path: '/api/oauth/token',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          grant_type: 'refresh_token',
+          refresh_token: 'substitute',
+        }),
         () => {},
         (reqBody) => reqBody.replace('substitute', 'real-refresh-token'),
-        (resBody) => resBody.replace('real-access', 'sub-access').replace('real-refresh', 'sub-refresh'),
+        (resBody) =>
+          resBody
+            .replace('real-access', 'sub-access')
+            .replace('real-refresh', 'sub-refresh'),
       );
 
       expect(statusCode).toBe(200);
@@ -149,7 +192,11 @@ describe('proxy helpers', () => {
 
       const { statusCode, body } = await bufferedRequest(
         upstreamPort,
-        { method: 'POST', path: '/api/oauth/token', headers: { 'content-type': 'application/json' } },
+        {
+          method: 'POST',
+          path: '/api/oauth/token',
+          headers: { 'content-type': 'application/json' },
+        },
         '{}',
         () => {},
         (b) => b,
@@ -166,7 +213,11 @@ describe('proxy helpers', () => {
 
       const { headers } = await bufferedRequest(
         upstreamPort,
-        { method: 'POST', path: '/', headers: { 'content-type': 'application/json' } },
+        {
+          method: 'POST',
+          path: '/',
+          headers: { 'content-type': 'application/json' },
+        },
         '{}',
         () => {},
         (b) => b,
@@ -174,7 +225,11 @@ describe('proxy helpers', () => {
       );
 
       const cl = parseInt(headers['content-length'] as string, 10);
-      expect(cl).toBe(Buffer.byteLength(JSON.stringify({ token: 'much-longer-replacement-value-here' })));
+      expect(cl).toBe(
+        Buffer.byteLength(
+          JSON.stringify({ token: 'much-longer-replacement-value-here' }),
+        ),
+      );
     });
   });
 });
@@ -189,28 +244,47 @@ function pipeRequest(
   upstreamPort: number,
   options: http.RequestOptions,
   body: string,
-  injectHeaders: (headers: Record<string, string | number | string[] | undefined>) => void,
-): Promise<{ statusCode: number; body: string; headers: http.IncomingHttpHeaders }> {
+  injectHeaders: (
+    headers: Record<string, string | number | string[] | undefined>,
+  ) => void,
+): Promise<{
+  statusCode: number;
+  body: string;
+  headers: http.IncomingHttpHeaders;
+}> {
   return new Promise(async (resolve, reject) => {
     const server = http.createServer((req, res) => {
-      proxyPipe(req, res, '127.0.0.1', upstreamPort, injectHeaders, asGroupScope('test'));
+      proxyPipe(
+        req,
+        res,
+        '127.0.0.1',
+        upstreamPort,
+        injectHeaders,
+        asGroupScope('test'),
+      );
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as AddressInfo).port;
 
-    const req = http.request({ ...options, hostname: '127.0.0.1', port }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => {
-        server.close();
-        resolve({
-          statusCode: res.statusCode!,
-          body: Buffer.concat(chunks).toString(),
-          headers: res.headers,
+    const req = http.request(
+      { ...options, hostname: '127.0.0.1', port },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          server.close();
+          resolve({
+            statusCode: res.statusCode!,
+            body: Buffer.concat(chunks).toString(),
+            headers: res.headers,
+          });
         });
-      });
+      },
+    );
+    req.on('error', (err) => {
+      server.close();
+      reject(err);
     });
-    req.on('error', (err) => { server.close(); reject(err); });
     req.write(body);
     req.end();
   });
@@ -220,30 +294,50 @@ function bufferedRequest(
   upstreamPort: number,
   options: http.RequestOptions,
   body: string,
-  injectHeaders: (headers: Record<string, string | number | string[] | undefined>) => void,
+  injectHeaders: (
+    headers: Record<string, string | number | string[] | undefined>,
+  ) => void,
   transformRequest: (body: string) => string,
   transformResponse: (body: string, statusCode: number) => string,
-): Promise<{ statusCode: number; body: string; headers: http.IncomingHttpHeaders }> {
+): Promise<{
+  statusCode: number;
+  body: string;
+  headers: http.IncomingHttpHeaders;
+}> {
   return new Promise(async (resolve, reject) => {
     const server = http.createServer((req, res) => {
-      proxyBuffered(req, res, '127.0.0.1', upstreamPort, injectHeaders, transformRequest, transformResponse);
+      proxyBuffered(
+        req,
+        res,
+        '127.0.0.1',
+        upstreamPort,
+        injectHeaders,
+        transformRequest,
+        transformResponse,
+      );
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as AddressInfo).port;
 
-    const req = http.request({ ...options, hostname: '127.0.0.1', port }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => {
-        server.close();
-        resolve({
-          statusCode: res.statusCode!,
-          body: Buffer.concat(chunks).toString(),
-          headers: res.headers,
+    const req = http.request(
+      { ...options, hostname: '127.0.0.1', port },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          server.close();
+          resolve({
+            statusCode: res.statusCode!,
+            body: Buffer.concat(chunks).toString(),
+            headers: res.headers,
+          });
         });
-      });
+      },
+    );
+    req.on('error', (err) => {
+      server.close();
+      reject(err);
     });
-    req.on('error', (err) => { server.close(); reject(err); });
     req.write(body);
     req.end();
   });

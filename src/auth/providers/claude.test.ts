@@ -31,9 +31,8 @@ vi.mock('../../env.js', () => ({
   readEnvFile: vi.fn(() => ({})),
 }));
 
-const { initCredentialStore, encrypt, decrypt, saveCredential } = await import(
-  '../store.js'
-);
+const { initCredentialStore, encrypt, decrypt, saveCredential } =
+  await import('../store.js');
 const { readEnvFile } = await import('../../env.js');
 
 // Mock config.js for IDLE_TIMEOUT
@@ -43,20 +42,39 @@ vi.mock('../../config.js', () => ({
 
 // Mock exec.js for authSessionDir and scopeClaudeDir
 vi.mock('../exec.js', () => ({
-  authSessionDir: vi.fn((scope: string) => path.join(tmpDir, 'sessions', scope)),
-  scopeClaudeDir: vi.fn((scope: string, ...sub: string[]) => path.join(tmpDir, 'sessions', scope, '.claude', ...sub)),
+  authSessionDir: vi.fn((scope: string) =>
+    path.join(tmpDir, 'sessions', scope),
+  ),
+  scopeClaudeDir: vi.fn((scope: string, ...sub: string[]) =>
+    path.join(tmpDir, 'sessions', scope, '.claude', ...sub),
+  ),
 }));
 
 // Import after mocks
-const { claudeProvider, migrateClaudeCredentials, isAuthError, classifyAuthError, waitForPattern, detectCodeDelivery, isPortOpen, parseCallbackUrl, extractStreamRequestId, extractUpstreamRequestId } = await import(
-  './claude.js'
-);
-const { TokenSubstituteEngine, PersistentTokenResolver } = await import('../token-substitute.js');
+const {
+  claudeProvider,
+  migrateClaudeCredentials,
+  isAuthError,
+  classifyAuthError,
+  waitForPattern,
+  detectCodeDelivery,
+  isPortOpen,
+  parseCallbackUrl,
+  extractStreamRequestId,
+  extractUpstreamRequestId,
+} = await import('./claude.js');
+const { TokenSubstituteEngine, PersistentTokenResolver } =
+  await import('../token-substitute.js');
 import type { RegisteredGroup } from '../../types.js';
 
 /** Create a minimal RegisteredGroup for test provision calls. */
 function makeGroup(folder: string): RegisteredGroup {
-  return { name: `Group ${folder}`, folder, trigger: '@test', added_at: new Date().toISOString() };
+  return {
+    name: `Group ${folder}`,
+    folder,
+    trigger: '@test',
+    added_at: new Date().toISOString(),
+  };
 }
 
 describe('claudeProvider', () => {
@@ -84,7 +102,8 @@ describe('claudeProvider', () => {
     });
 
     it('provisions api_key as substitute ANTHROPIC_API_KEY', () => {
-      const real = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const real =
+        'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
       const result = storeAndProvision('test', {
         auth_type: 'api_key',
         token: real,
@@ -97,7 +116,8 @@ describe('claudeProvider', () => {
     });
 
     it('provisions setup_token as substitute CLAUDE_CODE_OAUTH_TOKEN', () => {
-      const real = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const real =
+        'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
       const result = storeAndProvision('test', {
         auth_type: 'setup_token',
         token: real,
@@ -105,13 +125,17 @@ describe('claudeProvider', () => {
       });
 
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(real.slice(0, 14));
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(
+        real.slice(0, 14),
+      );
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).not.toBe(real);
     });
 
     it('provisions auth_login with substitute accessToken, no refreshToken in env', () => {
-      const realAccess = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-      const realRefresh = 'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const realAccess =
+        'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const realRefresh =
+        'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
       const credsJson = JSON.stringify({
         accessToken: realAccess,
         refreshToken: realRefresh,
@@ -125,7 +149,9 @@ describe('claudeProvider', () => {
       });
 
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(realAccess.slice(0, 14));
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(
+        realAccess.slice(0, 14),
+      );
       // Refresh token is NOT in env — only in .credentials.json
       expect(result.env.CLAUDE_REFRESH_TOKEN).toBeUndefined();
     });
@@ -134,11 +160,15 @@ describe('claudeProvider', () => {
   describe('storeResult', () => {
     it('encrypts the token in keys file', () => {
       const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
-      claudeProvider.storeResult('enc-test', {
-        auth_type: 'api_key',
-        token: 'plaintext-secret',
-        expires_at: null,
-      }, engine);
+      claudeProvider.storeResult(
+        'enc-test',
+        {
+          auth_type: 'api_key',
+          token: 'plaintext-secret',
+          expires_at: null,
+        },
+        engine,
+      );
 
       // Read raw keys file to verify encryption
       const configDir = path.join(tmpDir, '.config', 'nanoclaw');
@@ -157,7 +187,8 @@ describe('claudeProvider', () => {
   describe('importEnv', () => {
     it('imports .env values into scope', () => {
       vi.mocked(readEnvFile).mockReturnValueOnce({
-        ANTHROPIC_API_KEY: 'sk-ant-api03-from-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        ANTHROPIC_API_KEY:
+          'sk-ant-api03-from-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
 
       const resolver = new PersistentTokenResolver();
@@ -167,11 +198,15 @@ describe('claudeProvider', () => {
 
     it('skips import if credentials already exist', () => {
       const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
-      claudeProvider.storeResult('default', {
-        auth_type: 'api_key',
-        token: 'existing-key',
-        expires_at: null,
-      }, engine);
+      claudeProvider.storeResult(
+        'default',
+        {
+          auth_type: 'api_key',
+          token: 'existing-key',
+          expires_at: null,
+        },
+        engine,
+      );
 
       vi.mocked(readEnvFile).mockReturnValueOnce({
         ANTHROPIC_API_KEY: 'should-not-overwrite',
@@ -209,14 +244,24 @@ describe('isAuthError / classifyAuthError', () => {
     `Failed to authenticate. API Error: ${status} {"type":"error","error":{"type":"${type}","message":"${message}"},"request_id":"req_011CYn1REexA8rAwsuHGTCAJ"}`;
 
   it('detects 401 authentication_error', () => {
-    expect(isAuthError(apiError(401, 'authentication_error', 'Invalid bearer token'))).toBe(true);
-    const info = classifyAuthError(apiError(401, 'authentication_error', 'Invalid bearer token'));
+    expect(
+      isAuthError(
+        apiError(401, 'authentication_error', 'Invalid bearer token'),
+      ),
+    ).toBe(true);
+    const info = classifyAuthError(
+      apiError(401, 'authentication_error', 'Invalid bearer token'),
+    );
     expect(info).toEqual({ code: 401, message: 'Invalid bearer token' });
   });
 
   it('detects 403 permission_error', () => {
-    expect(isAuthError(apiError(403, 'permission_error', 'Forbidden'))).toBe(true);
-    const info = classifyAuthError(apiError(403, 'permission_error', 'Forbidden'));
+    expect(isAuthError(apiError(403, 'permission_error', 'Forbidden'))).toBe(
+      true,
+    );
+    const info = classifyAuthError(
+      apiError(403, 'permission_error', 'Forbidden'),
+    );
     expect(info).toEqual({ code: 403, message: 'Forbidden' });
   });
 
@@ -226,37 +271,61 @@ describe('isAuthError / classifyAuthError', () => {
   });
 
   it('does not trigger on 429 or 529', () => {
-    expect(isAuthError(apiError(429, 'rate_limit_error', 'Too many requests'))).toBe(false);
-    expect(isAuthError(apiError(529, 'overloaded_error', 'Overloaded'))).toBe(false);
+    expect(
+      isAuthError(apiError(429, 'rate_limit_error', 'Too many requests')),
+    ).toBe(false);
+    expect(isAuthError(apiError(529, 'overloaded_error', 'Overloaded'))).toBe(
+      false,
+    );
   });
 
   it('does not trigger on other status codes', () => {
-    expect(isAuthError(apiError(400, 'invalid_request_error', 'Bad request'))).toBe(false);
-    expect(isAuthError(apiError(500, 'api_error', 'Internal error'))).toBe(false);
+    expect(
+      isAuthError(apiError(400, 'invalid_request_error', 'Bad request')),
+    ).toBe(false);
+    expect(isAuthError(apiError(500, 'api_error', 'Internal error'))).toBe(
+      false,
+    );
   });
 
   it('does not match partial or embedded errors', () => {
-    expect(isAuthError('prefix ' + apiError(401, 'authentication_error', 'test'))).toBe(false);
-    expect(isAuthError(apiError(401, 'authentication_error', 'test') + ' suffix')).toBe(false);
+    expect(
+      isAuthError('prefix ' + apiError(401, 'authentication_error', 'test')),
+    ).toBe(false);
+    expect(
+      isAuthError(apiError(401, 'authentication_error', 'test') + ' suffix'),
+    ).toBe(false);
   });
 
   it('rejects invalid JSON body', () => {
-    expect(isAuthError('Failed to authenticate. API Error: 401 {not valid json')).toBe(false);
+    expect(
+      isAuthError('Failed to authenticate. API Error: 401 {not valid json'),
+    ).toBe(false);
   });
 
   it('rejects valid JSON with wrong structure', () => {
-    expect(isAuthError('Failed to authenticate. API Error: 401 {"foo":"bar"}')).toBe(false);
-    expect(isAuthError('Failed to authenticate. API Error: 401 {"type":"error","error":{}}')).toBe(false);
+    expect(
+      isAuthError('Failed to authenticate. API Error: 401 {"foo":"bar"}'),
+    ).toBe(false);
+    expect(
+      isAuthError(
+        'Failed to authenticate. API Error: 401 {"type":"error","error":{}}',
+      ),
+    ).toBe(false);
   });
 
   it('matches with trailing whitespace', () => {
-    expect(isAuthError(apiError(401, 'authentication_error', 'test') + '  \n')).toBe(true);
+    expect(
+      isAuthError(apiError(401, 'authentication_error', 'test') + '  \n'),
+    ).toBe(true);
   });
 
   it('returns false for non-API errors', () => {
     expect(isAuthError('timeout after 300s')).toBe(false);
     expect(isAuthError('connection refused')).toBe(false);
-    expect(isAuthError('Container exited with code 1: some stderr')).toBe(false);
+    expect(isAuthError('Container exited with code 1: some stderr')).toBe(
+      false,
+    );
     expect(isAuthError(undefined)).toBe(false);
     expect(isAuthError('')).toBe(false);
   });
@@ -271,7 +340,8 @@ describe('waitForPattern', () => {
       5000,
     );
 
-    output.value = 'Open this link:\nhttps://console.anthropic.com/oauth/authorize?code=abc123\n';
+    output.value =
+      'Open this link:\nhttps://console.anthropic.com/oauth/authorize?code=abc123\n';
 
     const match = await promise;
     expect(match).not.toBeNull();
@@ -294,7 +364,8 @@ describe('waitForPattern', () => {
     await new Promise((r) => setTimeout(r, 600));
 
     // Chunk 2: URL appears
-    output.value += 'https://console.anthropic.com/oauth/authorize?code=abc123&state=xyz\n';
+    output.value +=
+      'https://console.anthropic.com/oauth/authorize?code=abc123&state=xyz\n';
 
     const match = await promise;
     expect(match).not.toBeNull();
@@ -315,11 +386,7 @@ describe('waitForPattern', () => {
 
   it('matches token in output', async () => {
     const output = { value: '' };
-    const promise = waitForPattern(
-      output,
-      /sk-ant-oat01-\S+/,
-      3000,
-    );
+    const promise = waitForPattern(output, /sk-ant-oat01-\S+/, 3000);
 
     output.value = 'Your token: sk-ant-oat01-abcdef123\n';
 
@@ -330,11 +397,7 @@ describe('waitForPattern', () => {
 
   it('strips ANSI before matching', async () => {
     const output = { value: '' };
-    const promise = waitForPattern(
-      output,
-      /https:\/\/example\.com\/\S+/,
-      3000,
-    );
+    const promise = waitForPattern(output, /https:\/\/example\.com\/\S+/, 3000);
 
     output.value = 'https://example.com/\x1b[0mpath?q=1\n';
 
@@ -346,17 +409,26 @@ describe('waitForPattern', () => {
 
 describe('detectCodeDelivery', () => {
   function makeHandle(): import('../types.js').ExecHandle {
-    let waitResolve: (v: { exitCode: number; stdout: string; stderr: string }) => void;
-    const waitPromise = new Promise<{ exitCode: number; stdout: string; stderr: string }>(
-      (r) => { waitResolve = r; },
-    );
+    let waitResolve: (v: {
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    }) => void;
+    const waitPromise = new Promise<{
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    }>((r) => {
+      waitResolve = r;
+    });
     return {
       onStdout: vi.fn(),
       stdin: { write: vi.fn(), end: vi.fn() },
       wait: () => waitPromise,
       kill: vi.fn(),
       // Expose for test control
-      _resolve: (v: { exitCode: number; stdout: string; stderr: string }) => waitResolve(v),
+      _resolve: (v: { exitCode: number; stdout: string; stderr: string }) =>
+        waitResolve(v),
     } as any;
   }
 
@@ -368,7 +440,13 @@ describe('detectCodeDelivery', () => {
     const output = { value: '' };
     const handle = makeHandle();
 
-    const promise = detectCodeDelivery(output, sessionDir, 5000, handle, DUMMY_URL);
+    const promise = detectCodeDelivery(
+      output,
+      sessionDir,
+      5000,
+      handle,
+      DUMMY_URL,
+    );
 
     // Simulate paste prompt appearing (no trailing \n — it's a prompt)
     output.value = 'Opening browser...\nPaste code here if prompted > ';
@@ -392,13 +470,16 @@ describe('detectCodeDelivery', () => {
       const handle = makeHandle();
 
       const shimUrl = `https://console.anthropic.com/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A${port}%2Fcallback`;
-      const promise = detectCodeDelivery(output, sessionDir, 10_000, handle, DUMMY_URL);
+      const promise = detectCodeDelivery(
+        output,
+        sessionDir,
+        10_000,
+        handle,
+        DUMMY_URL,
+      );
 
       // Simulate shim writing the OAuth URL (with encoded redirect_uri containing the real port)
-      fs.writeFileSync(
-        path.join(sessionDir, '.oauth-url'),
-        shimUrl + '\n',
-      );
+      fs.writeFileSync(path.join(sessionDir, '.oauth-url'), shimUrl + '\n');
 
       const result = await promise;
       expect(result).not.toBeNull();
@@ -415,7 +496,13 @@ describe('detectCodeDelivery', () => {
     const output = { value: '' };
     const handle = makeHandle();
 
-    const promise = detectCodeDelivery(output, sessionDir, 10_000, handle, DUMMY_URL);
+    const promise = detectCodeDelivery(
+      output,
+      sessionDir,
+      10_000,
+      handle,
+      DUMMY_URL,
+    );
 
     // Simulate shim writing URL with a port that is NOT listening
     fs.writeFileSync(
@@ -439,7 +526,13 @@ describe('detectCodeDelivery', () => {
       'https://console.anthropic.com/oauth?redirect_uri=http%3A%2F%2Flocalhost%3A12345%2Fcallback\n',
     );
 
-    const promise = detectCodeDelivery(output, sessionDir, 5000, handle, DUMMY_URL);
+    const promise = detectCodeDelivery(
+      output,
+      sessionDir,
+      5000,
+      handle,
+      DUMMY_URL,
+    );
 
     // stdin check runs first in the interval, so set it immediately
     output.value = 'Paste code here if prompted > ';
@@ -456,7 +549,14 @@ describe('detectCodeDelivery', () => {
     const handle = makeHandle();
 
     // With null pastePrompt, stdin detection is disabled — should timeout
-    const result = await detectCodeDelivery(output, sessionDir, 1000, handle, DUMMY_URL, null);
+    const result = await detectCodeDelivery(
+      output,
+      sessionDir,
+      1000,
+      handle,
+      DUMMY_URL,
+      null,
+    );
     expect(result).toBeNull();
   });
 
@@ -466,7 +566,13 @@ describe('detectCodeDelivery', () => {
     const output = { value: 'nothing useful\n' };
     const handle = makeHandle();
 
-    const result = await detectCodeDelivery(output, sessionDir, 500, handle, DUMMY_URL);
+    const result = await detectCodeDelivery(
+      output,
+      sessionDir,
+      500,
+      handle,
+      DUMMY_URL,
+    );
     expect(result).toBeNull();
   });
 
@@ -476,7 +582,13 @@ describe('detectCodeDelivery', () => {
     const output = { value: '' };
     const handle = makeHandle();
 
-    const promise = detectCodeDelivery(output, sessionDir, 30_000, handle, DUMMY_URL);
+    const promise = detectCodeDelivery(
+      output,
+      sessionDir,
+      30_000,
+      handle,
+      DUMMY_URL,
+    );
 
     // Simulate container exit
     (handle as any)._resolve({ exitCode: 1, stdout: '', stderr: '' });
@@ -484,7 +596,6 @@ describe('detectCodeDelivery', () => {
     const result = await promise;
     expect(result).toBeNull();
   });
-
 });
 
 describe('CodeDeliveryHandler.deliver', () => {
@@ -494,7 +605,9 @@ describe('CodeDeliveryHandler.deliver', () => {
     const output = { value: '' };
     const handle = (() => {
       let waitResolve: (v: any) => void;
-      const waitPromise = new Promise<any>((r) => { waitResolve = r; });
+      const waitPromise = new Promise<any>((r) => {
+        waitResolve = r;
+      });
       return {
         onStdout: vi.fn(),
         stdin: { write: vi.fn(), end: vi.fn() },
@@ -503,7 +616,13 @@ describe('CodeDeliveryHandler.deliver', () => {
       };
     })();
 
-    const promise = detectCodeDelivery(output, sessionDir, 5000, handle as any, 'https://example.com/oauth');
+    const promise = detectCodeDelivery(
+      output,
+      sessionDir,
+      5000,
+      handle as any,
+      'https://example.com/oauth',
+    );
     output.value = 'Paste code here if prompted > ';
 
     const handler = await promise;
@@ -511,7 +630,10 @@ describe('CodeDeliveryHandler.deliver', () => {
 
     const result = await handler!.deliver('authcode123#stateabc');
     expect(result).toEqual({ ok: true });
-    expect(handle.stdin.write).toHaveBeenNthCalledWith(1, 'authcode123#stateabc');
+    expect(handle.stdin.write).toHaveBeenNthCalledWith(
+      1,
+      'authcode123#stateabc',
+    );
     expect(handle.stdin.write).toHaveBeenNthCalledWith(2, '\r');
   });
 
@@ -521,7 +643,9 @@ describe('CodeDeliveryHandler.deliver', () => {
     const output = { value: '' };
     const handle = (() => {
       let waitResolve: (v: any) => void;
-      const waitPromise = new Promise<any>((r) => { waitResolve = r; });
+      const waitPromise = new Promise<any>((r) => {
+        waitResolve = r;
+      });
       return {
         onStdout: vi.fn(),
         stdin: { write: vi.fn(), end: vi.fn() },
@@ -530,11 +654,19 @@ describe('CodeDeliveryHandler.deliver', () => {
       };
     })();
 
-    const promise = detectCodeDelivery(output, sessionDir, 5000, handle as any, 'https://example.com/oauth');
+    const promise = detectCodeDelivery(
+      output,
+      sessionDir,
+      5000,
+      handle as any,
+      'https://example.com/oauth',
+    );
     output.value = 'Paste code here if prompted > ';
 
     const handler = await promise;
-    const result = await handler!.deliver('http://localhost:54321/callback?code=mycode&state=mystate');
+    const result = await handler!.deliver(
+      'http://localhost:54321/callback?code=mycode&state=mystate',
+    );
     expect(result).toEqual({ ok: true });
     expect(handle.stdin.write).toHaveBeenNthCalledWith(1, 'mycode#mystate');
   });
@@ -550,11 +682,24 @@ describe('CodeDeliveryHandler.deliver', () => {
       const output = { value: '' };
       const handle = (() => {
         let waitResolve: (v: any) => void;
-        const waitPromise = new Promise<any>((r) => { waitResolve = r; });
-        return { onStdout: vi.fn(), stdin: { write: vi.fn(), end: vi.fn() }, wait: () => waitPromise, kill: vi.fn() };
+        const waitPromise = new Promise<any>((r) => {
+          waitResolve = r;
+        });
+        return {
+          onStdout: vi.fn(),
+          stdin: { write: vi.fn(), end: vi.fn() },
+          wait: () => waitPromise,
+          kill: vi.fn(),
+        };
       })();
 
-      const promise = detectCodeDelivery(output, sessionDir, 10_000, handle as any, 'https://example.com/oauth');
+      const promise = detectCodeDelivery(
+        output,
+        sessionDir,
+        10_000,
+        handle as any,
+        'https://example.com/oauth',
+      );
       fs.writeFileSync(
         path.join(sessionDir, '.oauth-url'),
         `https://console.anthropic.com/oauth?redirect_uri=http%3A%2F%2Flocalhost%3A${port}%2Fcallback\n`,
@@ -582,11 +727,24 @@ describe('CodeDeliveryHandler.deliver', () => {
       const output = { value: '' };
       const handle = (() => {
         let waitResolve: (v: any) => void;
-        const waitPromise = new Promise<any>((r) => { waitResolve = r; });
-        return { onStdout: vi.fn(), stdin: { write: vi.fn(), end: vi.fn() }, wait: () => waitPromise, kill: vi.fn() };
+        const waitPromise = new Promise<any>((r) => {
+          waitResolve = r;
+        });
+        return {
+          onStdout: vi.fn(),
+          stdin: { write: vi.fn(), end: vi.fn() },
+          wait: () => waitPromise,
+          kill: vi.fn(),
+        };
       })();
 
-      const promise = detectCodeDelivery(output, sessionDir, 10_000, handle as any, 'https://example.com/oauth');
+      const promise = detectCodeDelivery(
+        output,
+        sessionDir,
+        10_000,
+        handle as any,
+        'https://example.com/oauth',
+      );
       fs.writeFileSync(
         path.join(sessionDir, '.oauth-url'),
         `https://console.anthropic.com/oauth?redirect_uri=http%3A%2F%2Flocalhost%3A${port}%2Fcallback\n`,
@@ -595,7 +753,9 @@ describe('CodeDeliveryHandler.deliver', () => {
       const handler = await promise;
       expect(handler).not.toBeNull();
 
-      const result = await handler!.deliver('http://localhost:54321/callback?code=c&state=s');
+      const result = await handler!.deliver(
+        'http://localhost:54321/callback?code=c&state=s',
+      );
       expect(result.ok).toBe(false);
       expect(result.error).toContain('Port mismatch');
     } finally {
@@ -606,25 +766,35 @@ describe('CodeDeliveryHandler.deliver', () => {
 
 describe('parseCallbackUrl', () => {
   it('parses valid localhost callback URL', () => {
-    const result = parseCallbackUrl('http://localhost:54321/callback?code=abc123&state=xyz789');
+    const result = parseCallbackUrl(
+      'http://localhost:54321/callback?code=abc123&state=xyz789',
+    );
     expect(result).toEqual({ code: 'abc123', state: 'xyz789', port: 54321 });
   });
 
   it('handles URL-encoded parameters', () => {
-    const result = parseCallbackUrl('http://localhost:8080/callback?code=a%20b&state=c%20d');
+    const result = parseCallbackUrl(
+      'http://localhost:8080/callback?code=a%20b&state=c%20d',
+    );
     expect(result).toEqual({ code: 'a b', state: 'c d', port: 8080 });
   });
 
   it('returns null for URL without code', () => {
-    expect(parseCallbackUrl('http://localhost:8080/callback?state=s')).toBeNull();
+    expect(
+      parseCallbackUrl('http://localhost:8080/callback?state=s'),
+    ).toBeNull();
   });
 
   it('returns null for URL without state', () => {
-    expect(parseCallbackUrl('http://localhost:8080/callback?code=c')).toBeNull();
+    expect(
+      parseCallbackUrl('http://localhost:8080/callback?code=c'),
+    ).toBeNull();
   });
 
   it('returns null for URL without port', () => {
-    expect(parseCallbackUrl('http://localhost/callback?code=c&state=s')).toBeNull();
+    expect(
+      parseCallbackUrl('http://localhost/callback?code=c&state=s'),
+    ).toBeNull();
   });
 
   it('returns null for non-URL input', () => {
@@ -646,7 +816,9 @@ describe('extractStreamRequestId', () => {
     `Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token"},"request_id":"${requestId}"}`;
 
   it('extracts request_id from a well-formed auth error', () => {
-    expect(extractStreamRequestId(apiError('req_011CYn1REexA8rAwsuHGTCAJ'))).toBe('req_011CYn1REexA8rAwsuHGTCAJ');
+    expect(
+      extractStreamRequestId(apiError('req_011CYn1REexA8rAwsuHGTCAJ')),
+    ).toBe('req_011CYn1REexA8rAwsuHGTCAJ');
   });
 
   it('returns null for non-auth errors', () => {
@@ -655,9 +827,11 @@ describe('extractStreamRequestId', () => {
   });
 
   it('returns null when JSON has no request_id', () => {
-    expect(extractStreamRequestId(
-      'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"test"}}',
-    )).toBeNull();
+    expect(
+      extractStreamRequestId(
+        'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"test"}}',
+      ),
+    ).toBeNull();
   });
 });
 
@@ -676,10 +850,14 @@ describe('extractUpstreamRequestId', () => {
   });
 
   it('returns null when no request_id field', () => {
-    expect(extractUpstreamRequestId(JSON.stringify({ error: 'auth' }))).toBeNull();
+    expect(
+      extractUpstreamRequestId(JSON.stringify({ error: 'auth' })),
+    ).toBeNull();
   });
 
   it('returns null for non-string request_id', () => {
-    expect(extractUpstreamRequestId(JSON.stringify({ request_id: 42 }))).toBeNull();
+    expect(
+      extractUpstreamRequestId(JSON.stringify({ request_id: 42 })),
+    ).toBeNull();
   });
 });

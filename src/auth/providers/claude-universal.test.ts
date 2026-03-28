@@ -12,7 +12,11 @@ import {
   wrapWithApiKeySupport,
   claudeProvider,
 } from './claude.js';
-import { TokenSubstituteEngine, PersistentTokenResolver, type TokenRole } from '../token-substitute.js';
+import {
+  TokenSubstituteEngine,
+  PersistentTokenResolver,
+  type TokenRole,
+} from '../token-substitute.js';
 import type { HostHandler } from '../../credential-proxy.js';
 import { DEFAULT_SUBSTITUTE_CONFIG, asGroupScope } from '../oauth-types.js';
 import type { GroupScope } from '../oauth-types.js';
@@ -20,7 +24,12 @@ import type { RegisteredGroup } from '../../types.js';
 
 /** Create a minimal RegisteredGroup for test provision calls. */
 function makeGroup(folder: string): RegisteredGroup {
-  return { name: `Group ${folder}`, folder, trigger: '@test', added_at: new Date().toISOString() };
+  return {
+    name: `Group ${folder}`,
+    folder,
+    trigger: '@test',
+    added_at: new Date().toISOString(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -34,11 +43,20 @@ function generateSubstitute(
   realToken: string,
   role: TokenRole = 'access',
 ): { env: Record<string, string> } {
-  engine.generateSubstitute(realToken, claudeProvider.id, {}, asGroupScope(scope), CLAUDE_SUBSTITUTE_CONFIG, role);
+  engine.generateSubstitute(
+    realToken,
+    claudeProvider.id,
+    {},
+    asGroupScope(scope),
+    CLAUDE_SUBSTITUTE_CONFIG,
+    role,
+  );
   return claudeProvider.provision(makeGroup(scope), engine);
 }
 
-function mockRequest(headers: Record<string, string> = {}): http.IncomingMessage {
+function mockRequest(
+  headers: Record<string, string> = {},
+): http.IncomingMessage {
   const { PassThrough } = require('stream');
   const req = new PassThrough() as any;
   req.headers = headers;
@@ -48,7 +66,11 @@ function mockRequest(headers: Record<string, string> = {}): http.IncomingMessage
   return req as http.IncomingMessage;
 }
 
-function mockResponse(): http.ServerResponse & { _status: number; _headers: Record<string, string>; _body: string } {
+function mockResponse(): http.ServerResponse & {
+  _status: number;
+  _headers: Record<string, string>;
+  _body: string;
+} {
   const res = {
     _status: 0,
     _body: '',
@@ -123,8 +145,16 @@ describe('wrapWithApiKeySupport', () => {
   });
 
   it('resolves x-api-key substitute and delegates to universal handler', async () => {
-    const realKey = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const sub = engine.generateSubstitute(realKey, claudeProvider.id, {}, asGroupScope('scope'), CLAUDE_SUBSTITUTE_CONFIG, 'api_key')!;
+    const realKey =
+      'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const sub = engine.generateSubstitute(
+      realKey,
+      claudeProvider.id,
+      {},
+      asGroupScope('scope'),
+      CLAUDE_SUBSTITUTE_CONFIG,
+      'api_key',
+    )!;
     expect(sub).not.toBeNull();
 
     // Track what the universal handler receives and verify resolved header
@@ -146,7 +176,9 @@ describe('wrapWithApiKeySupport', () => {
 
   it('delegates to universal handler for Bearer tokens', async () => {
     let universalCalled = false;
-    const universalHandler: HostHandler = async () => { universalCalled = true; };
+    const universalHandler: HostHandler = async () => {
+      universalCalled = true;
+    };
 
     const handler = wrapWithApiKeySupport(universalHandler, engine);
 
@@ -160,7 +192,9 @@ describe('wrapWithApiKeySupport', () => {
 
   it('delegates to universal handler when no auth header present', async () => {
     let universalCalled = false;
-    const universalHandler: HostHandler = async () => { universalCalled = true; };
+    const universalHandler: HostHandler = async () => {
+      universalCalled = true;
+    };
 
     const handler = wrapWithApiKeySupport(universalHandler, engine);
 
@@ -200,8 +234,10 @@ describe('provision with token engine', () => {
 
   it('does not expose refresh token in env', () => {
     const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
-    const realAccess = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const realRefresh = 'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const realAccess =
+      'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const realRefresh =
+      'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
     generateSubstitute(engine, 'scope', realAccess);
     generateSubstitute(engine, 'scope', realRefresh, 'refresh');

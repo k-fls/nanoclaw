@@ -151,13 +151,23 @@ export function proxyPipe(
   injectHeaders: (headers: HeaderMap) => void,
   scope: GroupScope,
 ): void {
-  const headers: HeaderMap = { ...(clientReq.headers as Record<string, string>), host: targetHost };
+  const headers: HeaderMap = {
+    ...(clientReq.headers as Record<string, string>),
+    host: targetHost,
+  };
   delete headers['connection'];
   delete headers['keep-alive'];
   injectHeaders(headers);
 
   const upstream = httpsRequest(
-    { hostname: targetHost, port: targetPort, path: clientReq.url, method: clientReq.method, headers, agent: _upstreamAgent } as RequestOptions,
+    {
+      hostname: targetHost,
+      port: targetPort,
+      path: clientReq.url,
+      method: clientReq.method,
+      headers,
+      agent: _upstreamAgent,
+    } as RequestOptions,
     (upRes) => {
       if (_responseHook) {
         _responseHook({
@@ -176,8 +186,14 @@ export function proxyPipe(
     },
   );
   upstream.on('error', (err) => {
-    logger.error({ err, host: targetHost, url: clientReq.url }, 'proxyPipe upstream error');
-    if (!clientRes.headersSent) { clientRes.writeHead(502); clientRes.end('Bad Gateway'); }
+    logger.error(
+      { err, host: targetHost, url: clientReq.url },
+      'proxyPipe upstream error',
+    );
+    if (!clientRes.headersSent) {
+      clientRes.writeHead(502);
+      clientRes.end('Bad Gateway');
+    }
   });
   clientReq.pipe(upstream);
 }
@@ -220,7 +236,14 @@ export async function proxyBuffered(
 
   await new Promise<void>((resolve) => {
     const upstream = httpsRequest(
-      { hostname: targetHost, port: targetPort, path: clientReq.url, method: clientReq.method, headers, agent: _upstreamAgent } as RequestOptions,
+      {
+        hostname: targetHost,
+        port: targetPort,
+        path: clientReq.url,
+        method: clientReq.method,
+        headers,
+        agent: _upstreamAgent,
+      } as RequestOptions,
       async (upRes) => {
         const resChunks: Buffer[] = [];
         await new Promise<void>((r) => {
@@ -231,12 +254,21 @@ export async function proxyBuffered(
         const status = upRes.statusCode!;
 
         if (status >= 200 && status < 300) {
-          try { resBody = transformResponse(resBody, status); }
-          catch (err) { logger.error({ err, host: targetHost }, 'proxyBuffered transformResponse error'); }
+          try {
+            resBody = transformResponse(resBody, status);
+          } catch (err) {
+            logger.error(
+              { err, host: targetHost },
+              'proxyBuffered transformResponse error',
+            );
+          }
         }
 
         const resBuf = Buffer.from(resBody);
-        const resHeaders = { ...upRes.headers, 'content-length': String(resBuf.length) };
+        const resHeaders = {
+          ...upRes.headers,
+          'content-length': String(resBuf.length),
+        };
         delete resHeaders['transfer-encoding'];
         clientRes.writeHead(status, resHeaders);
         clientRes.end(resBuf);
@@ -244,8 +276,14 @@ export async function proxyBuffered(
       },
     );
     upstream.on('error', (err) => {
-      logger.error({ err, host: targetHost, url: clientReq.url }, 'proxyBuffered upstream error');
-      if (!clientRes.headersSent) { clientRes.writeHead(502); clientRes.end('Bad Gateway'); }
+      logger.error(
+        { err, host: targetHost, url: clientReq.url },
+        'proxyBuffered upstream error',
+      );
+      if (!clientRes.headersSent) {
+        clientRes.writeHead(502);
+        clientRes.end('Bad Gateway');
+      }
       resolve();
     });
     upstream.write(reqBuf);
@@ -277,8 +315,14 @@ export interface ProxyTapEvent {
  *      after MITM setup. Returns the callback that receives raw chunks, or null
  *      to skip tapping this specific connection.
  */
-export type ProxyTapFilter = (hostname: string, scope: GroupScope) => ProxyTapResolver | null;
-export type ProxyTapResolver = (targetHost: string, scope: GroupScope) => ProxyTapCallback | null;
+export type ProxyTapFilter = (
+  hostname: string,
+  scope: GroupScope,
+) => ProxyTapResolver | null;
+export type ProxyTapResolver = (
+  targetHost: string,
+  scope: GroupScope,
+) => ProxyTapCallback | null;
 export type ProxyTapCallback = (event: ProxyTapEvent) => void;
 
 export class CredentialProxy {
@@ -313,13 +357,30 @@ export class CredentialProxy {
       }
       const handler = this.matchHostRule(meta.targetHost, req.url || '/');
       if (handler) {
-        handler(req, res, meta.targetHost, meta.targetPort, meta.scope, meta.sourceIP).catch((err) => {
+        handler(
+          req,
+          res,
+          meta.targetHost,
+          meta.targetPort,
+          meta.scope,
+          meta.sourceIP,
+        ).catch((err) => {
           logger.error({ err, host: meta.targetHost }, 'MITM handler error');
-          if (!res.headersSent) { res.writeHead(502); res.end('Bad Gateway'); }
+          if (!res.headersSent) {
+            res.writeHead(502);
+            res.end('Bad Gateway');
+          }
         });
       } else {
         // Intercepted host but no path-specific handler — pipe unmodified
-        proxyPipe(req, res, meta.targetHost, meta.targetPort, () => {}, meta.scope);
+        proxyPipe(
+          req,
+          res,
+          meta.targetHost,
+          meta.targetPort,
+          () => {},
+          meta.scope,
+        );
       }
     });
   }
@@ -337,7 +398,10 @@ export class CredentialProxy {
   }
 
   /** Register a session context for a scope. Looked up by auth error resolver. */
-  registerSessionContext(scope: GroupScope, ctx: ContainerSessionContext): void {
+  registerSessionContext(
+    scope: GroupScope,
+    ctx: ContainerSessionContext,
+  ): void {
     this.sessionContexts.set(scope, ctx);
     logger.debug({ scope }, 'Registered session context');
   }
@@ -395,7 +459,11 @@ export class CredentialProxy {
     }
     rules.push({ hostPattern, pathPattern, handler });
     logger.debug(
-      { anchor, hostPattern: hostPattern.source, pathPattern: pathPattern.source },
+      {
+        anchor,
+        hostPattern: hostPattern.source,
+        pathPattern: pathPattern.source,
+      },
       'Registered anchored host rule',
     );
   }
@@ -436,7 +504,10 @@ export class CredentialProxy {
     const ip = normalizeIP(sourceIP);
     const scope = this.containerIpToScope.get(ip);
     if (!scope) {
-      logger.warn({ remoteIP: ip }, 'Connection from unknown container IP, rejecting');
+      logger.warn(
+        { remoteIP: ip },
+        'Connection from unknown container IP, rejecting',
+      );
       return null;
     }
     return scope;
@@ -450,14 +521,15 @@ export class CredentialProxy {
   matchHostRule(targetHost: string, urlPath: string): HostHandler | null {
     const rules = this.findAnchorRules(targetHost);
     if (!rules) return null;
-    const rule = rules.find(r => r.hostPattern.test(targetHost) && r.pathPattern.test(urlPath));
+    const rule = rules.find(
+      (r) => r.hostPattern.test(targetHost) && r.pathPattern.test(urlPath),
+    );
     return rule?.handler ?? null;
   }
 
   getMitmContext(): MitmContext | null {
     return this._mitmCtx;
   }
-
 
   // ── MITM dispatch ───────────────────────────────────────────────
 
@@ -475,9 +547,18 @@ export class CredentialProxy {
   ): void {
     const tapCb = tapResolver?.(targetHost, scope) ?? null;
     const emitSocket = tapCb
-      ? this.wrapWithTap(socket as Socket, tapCb, { targetHost, targetPort, scope })
+      ? this.wrapWithTap(socket as Socket, tapCb, {
+          targetHost,
+          targetPort,
+          scope,
+        })
       : socket;
-    this.socketMeta.set(emitSocket, { targetHost, targetPort, scope, sourceIP });
+    this.socketMeta.set(emitSocket, {
+      targetHost,
+      targetPort,
+      scope,
+      sourceIP,
+    });
     this.mitmDispatcher.emit('connection', emitSocket);
   }
 
@@ -500,12 +581,14 @@ export class CredentialProxy {
     tapCb: ProxyTapCallback,
     meta: { targetHost: string; targetPort: number; scope: GroupScope },
   ): Duplex {
-    const inTap = new PassThrough();  // client → dispatcher (request data)
+    const inTap = new PassThrough(); // client → dispatcher (request data)
     const outTap = new PassThrough(); // dispatcher → client (response data)
 
     // Inbound: socket → inTap (dispatcher reads from inTap)
     socket.on('data', (chunk: Buffer) => {
-      try { tapCb({ ...meta, direction: 'inbound', chunk }); } catch {}
+      try {
+        tapCb({ ...meta, direction: 'inbound', chunk });
+      } catch {}
       inTap.push(chunk);
     });
     socket.on('end', () => inTap.push(null));
@@ -515,13 +598,17 @@ export class CredentialProxy {
     // The HTTP server calls res.write() which calls socket.write() — where
     // "socket" is the Duplex we return. Override _write to capture + forward.
     outTap.on('data', (chunk: Buffer) => {
-      try { tapCb({ ...meta, direction: 'outbound', chunk }); } catch {}
+      try {
+        tapCb({ ...meta, direction: 'outbound', chunk });
+      } catch {}
       socket.write(chunk);
     });
     outTap.on('end', () => socket.end());
 
     socket.on('close', () => {
-      try { tapCb({ ...meta, direction: 'close', chunk: Buffer.alloc(0) }); } catch {}
+      try {
+        tapCb({ ...meta, direction: 'close', chunk: Buffer.alloc(0) });
+      } catch {}
     });
 
     // Return a Duplex that the dispatcher uses as its socket:
@@ -587,7 +674,10 @@ export class CredentialProxy {
       const scope = this.validateCaller(req.socket.remoteAddress);
       if (!scope) {
         logger.warn(
-          { remoteIP: normalizeIP(req.socket.remoteAddress || ''), url: req.url },
+          {
+            remoteIP: normalizeIP(req.socket.remoteAddress || ''),
+            url: req.url,
+          },
           'Rejecting HTTP request from unknown container IP',
         );
         res.writeHead(403);
@@ -600,14 +690,23 @@ export class CredentialProxy {
         const containerIP = normalizeIP(req.socket.remoteAddress || '');
         handleBrowserOpen(req, res, scope, containerIP).catch((err) => {
           logger.error({ err }, 'browser-open handler error');
-          if (!res.headersSent) { res.writeHead(500); res.end('Internal error'); }
+          if (!res.headersSent) {
+            res.writeHead(500);
+            res.end('Internal error');
+          }
         });
         return;
       }
 
       // SSE endpoint: per-flow events
-      if (req.url?.startsWith('/auth/flow/') && req.url.endsWith('/events') && req.method === 'GET') {
-        const flowId = decodeURIComponent(req.url.slice('/auth/flow/'.length, -'/events'.length));
+      if (
+        req.url?.startsWith('/auth/flow/') &&
+        req.url.endsWith('/events') &&
+        req.method === 'GET'
+      ) {
+        const flowId = decodeURIComponent(
+          req.url.slice('/auth/flow/'.length, -'/events'.length),
+        );
         const ctx = this.sessionContexts.get(scope);
         if (ctx) {
           ctx.statusRegistry.handleSSE(flowId, req, res);
@@ -648,75 +747,95 @@ export class CredentialProxy {
       );
       upstream.on('error', (err) => {
         logger.error({ err, url: req.url }, 'HTTP proxy upstream error');
-        if (!res.headersSent) { res.writeHead(502); res.end('Bad Gateway'); }
+        if (!res.headersSent) {
+          res.writeHead(502);
+          res.end('Bad Gateway');
+        }
       });
       req.pipe(upstream);
     });
 
     // CONNECT handler: standard HTTPS proxy with MITM for registered hosts.
-    httpServer.on('connect', (req: IncomingMessage, clientSocket: Socket, head: Buffer) => {
-      const scope = this.validateCaller(clientSocket.remoteAddress);
-      if (!scope) {
-        logger.warn(
-          { remoteIP: normalizeIP(clientSocket.remoteAddress || ''), target: req.url },
-          'Rejecting CONNECT from unknown container IP',
-        );
-        clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-        clientSocket.destroy();
-        return;
-      }
+    httpServer.on(
+      'connect',
+      (req: IncomingMessage, clientSocket: Socket, head: Buffer) => {
+        const scope = this.validateCaller(clientSocket.remoteAddress);
+        if (!scope) {
+          logger.warn(
+            {
+              remoteIP: normalizeIP(clientSocket.remoteAddress || ''),
+              target: req.url,
+            },
+            'Rejecting CONNECT from unknown container IP',
+          );
+          clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+          clientSocket.destroy();
+          return;
+        }
 
-      const [targetHost, targetPortStr] = (req.url || '').split(':');
-      const targetPort = parseInt(targetPortStr || '443');
+        const [targetHost, targetPortStr] = (req.url || '').split(':');
+        const targetPort = parseInt(targetPortStr || '443');
 
-      // Stage 1: check handler rules + tap filter
-      const tapResolver = this._tapFilter?.(targetHost, scope) ?? null;
-      const shouldMitm = this.shouldIntercept(targetHost) || tapResolver !== null;
-      // Stage 2 (tapResolver) is passed to emitMitmConnection below
+        // Stage 1: check handler rules + tap filter
+        const tapResolver = this._tapFilter?.(targetHost, scope) ?? null;
+        const shouldMitm =
+          this.shouldIntercept(targetHost) || tapResolver !== null;
+        // Stage 2 (tapResolver) is passed to emitMitmConnection below
 
-      if (!this._mitmCtx || !shouldMitm) {
-        // No MITM — plain TCP tunnel (no header inspection or modification)
-        const upstream = netConnect(targetPort, targetHost, () => {
-          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-          if (head.length) upstream.write(head);
-          clientSocket.pipe(upstream);
-          upstream.pipe(clientSocket);
+        if (!this._mitmCtx || !shouldMitm) {
+          // No MITM — plain TCP tunnel (no header inspection or modification)
+          const upstream = netConnect(targetPort, targetHost, () => {
+            clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            if (head.length) upstream.write(head);
+            clientSocket.pipe(upstream);
+            upstream.pipe(clientSocket);
+          });
+          upstream.on('error', (err) => {
+            logger.debug({ err, host: targetHost }, 'CONNECT tunnel error');
+            clientSocket.destroy();
+          });
+          clientSocket.on('error', () => upstream.destroy());
+          return;
+        }
+
+        // MITM: TLS-terminate, dispatch per-request via shared mitmDispatcher
+        const hostCert = this._mitmCtx.getHostCert(targetHost);
+        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+
+        const tlsSocket = new TLSSocket(clientSocket, {
+          isServer: true,
+          key: hostCert.keyPem,
+          cert: hostCert.certPem,
         });
-        upstream.on('error', (err) => {
-          logger.debug({ err, host: targetHost }, 'CONNECT tunnel error');
+
+        if (head.length) clientSocket.unshift(head);
+
+        tlsSocket.on('error', (err) => {
+          logger.debug({ err, hostname: targetHost }, 'CONNECT TLS error');
           clientSocket.destroy();
         });
-        clientSocket.on('error', () => upstream.destroy());
-        return;
-      }
 
-      // MITM: TLS-terminate, dispatch per-request via shared mitmDispatcher
-      const hostCert = this._mitmCtx.getHostCert(targetHost);
-      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-
-      const tlsSocket = new TLSSocket(clientSocket, {
-        isServer: true,
-        key: hostCert.keyPem,
-        cert: hostCert.certPem,
-      });
-
-      if (head.length) clientSocket.unshift(head);
-
-      tlsSocket.on('error', (err) => {
-        logger.debug({ err, hostname: targetHost }, 'CONNECT TLS error');
-        clientSocket.destroy();
-      });
-
-      const sourceIP = normalizeIP(clientSocket.remoteAddress || '');
-      // Stage 2: pass tapResolver to emitMitmConnection for per-connection callback
-      this.emitMitmConnection(tlsSocket, targetHost, targetPort, scope, sourceIP, tapResolver);
-    });
+        const sourceIP = normalizeIP(clientSocket.remoteAddress || '');
+        // Stage 2: pass tapResolver to emitMitmConnection for per-connection callback
+        this.emitMitmConnection(
+          tlsSocket,
+          targetHost,
+          targetPort,
+          scope,
+          sourceIP,
+          tapResolver,
+        );
+      },
+    );
 
     return new Promise((resolve, reject) => {
       if (!enableTransparent) {
         httpServer.listen(port, bindHost, () => {
           const hosts = [...this.anchorRules.keys()];
-          logger.info({ port, host: bindHost, interceptHosts: hosts }, 'Credential proxy started');
+          logger.info(
+            { port, host: bindHost, interceptHosts: hosts },
+            'Credential proxy started',
+          );
           resolve(httpServer);
         });
         httpServer.on('error', reject);
@@ -735,7 +854,14 @@ export class CredentialProxy {
         },
         resolveScope: (ip) => this.resolveScope(ip),
         emitMitmConnection: (s, h, p, sc, ip, tapResolver) =>
-          this.emitMitmConnection(s, h, p, sc, ip, tapResolver as ProxyTapResolver | undefined),
+          this.emitMitmConnection(
+            s,
+            h,
+            p,
+            sc,
+            ip,
+            tapResolver as ProxyTapResolver | undefined,
+          ),
       });
 
       server.listen(port, bindHost, () => {
@@ -765,6 +891,9 @@ export function setProxyInstance(proxy: CredentialProxy): void {
  * Modules that can't receive the instance via parameters use this.
  */
 export function getProxy(): CredentialProxy {
-  if (!_instance) throw new Error('CredentialProxy not initialized — call setProxyInstance() first');
+  if (!_instance)
+    throw new Error(
+      'CredentialProxy not initialized — call setProxyInstance() first',
+    );
   return _instance;
 }

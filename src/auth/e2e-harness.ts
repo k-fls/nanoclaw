@@ -15,9 +15,19 @@ import os from 'os';
 import path from 'path';
 import forge from 'node-forge';
 
-import { CredentialProxy, setUpstreamAgent, setProxyInstance } from '../credential-proxy.js';
-import { setTestUpstreamAgent, setTokenFetch } from './universal-oauth-handler.js';
-import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
+import {
+  CredentialProxy,
+  setUpstreamAgent,
+  setProxyInstance,
+} from '../credential-proxy.js';
+import {
+  setTestUpstreamAgent,
+  setTokenFetch,
+} from './universal-oauth-handler.js';
+import {
+  TokenSubstituteEngine,
+  PersistentTokenResolver,
+} from './token-substitute.js';
 import { setTokenEngine } from './registry.js';
 import { createHandler } from './universal-oauth-handler.js';
 import { FlowQueue } from './flow-queue.js';
@@ -37,7 +47,10 @@ import {
 } from '../container-runner.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from '../config.js';
-import { resolveGroupFolderPath, resolveGroupIpcPath } from '../group-folder.js';
+import {
+  resolveGroupFolderPath,
+  resolveGroupIpcPath,
+} from '../group-folder.js';
 import { initCredentialStore } from './store.js';
 
 // ---------------------------------------------------------------------------
@@ -53,7 +66,11 @@ export interface RecordedRequest {
 
 export interface MockRoute {
   pathPattern: RegExp;
-  respond: (req: RecordedRequest) => { status: number; body: string; headers?: Record<string, string> };
+  respond: (req: RecordedRequest) => {
+    status: number;
+    body: string;
+    headers?: Record<string, string>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +139,9 @@ export class MockUpstream {
           'content-type': 'application/json',
           ...resp.headers,
         });
-        res.end(typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body));
+        res.end(
+          typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body),
+        );
       } else {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{"ok":true}');
@@ -183,7 +202,10 @@ export function detectProxyBind(): string {
     if (ipv4) return ipv4.address;
   }
   try {
-    const out = execSync('ip addr show docker0', { encoding: 'utf-8', timeout: 3000 });
+    const out = execSync('ip addr show docker0', {
+      encoding: 'utf-8',
+      timeout: 3000,
+    });
     const m = out.match(/inet (\d+\.\d+\.\d+\.\d+)/);
     if (m) return m[1];
   } catch {}
@@ -192,7 +214,10 @@ export function detectProxyBind(): string {
 
 export function isDockerAvailable(): boolean {
   try {
-    execSync(`${CONTAINER_RUNTIME_BIN} info`, { stdio: 'pipe', timeout: 10_000 });
+    execSync(`${CONTAINER_RUNTIME_BIN} info`, {
+      stdio: 'pipe',
+      timeout: 10_000,
+    });
     return true;
   } catch {
     return false;
@@ -254,7 +279,9 @@ export class OAuthE2EHarness {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     const mockBase = `https://${this.mockUpstream.host}:${this.mockUpstream.port}`;
     setTokenFetch((input, init) => {
-      const url = new URL(typeof input === 'string' ? input : (input as Request).url);
+      const url = new URL(
+        typeof input === 'string' ? input : (input as Request).url,
+      );
       return fetch(`${mockBase}${url.pathname}${url.search}`, init);
     });
 
@@ -313,7 +340,12 @@ export class OAuthE2EHarness {
       const mockHost = this.mockUpstream.host;
       const mockPort = () => this.mockUpstream.port;
       const wrappedHandler: import('../credential-proxy.js').HostHandler = (
-        clientReq, clientRes, targetHost, targetPort, scope, sourceIP,
+        clientReq,
+        clientRes,
+        targetHost,
+        targetPort,
+        scope,
+        sourceIP,
       ) => {
         // Patch clientReq.url preservation: the handler builds redirect URLs
         // from targetHost. We need the redirect to use the original hostname
@@ -334,12 +366,20 @@ export class OAuthE2EHarness {
           }
           return origWriteHead(code, ...args);
         }) as typeof clientRes.writeHead;
-        return realHandler(clientReq, clientRes, mockHost, mockPort(), scope, sourceIP);
+        return realHandler(
+          clientReq,
+          clientRes,
+          mockHost,
+          mockPort(),
+          scope,
+          sourceIP,
+        );
       };
 
       this.proxy.registerAnchoredRule(
         rule.anchor,
-        rule.hostPattern ?? new RegExp(`^${rule.anchor.replace(/\./g, '\\.')}$`),
+        rule.hostPattern ??
+          new RegExp(`^${rule.anchor.replace(/\./g, '\\.')}$`),
         rule.pathPattern,
         wrappedHandler,
       );
@@ -375,7 +415,10 @@ export class OAuthE2EHarness {
       config,
       role,
     );
-    if (!substitute) throw new Error(`Failed to generate substitute for ${realToken.slice(0, 10)}...`);
+    if (!substitute)
+      throw new Error(
+        `Failed to generate substitute for ${realToken.slice(0, 10)}...`,
+      );
     return substitute;
   }
 
@@ -402,12 +445,20 @@ export class OAuthE2EHarness {
     // Use the real container setup from container-runner.ts
     const volumeMounts = buildVolumeMounts(group, false);
     const containerName = `nanoclaw-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const containerArgs = buildContainerArgs(volumeMounts, containerName, group, this.tokenEngine);
+    const containerArgs = buildContainerArgs(
+      volumeMounts,
+      containerName,
+      group,
+      this.tokenEngine,
+    );
 
     // Override PROXY_PORT — buildContainerArgs uses CREDENTIAL_PROXY_PORT from config
     // but our test proxy is on a dynamic port.
     for (let i = 0; i < containerArgs.length; i++) {
-      if (containerArgs[i] === '-e' && containerArgs[i + 1]?.startsWith('PROXY_PORT=')) {
+      if (
+        containerArgs[i] === '-e' &&
+        containerArgs[i + 1]?.startsWith('PROXY_PORT=')
+      ) {
         containerArgs[i + 1] = `PROXY_PORT=${this.proxyPort}`;
       }
     }
@@ -422,11 +473,12 @@ export class OAuthE2EHarness {
     const runId = crypto.randomUUID().replace(/-/g, '');
     const marker = `__E2E_${runId}__`;
     const testScript = path.join(this.tmpDir, `e2e-index-${runId}.js`);
-    fs.writeFileSync(testScript,
+    fs.writeFileSync(
+      testScript,
       `process.stdout.write(${JSON.stringify(marker + '\n')});\n` +
-      `const { execSync } = require('child_process');\n` +
-      `try { execSync(${JSON.stringify(command)}, { stdio: 'inherit', shell: '/bin/bash' }); }\n` +
-      `catch (e) { process.exit(e.status || 1); }\n`,
+        `const { execSync } = require('child_process');\n` +
+        `try { execSync(${JSON.stringify(command)}, { stdio: 'inherit', shell: '/bin/bash' }); }\n` +
+        `catch (e) { process.exit(e.status || 1); }\n`,
     );
 
     // No-op tsc shim — entrypoint calls `npx tsc --outDir /tmp/dist` which
@@ -435,9 +487,13 @@ export class OAuthE2EHarness {
     fs.writeFileSync(noopTsc, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
     const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
-    containerArgs.splice(imageIdx, 0,
-      '-v', `${testScript}:/tmp/dist/index.js`,
-      '-v', `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
+    containerArgs.splice(
+      imageIdx,
+      0,
+      '-v',
+      `${testScript}:/tmp/dist/index.js`,
+      '-v',
+      `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
     );
 
     // Inject extra env vars from test
@@ -475,7 +531,9 @@ export class OAuthE2EHarness {
 
       const timer = setTimeout(() => {
         try {
-          execSync(`${CONTAINER_RUNTIME_BIN} rm -f ${containerName}`, { stdio: 'pipe' });
+          execSync(`${CONTAINER_RUNTIME_BIN} rm -f ${containerName}`, {
+            stdio: 'pipe',
+          });
         } catch {}
         proc.kill('SIGKILL');
       }, timeoutMs);
@@ -485,9 +543,10 @@ export class OAuthE2EHarness {
         if (containerIP) this.proxy.unregisterContainerIP(containerIP);
         // Extract only test output — everything after the UUID marker
         const markerIdx = stdout.indexOf(marker);
-        const cleanStdout = markerIdx >= 0
-          ? stdout.slice(markerIdx + marker.length + 1)  // +1 for \n
-          : stdout;
+        const cleanStdout =
+          markerIdx >= 0
+            ? stdout.slice(markerIdx + marker.length + 1) // +1 for \n
+            : stdout;
         resolve({ exitCode: code ?? 1, stdout: cleanStdout, stderr });
       });
       proc.on('error', (err) => {
@@ -503,7 +562,9 @@ export class OAuthE2EHarness {
    * Uses the real GROUPS_DIR so buildVolumeMounts resolves paths correctly.
    * Returns a RegisteredGroup-compatible object.
    */
-  private ensureGroupFolder(scope: string): import('../types.js').RegisteredGroup {
+  private ensureGroupFolder(
+    scope: string,
+  ): import('../types.js').RegisteredGroup {
     const groupDir = resolveGroupFolderPath(scope);
     fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
     // Minimal CLAUDE.md so the container has a valid group folder
@@ -522,8 +583,18 @@ export class OAuthE2EHarness {
     fs.mkdirSync(sessionsDir, { recursive: true });
 
     // Agent-runner src — copy from container/agent-runner/src if not present
-    const agentRunnerDst = path.join(DATA_DIR, 'sessions', scope, 'agent-runner-src');
-    const agentRunnerSrc = path.join(process.cwd(), 'container', 'agent-runner', 'src');
+    const agentRunnerDst = path.join(
+      DATA_DIR,
+      'sessions',
+      scope,
+      'agent-runner-src',
+    );
+    const agentRunnerSrc = path.join(
+      process.cwd(),
+      'container',
+      'agent-runner',
+      'src',
+    );
     if (!fs.existsSync(agentRunnerDst) && fs.existsSync(agentRunnerSrc)) {
       fs.cpSync(agentRunnerSrc, agentRunnerDst, { recursive: true });
     }

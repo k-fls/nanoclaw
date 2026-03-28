@@ -10,8 +10,12 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
   const chat = {
     sent: [] as string[],
     replies: [] as string[],
-    async send(text: string) { chat.sent.push(text); },
-    async sendRaw(text: string) { chat.sent.push(text); },
+    async send(text: string) {
+      chat.sent.push(text);
+    },
+    async sendRaw(text: string) {
+      chat.sent.push(text);
+    },
     async receive(_timeoutMs?: number): Promise<string | null> {
       return chat.replies.shift() ?? null;
     },
@@ -20,15 +24,13 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
   return chat;
 }
 
-function entry(
-  providerId: string,
-  deliveryFn?: DeliveryFn | null,
-): FlowEntry {
+function entry(providerId: string, deliveryFn?: DeliveryFn | null): FlowEntry {
   return {
     flowId: `${providerId}:12345`,
     providerId,
     url: `https://example.com/auth?provider=${providerId}`,
-    deliveryFn: deliveryFn === undefined ? vi.fn(async () => ({ ok: true })) : deliveryFn,
+    deliveryFn:
+      deliveryFn === undefined ? vi.fn(async () => ({ ok: true })) : deliveryFn,
   };
 }
 
@@ -64,7 +66,10 @@ describe('processFlow', () => {
   it('handles delivery failure', async () => {
     const chat = mockChat();
     chat.replies.push('CODE');
-    const deliveryFn = vi.fn(async () => ({ ok: false, error: 'ECONNREFUSED' }));
+    const deliveryFn = vi.fn(async () => ({
+      ok: false,
+      error: 'ECONNREFUSED',
+    }));
     const reg = new FlowStatusRegistry();
     const e = entry('github', deliveryFn);
 
@@ -119,7 +124,9 @@ describe('processFlow', () => {
       const mutex = new AsyncMutex();
       const chat = mockChat();
       chat.replies.push('CODE');
-      const deliveryFn = vi.fn(async () => { throw new Error('boom'); });
+      const deliveryFn = vi.fn(async () => {
+        throw new Error('boom');
+      });
       const reg = new FlowStatusRegistry();
       const e = entry('github', deliveryFn);
 

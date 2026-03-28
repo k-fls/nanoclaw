@@ -6,7 +6,12 @@ import { exec, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { CONTAINER_IMAGE, DATA_DIR, IDLE_TIMEOUT, TIMEZONE } from '../config.js';
+import {
+  CONTAINER_IMAGE,
+  DATA_DIR,
+  IDLE_TIMEOUT,
+  TIMEZONE,
+} from '../config.js';
 import { CONTAINER_RUNTIME_BIN, stopContainer } from '../container-runtime.js';
 import { logger } from '../logger.js';
 import type { ExecHandle } from './types.js';
@@ -21,7 +26,12 @@ export interface ExecContainerOpts {
 // Auth shim: writes URL to file so detectCodeDelivery can poll it.
 // Agent containers use a different shim (container/shims/xdg-open) that POSTs
 // to the credential proxy's browser-open endpoint for the flow queue path.
-const XDG_OPEN_SHIM = path.join(process.cwd(), 'container', 'shims', 'xdg-open-auth');
+const XDG_OPEN_SHIM = path.join(
+  process.cwd(),
+  'container',
+  'shims',
+  'xdg-open-auth',
+);
 
 /**
  * Spawn a command inside a nanoclaw-agent container.
@@ -81,7 +91,12 @@ export function execInContainer(
   // Provider-specific mounts
   for (const [hostPath, containerPath, mode] of opts.mounts ?? []) {
     if (fs.existsSync(hostPath)) {
-      args.push('-v', mode ? `${hostPath}:${containerPath}:${mode}` : `${hostPath}:${containerPath}`);
+      args.push(
+        '-v',
+        mode
+          ? `${hostPath}:${containerPath}:${mode}`
+          : `${hostPath}:${containerPath}`,
+      );
     }
   }
 
@@ -113,10 +128,16 @@ export function execInContainer(
 
   const effectiveTimeout = opts.timeoutMs ?? IDLE_TIMEOUT;
   const killTimer = setTimeout(() => {
-    logger.warn({ containerName, timeoutMs: effectiveTimeout }, 'Auth container timeout, stopping gracefully');
+    logger.warn(
+      { containerName, timeoutMs: effectiveTimeout },
+      'Auth container timeout, stopping gracefully',
+    );
     exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
       if (err) {
-        logger.warn({ containerName, err }, 'Graceful stop failed, force killing');
+        logger.warn(
+          { containerName, err },
+          'Graceful stop failed, force killing',
+        );
         proc.kill('SIGKILL');
       }
     });
@@ -125,7 +146,11 @@ export function execInContainer(
   proc.on('close', () => clearTimeout(killTimer));
 
   // Cache the wait promise so multiple calls don't hang
-  let waitPromise: Promise<{ exitCode: number; stdout: string; stderr: string }> | null = null;
+  let waitPromise: Promise<{
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+  }> | null = null;
 
   return {
     onStdout(cb: (chunk: string) => void): void {

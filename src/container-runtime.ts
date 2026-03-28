@@ -41,10 +41,15 @@ function detectProxyBindHost(): string {
   }
 
   try {
-    const out = execSync('ip addr show docker0', { encoding: 'utf-8', timeout: 3000 });
+    const out = execSync('ip addr show docker0', {
+      encoding: 'utf-8',
+      timeout: 3000,
+    });
     const m = out.match(/inet (\d+\.\d+\.\d+\.\d+)/);
     if (m) return m[1];
-  } catch { /* docker0 not found */ }
+  } catch {
+    /* docker0 not found */
+  }
 
   return '127.0.0.1';
 }

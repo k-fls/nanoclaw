@@ -50,8 +50,10 @@ const TEST_PROVIDER: OAuthProvider = {
 
 const SCOPE = 'e2e-test';
 // Must be long enough for format-preserving substitution (>= 14 prefix + 16 random)
-const REAL_ACCESS_TOKEN = 'sk-ant-api03-realAccessTokenForE2ETesting1234567890abcdef';
-const REAL_REFRESH_TOKEN = 'sk-ant-ort01-realRefreshTokenE2ETesting1234567890abcdef';
+const REAL_ACCESS_TOKEN =
+  'sk-ant-api03-realAccessTokenForE2ETesting1234567890abcdef';
+const REAL_REFRESH_TOKEN =
+  'sk-ant-ort01-realRefreshTokenE2ETesting1234567890abcdef';
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -79,19 +81,27 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
   // ── 1. Bearer-swap: substitute → real → upstream ─────────────────
 
   it('bearer-swap swaps substitute token for real token', async () => {
-    const substitute = h.storeToken(REAL_ACCESS_TOKEN, 'test-claude', SCOPE, TEST_SUBSTITUTE_CONFIG);
+    const substitute = h.storeToken(
+      REAL_ACCESS_TOKEN,
+      'test-claude',
+      SCOPE,
+      TEST_SUBSTITUTE_CONFIG,
+    );
 
     // Default mock response: 200 OK
     h.mockUpstream.addRoute({
       pathPattern: /^\/v1\/messages/,
-      respond: () => ({ status: 200, body: '{"id":"msg_ok","content":"hello"}' }),
+      respond: () => ({
+        status: 200,
+        body: '{"id":"msg_ok","content":"hello"}',
+      }),
     });
 
     const result = await h.runInContainer(
       `curl -s -o /dev/stdout -w '\\n%{http_code}' ` +
-      `-H "Authorization: Bearer ${substitute}" ` +
-      `-H "Content-Type: application/json" ` +
-      `https://api.anthropic.com/v1/messages`,
+        `-H "Authorization: Bearer ${substitute}" ` +
+        `-H "Content-Type: application/json" ` +
+        `https://api.anthropic.com/v1/messages`,
       { scope: SCOPE },
     );
 
@@ -112,8 +122,19 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
   // ── 2. Bearer-swap 401 → refresh → 307 → retry ──────────────────
 
   it('bearer-swap refreshes on 401 and retries via 307', async () => {
-    const substitute = h.storeToken(REAL_ACCESS_TOKEN, 'test-claude', SCOPE, TEST_SUBSTITUTE_CONFIG);
-    h.storeToken(REAL_REFRESH_TOKEN, 'test-claude', SCOPE, TEST_SUBSTITUTE_CONFIG, 'refresh');
+    const substitute = h.storeToken(
+      REAL_ACCESS_TOKEN,
+      'test-claude',
+      SCOPE,
+      TEST_SUBSTITUTE_CONFIG,
+    );
+    h.storeToken(
+      REAL_REFRESH_TOKEN,
+      'test-claude',
+      SCOPE,
+      TEST_SUBSTITUTE_CONFIG,
+      'refresh',
+    );
 
     const NEW_ACCESS = 'sk-ant-api03-freshAccessTokenAfterRefresh1234567890xyz';
     let callCount = 0;
@@ -158,9 +179,9 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
     // curl -L follows 307 redirects (same host, so auth header preserved)
     const result = await h.runInContainer(
       `curl -s -L -o /dev/stdout -w '\\n%{http_code}' ` +
-      `-H "Authorization: Bearer ${substitute}" ` +
-      `-H "Content-Type: application/json" ` +
-      `https://api.anthropic.com/v1/messages`,
+        `-H "Authorization: Bearer ${substitute}" ` +
+        `-H "Content-Type: application/json" ` +
+        `https://api.anthropic.com/v1/messages`,
       { scope: SCOPE },
     );
 
@@ -181,8 +202,19 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
   // ── 2b. Same as above but POST — 307 must preserve method and body ─
 
   it('bearer-swap 307 preserves POST method and body', async () => {
-    const substitute = h.storeToken(REAL_ACCESS_TOKEN, 'test-claude', SCOPE, TEST_SUBSTITUTE_CONFIG);
-    h.storeToken(REAL_REFRESH_TOKEN, 'test-claude', SCOPE, TEST_SUBSTITUTE_CONFIG, 'refresh');
+    const substitute = h.storeToken(
+      REAL_ACCESS_TOKEN,
+      'test-claude',
+      SCOPE,
+      TEST_SUBSTITUTE_CONFIG,
+    );
+    h.storeToken(
+      REAL_REFRESH_TOKEN,
+      'test-claude',
+      SCOPE,
+      TEST_SUBSTITUTE_CONFIG,
+      'refresh',
+    );
 
     const NEW_ACCESS = 'sk-ant-api03-freshAccessTokenAfterRefresh1234567890xyz';
     let callCount = 0;
@@ -206,7 +238,10 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
         const body = JSON.parse(req.body);
         expect(body.model).toBe('claude-sonnet-4-20250514');
         expect(body.messages[0].content).toBe('hello');
-        return { status: 200, body: '{"id":"msg_ok","content":"post-refreshed"}' };
+        return {
+          status: 200,
+          body: '{"id":"msg_ok","content":"post-refreshed"}',
+        };
       },
     });
 
@@ -214,7 +249,10 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
       pathPattern: /^\/v1\/oauth\/token/,
       respond: () => ({
         status: 200,
-        body: JSON.stringify({ access_token: NEW_ACCESS, refresh_token: REAL_REFRESH_TOKEN }),
+        body: JSON.stringify({
+          access_token: NEW_ACCESS,
+          refresh_token: REAL_REFRESH_TOKEN,
+        }),
       }),
     });
 
@@ -226,10 +264,10 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
 
     const result = await h.runInContainer(
       `curl -s -L -X POST -o /dev/stdout -w '\\n%{http_code}' ` +
-      `-H "Authorization: Bearer ${substitute}" ` +
-      `-H "Content-Type: application/json" ` +
-      `-d '${postBody}' ` +
-      `https://api.anthropic.com/v1/messages`,
+        `-H "Authorization: Bearer ${substitute}" ` +
+        `-H "Content-Type: application/json" ` +
+        `-d '${postBody}' ` +
+        `https://api.anthropic.com/v1/messages`,
       { scope: SCOPE },
     );
 
@@ -246,7 +284,12 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
   // ── 3. Bearer-swap 401 → refresh fails → error forwarded ────────
 
   it('returns error to container when bearer-swap gets 401', async () => {
-    const substitute = h.storeToken(REAL_ACCESS_TOKEN, 'test-claude', SCOPE, TEST_SUBSTITUTE_CONFIG);
+    const substitute = h.storeToken(
+      REAL_ACCESS_TOKEN,
+      'test-claude',
+      SCOPE,
+      TEST_SUBSTITUTE_CONFIG,
+    );
 
     h.mockUpstream.addRoute({
       pathPattern: /^\/v1\/messages/,
@@ -262,8 +305,8 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
 
     const result = await h.runInContainer(
       `curl -s -w '\\n%{http_code}' https://api.anthropic.com/v1/messages ` +
-      `-H "Authorization: Bearer ${substitute}" ` +
-      `-H "Content-Type: application/json"`,
+        `-H "Authorization: Bearer ${substitute}" ` +
+        `-H "Content-Type: application/json"`,
       { scope: SCOPE },
     );
 
@@ -283,10 +326,17 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
   // ── 4. Token-exchange: substitute refresh → real → new substitutes ─
 
   it('token-exchange swaps refresh tokens both directions', async () => {
-    const subRefresh = h.storeToken(REAL_REFRESH_TOKEN, 'test-claude', SCOPE, TEST_SUBSTITUTE_CONFIG, 'refresh');
+    const subRefresh = h.storeToken(
+      REAL_REFRESH_TOKEN,
+      'test-claude',
+      SCOPE,
+      TEST_SUBSTITUTE_CONFIG,
+      'refresh',
+    );
 
     const NEW_ACCESS = 'sk-ant-api03-brandNewAccessFromTokenExchange1234567890';
-    const NEW_REFRESH = 'sk-ant-ort01-brandNewRefreshFromTokenExchange123456789';
+    const NEW_REFRESH =
+      'sk-ant-ort01-brandNewRefreshFromTokenExchange123456789';
 
     h.mockUpstream.addRoute({
       pathPattern: /^\/v1\/oauth\/token/,
@@ -307,8 +357,8 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
 
     const result = await h.runInContainer(
       `curl -s -X POST https://platform.claude.com/v1/oauth/token ` +
-      `-H "Content-Type: application/json" ` +
-      `-d '${JSON.stringify({ grant_type: 'refresh_token', refresh_token: subRefresh })}'`,
+        `-H "Content-Type: application/json" ` +
+        `-d '${JSON.stringify({ grant_type: 'refresh_token', refresh_token: subRefresh })}'`,
       { scope: SCOPE },
     );
 
@@ -329,7 +379,10 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
   // ── 5. Browser-open: known OAuth URL → queue push ────────────────
 
   it('xdg-open shim pushes known OAuth URL to flow queue', async () => {
-    h.registerAuthPattern(/^https:\/\/accounts\.google\.com\/o\/oauth2/, 'google');
+    h.registerAuthPattern(
+      /^https:\/\/accounts\.google\.com\/o\/oauth2/,
+      'google',
+    );
 
     const result = await h.runInContainer(
       `xdg-open "https://accounts.google.com/o/oauth2/v2/auth?client_id=foo&redirect_uri=http%3A%2F%2Flocalhost%3A9999"`,
@@ -361,7 +414,12 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
   // ── 7. Scope isolation ───────────────────────────────────────────
 
   it('tokens from scope A are not resolvable from scope B', async () => {
-    const substitute = h.storeToken(REAL_ACCESS_TOKEN, 'test-claude', 'group-a', TEST_SUBSTITUTE_CONFIG);
+    const substitute = h.storeToken(
+      REAL_ACCESS_TOKEN,
+      'test-claude',
+      'group-a',
+      TEST_SUBSTITUTE_CONFIG,
+    );
 
     // Track what the mock sees
     let receivedAuth = '';
@@ -376,8 +434,8 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
     // Run container as scope group-b, using group-a's substitute
     const result = await h.runInContainer(
       `curl -s -o /dev/stdout -w '\\n%{http_code}' ` +
-      `-H "Authorization: Bearer ${substitute}" ` +
-      `https://api.anthropic.com/v1/messages`,
+        `-H "Authorization: Bearer ${substitute}" ` +
+        `https://api.anthropic.com/v1/messages`,
       { scope: 'group-b' },
     );
 
@@ -395,21 +453,31 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
     const os = await import('os');
     const { createTapFilter } = await import('../proxy-tap-logger.js');
 
-    const substitute = h.storeToken(REAL_ACCESS_TOKEN, 'test-claude', SCOPE, TEST_SUBSTITUTE_CONFIG);
+    const substitute = h.storeToken(
+      REAL_ACCESS_TOKEN,
+      'test-claude',
+      SCOPE,
+      TEST_SUBSTITUTE_CONFIG,
+    );
 
     // Set up JSONL tap logger to a temp file
     const logFile = path.join(os.tmpdir(), `tap-e2e-${Date.now()}.jsonl`);
-    h.proxy.setTapFilter(createTapFilter(/anthropic/, /\/v1\/messages/, logFile));
+    h.proxy.setTapFilter(
+      createTapFilter(/anthropic/, /\/v1\/messages/, logFile),
+    );
 
     h.mockUpstream.addRoute({
       pathPattern: /^\/v1\/messages/,
-      respond: () => ({ status: 200, body: '{"id":"msg_tap","content":"tapped"}' }),
+      respond: () => ({
+        status: 200,
+        body: '{"id":"msg_tap","content":"tapped"}',
+      }),
     });
 
     await h.runInContainer(
       `curl -s -H "Authorization: Bearer ${substitute}" ` +
-      `-H "Content-Type: application/json" ` +
-      `https://api.anthropic.com/v1/messages`,
+        `-H "Content-Type: application/json" ` +
+        `https://api.anthropic.com/v1/messages`,
       { scope: SCOPE },
     );
 

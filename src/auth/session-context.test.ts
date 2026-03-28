@@ -21,7 +21,12 @@ describe('createSessionContext', () => {
 
     // Push a flow entry — mutation callback should forward to status registry
     ctx.flowQueue.push(
-      { flowId: 'flow-1', providerId: 'claude', url: 'https://example.com', deliveryFn: null },
+      {
+        flowId: 'flow-1',
+        providerId: 'claude',
+        url: 'https://example.com',
+        deliveryFn: null,
+      },
       'test push',
     );
 

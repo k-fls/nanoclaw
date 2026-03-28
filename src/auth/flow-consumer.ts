@@ -52,12 +52,17 @@ export async function processFlow(
     await chatLock.acquire();
   }
   try {
-    statusRegistry.emit(entry.flowId, entry.providerId, 'active', 'presenting to user');
+    statusRegistry.emit(
+      entry.flowId,
+      entry.providerId,
+      'active',
+      'presenting to user',
+    );
 
     await chat.send(
       `${FLOW_PREFIX}*${entry.providerId}* needs authentication.\n` +
-      `Please open this URL and complete the flow:\n${entry.url}\n\n` +
-      `Reply with the auth code when done, or "cancel" to skip.`,
+        `Please open this URL and complete the flow:\n${entry.url}\n\n` +
+        `Reply with the auth code when done, or "cancel" to skip.`,
     );
 
     // Await user reply — respect AbortSignal for cancellation
@@ -65,12 +70,22 @@ export async function processFlow(
     const reply = await chat.receive(timeoutMs);
 
     if (signal?.aborted) {
-      statusRegistry.emit(entry.flowId, entry.providerId, 'failed', 'consumer cancelled (container exited)');
+      statusRegistry.emit(
+        entry.flowId,
+        entry.providerId,
+        'failed',
+        'consumer cancelled (container exited)',
+      );
       return;
     }
 
     if (!reply || reply.trim().toLowerCase() === 'cancel') {
-      statusRegistry.emit(entry.flowId, entry.providerId, 'failed', 'user cancelled');
+      statusRegistry.emit(
+        entry.flowId,
+        entry.providerId,
+        'failed',
+        'user cancelled',
+      );
       logger.info({ flowId: entry.flowId }, 'Flow cancelled by user');
       return;
     }
@@ -80,16 +95,33 @@ export async function processFlow(
     if (!entry.deliveryFn) {
       // Non-localhost redirect — no callback port. The user completed auth
       // in their browser; we collected the reply but can't deliver it.
-      statusRegistry.emit(entry.flowId, entry.providerId, 'completed', 'user confirmed (no callback delivery)');
-      await chat.send(`${FLOW_PREFIX}Authentication for *${entry.providerId}* noted. The OAuth provider should handle the redirect directly.`);
-      logger.info({ flowId: entry.flowId }, 'Flow completed (no deliveryFn, non-localhost redirect)');
+      statusRegistry.emit(
+        entry.flowId,
+        entry.providerId,
+        'completed',
+        'user confirmed (no callback delivery)',
+      );
+      await chat.send(
+        `${FLOW_PREFIX}Authentication for *${entry.providerId}* noted. The OAuth provider should handle the redirect directly.`,
+      );
+      logger.info(
+        { flowId: entry.flowId },
+        'Flow completed (no deliveryFn, non-localhost redirect)',
+      );
     } else {
       // Deliver — deliveryFn must catch dead-target errors internally
       const result = await entry.deliveryFn(reply.trim());
 
       if (result.ok) {
-        statusRegistry.emit(entry.flowId, entry.providerId, 'completed', 'callback delivered successfully');
-        await chat.send(`${FLOW_PREFIX}Authentication for *${entry.providerId}* completed.`);
+        statusRegistry.emit(
+          entry.flowId,
+          entry.providerId,
+          'completed',
+          'callback delivered successfully',
+        );
+        await chat.send(
+          `${FLOW_PREFIX}Authentication for *${entry.providerId}* completed.`,
+        );
         logger.info({ flowId: entry.flowId }, 'Flow completed successfully');
       } else {
         statusRegistry.emit(
@@ -98,8 +130,13 @@ export async function processFlow(
           'failed',
           `delivery failed: ${result.error ?? 'unknown'}`,
         );
-        await chat.send(`${FLOW_PREFIX}Authentication for *${entry.providerId}* failed: ${result.error ?? 'delivery error'}`);
-        logger.warn({ flowId: entry.flowId, error: result.error }, 'Flow delivery failed');
+        await chat.send(
+          `${FLOW_PREFIX}Authentication for *${entry.providerId}* failed: ${result.error ?? 'delivery error'}`,
+        );
+        logger.warn(
+          { flowId: entry.flowId, error: result.error },
+          'Flow delivery failed',
+        );
       }
     }
   } catch (err) {

@@ -93,7 +93,12 @@ vi.mock('child_process', async () => {
         return new EventEmitter();
       },
     ),
-    execFileSync: vi.fn(() => ''),
+    execFileSync: vi.fn((_bin: string, args?: string[]) => {
+      const fmt = args?.[2] ?? '';
+      if (fmt.includes('State.Status')) return 'running';
+      if (fmt.includes('IPAddress')) return '172.17.0.2';
+      return '';
+    }),
   };
 });
 
@@ -143,6 +148,9 @@ describe('container-runner timeout behavior', () => {
       onOutput,
     );
 
+    // Let IP retry loop resolve (first retry at 500ms)
+    await vi.advanceTimersByTimeAsync(600);
+
     // Emit output with a result
     emitOutputMarker(fakeProc, {
       status: 'success',
@@ -181,6 +189,9 @@ describe('container-runner timeout behavior', () => {
       onOutput,
     );
 
+    // Let IP retry loop resolve
+    await vi.advanceTimersByTimeAsync(600);
+
     // No output emitted — fire the hard timeout
     await vi.advanceTimersByTimeAsync(1830000);
 
@@ -205,6 +216,9 @@ describe('container-runner timeout behavior', () => {
       mockEngine,
       onOutput,
     );
+
+    // Let IP retry loop resolve
+    await vi.advanceTimersByTimeAsync(600);
 
     // Emit output
     emitOutputMarker(fakeProc, {

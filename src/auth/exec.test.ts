@@ -93,7 +93,12 @@ describe('exec helpers', () => {
         stopContainer: vi.fn(() => 'docker stop'),
       }));
       vi.doMock('../logger.js', () => ({
-        logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        logger: {
+          debug: vi.fn(),
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+        },
       }));
 
       const { ensureClaudeConfigStub: ensure, CLAUDE_CONFIG_STUB: stubPath } =
@@ -117,7 +122,12 @@ describe('exec helpers', () => {
         stopContainer: vi.fn(() => 'docker stop'),
       }));
       vi.doMock('../logger.js', () => ({
-        logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        logger: {
+          debug: vi.fn(),
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+        },
       }));
 
       const { ensureClaudeConfigStub: ensure, CLAUDE_CONFIG_STUB: stubPath } =

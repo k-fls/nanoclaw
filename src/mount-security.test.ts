@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────
 
-const { mockExistsSync, mockReadFileSync, mockRealpathSync } = vi.hoisted(() => ({
-  mockExistsSync: vi.fn() as ReturnType<typeof vi.fn>,
-  mockReadFileSync: vi.fn() as ReturnType<typeof vi.fn>,
-  mockRealpathSync: vi.fn() as ReturnType<typeof vi.fn>,
-}));
+const { mockExistsSync, mockReadFileSync, mockRealpathSync } = vi.hoisted(
+  () => ({
+    mockExistsSync: vi.fn() as ReturnType<typeof vi.fn>,
+    mockReadFileSync: vi.fn() as ReturnType<typeof vi.fn>,
+    mockRealpathSync: vi.fn() as ReturnType<typeof vi.fn>,
+  }),
+);
 
 vi.mock('fs', () => ({
   default: {
@@ -35,8 +37,16 @@ const ALLOWLIST_PATH = '/mock/mount-allowlist.json';
 
 const VALID_ALLOWLIST = {
   allowedRoots: [
-    { path: '/allowed/rw', allowReadWrite: true, description: 'Read-write root' },
-    { path: '/allowed/ro', allowReadWrite: false, description: 'Read-only root' },
+    {
+      path: '/allowed/rw',
+      allowReadWrite: true,
+      description: 'Read-write root',
+    },
+    {
+      path: '/allowed/ro',
+      allowReadWrite: false,
+      description: 'Read-only root',
+    },
   ],
   blockedPatterns: ['custom-blocked'],
   nonMainReadOnly: true,
@@ -80,44 +90,52 @@ describe('mount-security', () => {
 
     it('returns null when allowedRoots is not an array', async () => {
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        allowedRoots: 'not-array',
-        blockedPatterns: [],
-        nonMainReadOnly: true,
-      }));
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          allowedRoots: 'not-array',
+          blockedPatterns: [],
+          nonMainReadOnly: true,
+        }),
+      );
       const { loadMountAllowlist } = await import('./mount-security.js');
       expect(loadMountAllowlist()).toBeNull();
     });
 
     it('returns null when blockedPatterns is not an array', async () => {
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        allowedRoots: [],
-        blockedPatterns: 'not-array',
-        nonMainReadOnly: true,
-      }));
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          allowedRoots: [],
+          blockedPatterns: 'not-array',
+          nonMainReadOnly: true,
+        }),
+      );
       const { loadMountAllowlist } = await import('./mount-security.js');
       expect(loadMountAllowlist()).toBeNull();
     });
 
     it('returns null when nonMainReadOnly is not a boolean', async () => {
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        allowedRoots: [],
-        blockedPatterns: [],
-        nonMainReadOnly: 'yes',
-      }));
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          allowedRoots: [],
+          blockedPatterns: [],
+          nonMainReadOnly: 'yes',
+        }),
+      );
       const { loadMountAllowlist } = await import('./mount-security.js');
       expect(loadMountAllowlist()).toBeNull();
     });
 
     it('merges default blocked patterns with user patterns', async () => {
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        allowedRoots: [],
-        blockedPatterns: ['my-custom'],
-        nonMainReadOnly: false,
-      }));
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          allowedRoots: [],
+          blockedPatterns: ['my-custom'],
+          nonMainReadOnly: false,
+        }),
+      );
       const { loadMountAllowlist } = await import('./mount-security.js');
       const result = loadMountAllowlist();
       expect(result).not.toBeNull();
@@ -136,24 +154,30 @@ describe('mount-security', () => {
 
     it('deduplicates when user pattern overlaps with defaults', async () => {
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        allowedRoots: [],
-        blockedPatterns: ['.ssh', '.ssh', 'extra'],
-        nonMainReadOnly: false,
-      }));
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          allowedRoots: [],
+          blockedPatterns: ['.ssh', '.ssh', 'extra'],
+          nonMainReadOnly: false,
+        }),
+      );
       const { loadMountAllowlist } = await import('./mount-security.js');
       const result = loadMountAllowlist()!;
-      const sshCount = result.blockedPatterns.filter((p) => p === '.ssh').length;
+      const sshCount = result.blockedPatterns.filter(
+        (p) => p === '.ssh',
+      ).length;
       expect(sshCount).toBe(1);
     });
 
     it('caches result — second call does not re-read file', async () => {
       mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        allowedRoots: [],
-        blockedPatterns: [],
-        nonMainReadOnly: true,
-      }));
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          allowedRoots: [],
+          blockedPatterns: [],
+          nonMainReadOnly: true,
+        }),
+      );
       const { loadMountAllowlist } = await import('./mount-security.js');
       const first = loadMountAllowlist();
       const second = loadMountAllowlist();
@@ -263,7 +287,10 @@ describe('mount-security', () => {
     it('rejects path matching custom blocked pattern', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount({ hostPath: '/allowed/rw/custom-blocked' }, true);
+      const result = validateMount(
+        { hostPath: '/allowed/rw/custom-blocked' },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('custom-blocked');
     });
@@ -272,7 +299,10 @@ describe('mount-security', () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
       // "credentials" is a default blocked pattern; "my-credentials-backup" contains it
-      const result = validateMount({ hostPath: '/allowed/rw/my-credentials-backup' }, true);
+      const result = validateMount(
+        { hostPath: '/allowed/rw/my-credentials-backup' },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('credentials');
     });
@@ -280,7 +310,10 @@ describe('mount-security', () => {
     it('rejects deeply nested blocked path', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount({ hostPath: '/allowed/rw/project/.env/config' }, true);
+      const result = validateMount(
+        { hostPath: '/allowed/rw/project/.env/config' },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.env');
     });
@@ -330,7 +363,10 @@ describe('mount-security', () => {
     it('defaults containerPath to basename of hostPath', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount({ hostPath: '/allowed/rw/deep/nested/proj' }, true);
+      const result = validateMount(
+        { hostPath: '/allowed/rw/deep/nested/proj' },
+        true,
+      );
       expect(result.allowed).toBe(true);
       expect(result.resolvedContainerPath).toBe('proj');
     });
@@ -458,10 +494,7 @@ describe('mount-security', () => {
       setupValidAllowlist();
       const { validateAdditionalMounts } = await import('./mount-security.js');
       const result = validateAdditionalMounts(
-        [
-          { hostPath: '/not-allowed/a' },
-          { hostPath: '/not-allowed/b' },
-        ],
+        [{ hostPath: '/not-allowed/a' }, { hostPath: '/not-allowed/b' }],
         'test-group',
         true,
       );

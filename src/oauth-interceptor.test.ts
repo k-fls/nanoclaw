@@ -1,11 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { replaceJsonStringValue, detectMode, OAuthProviderConfig } from './oauth-interceptor.js';
+import {
+  replaceJsonStringValue,
+  detectMode,
+  OAuthProviderConfig,
+} from './oauth-interceptor.js';
 
 describe('replaceJsonStringValue', () => {
   it('replaces a token value preserving field order and whitespace', () => {
-    const json = '{"access_token": "real-abc", "token_type": "Bearer", "refresh_token": "real-xyz", "expires_in": 3600}';
+    const json =
+      '{"access_token": "real-abc", "token_type": "Bearer", "refresh_token": "real-xyz", "expires_in": 3600}';
     const result = replaceJsonStringValue(json, 'access_token', 'sub-001');
-    expect(result).toBe('{"access_token": "sub-001", "token_type": "Bearer", "refresh_token": "real-xyz", "expires_in": 3600}');
+    expect(result).toBe(
+      '{"access_token": "sub-001", "token_type": "Bearer", "refresh_token": "real-xyz", "expires_in": 3600}',
+    );
   });
 
   it('replaces refresh_token without touching access_token', () => {
@@ -22,7 +29,11 @@ describe('replaceJsonStringValue', () => {
 
   it('escapes special characters in new value', () => {
     const json = '{"access_token":"old","other":"x"}';
-    const result = replaceJsonStringValue(json, 'access_token', 'has"quotes\nand\tnewlines');
+    const result = replaceJsonStringValue(
+      json,
+      'access_token',
+      'has"quotes\nand\tnewlines',
+    );
     expect(result).toContain('"has\\"quotes\\nand\\tnewlines"');
     // Parse to verify it's valid JSON
     const parsed = JSON.parse(result);
@@ -46,7 +57,9 @@ describe('replaceJsonStringValue', () => {
     const json = '{"access_token":"a1","refresh_token":"r1","expires_in":3600}';
     let result = replaceJsonStringValue(json, 'access_token', 'a2');
     result = replaceJsonStringValue(result, 'refresh_token', 'r2');
-    expect(result).toBe('{"access_token":"a2","refresh_token":"r2","expires_in":3600}');
+    expect(result).toBe(
+      '{"access_token":"a2","refresh_token":"r2","expires_in":3600}',
+    );
   });
 });
 
@@ -65,12 +78,18 @@ describe('detectMode', () => {
   });
 
   it('detects authorize-stub for authorize endpoint', () => {
-    const result = detectMode('accounts.google.com', '/o/oauth2/v2/auth?client_id=x', [provider]);
+    const result = detectMode(
+      'accounts.google.com',
+      '/o/oauth2/v2/auth?client_id=x',
+      [provider],
+    );
     expect(result).toEqual({ mode: 'authorize-stub', provider });
   });
 
   it('detects bearer-swap for protected API', () => {
-    const result = detectMode('www.googleapis.com', '/drive/v3/files', [provider]);
+    const result = detectMode('www.googleapis.com', '/drive/v3/files', [
+      provider,
+    ]);
     expect(result).toEqual({ mode: 'bearer-swap', provider });
   });
 
@@ -88,7 +107,12 @@ describe('detectMode', () => {
       protectedUrls: /^github\.com\/api\//,
       callbacks: {} as any,
     };
-    const result = detectMode('github.com', '/login/oauth/access_token', [githubProvider]);
-    expect(result).toEqual({ mode: 'token-exchange', provider: githubProvider });
+    const result = detectMode('github.com', '/login/oauth/access_token', [
+      githubProvider,
+    ]);
+    expect(result).toEqual({
+      mode: 'token-exchange',
+      provider: githubProvider,
+    });
   });
 });

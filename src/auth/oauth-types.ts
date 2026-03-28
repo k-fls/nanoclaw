@@ -121,7 +121,10 @@ export interface ProviderSubstitutes {
  * Checked on substitute resolution and refresh. If denied, the substitute is
  * revoked (on read) or promoted to own scope (on refresh).
  */
-export type ScopeAccessCheck = (groupScope: GroupScope, sourceScope: CredentialScope) => boolean;
+export type ScopeAccessCheck = (
+  groupScope: GroupScope,
+  sourceScope: CredentialScope,
+) => boolean;
 
 /**
  * Public return type of resolveSubstitute. Reconstructed from the engine's
@@ -143,9 +146,19 @@ export interface SubstituteMapping {
  */
 export interface TokenResolver {
   /** Store (or update) a real token. */
-  store(realToken: string, providerId: string, credentialScope: CredentialScope, role?: string, expiresTs?: number): void;
+  store(
+    realToken: string,
+    providerId: string,
+    credentialScope: CredentialScope,
+    role?: string,
+    expiresTs?: number,
+  ): void;
   /** Retrieve the current real token. Returns null if not found or revoked. */
-  resolve(credentialScope: CredentialScope, providerId: string, role: string): string | null;
+  resolve(
+    credentialScope: CredentialScope,
+    providerId: string,
+    role: string,
+  ): string | null;
   /** Remove all tokens for a scope (and optionally a provider). */
   revoke(credentialScope: CredentialScope, providerId?: string): void;
 }

@@ -15,7 +15,11 @@ import { gunzipSync } from 'zlib';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import type { InterceptRule, OAuthProvider, RefreshStrategy } from './oauth-types.js';
+import type {
+  InterceptRule,
+  OAuthProvider,
+  RefreshStrategy,
+} from './oauth-types.js';
 import type { GroupScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { HostHandler } from '../credential-proxy.js';
@@ -36,11 +40,15 @@ export { setUpstreamAgent } from '../credential-proxy.js';
  * On 401/403 with refresh failure, the bearer-swap handler calls this to
  * get the callback, then invokes it with the buffered upstream body.
  */
-type AuthErrorCallbackResolver = (scope: GroupScope) => AuthErrorCallback | null;
+type AuthErrorCallbackResolver = (
+  scope: GroupScope,
+) => AuthErrorCallback | null;
 
 let _authErrorResolver: AuthErrorCallbackResolver | null = null;
 
-export function setAuthErrorResolver(resolver: AuthErrorCallbackResolver): void {
+export function setAuthErrorResolver(
+  resolver: AuthErrorCallbackResolver,
+): void {
   _authErrorResolver = resolver;
 }
 
@@ -49,12 +57,20 @@ export function setAuthErrorResolver(resolver: AuthErrorCallbackResolver): void 
  * when the proxy intercepts a request to a known authorization endpoint.
  * The callback pushes to the session's flow queue.
  */
-type OAuthInitiationCallback = (authUrl: string, providerId: string, containerIP: string) => void;
-type OAuthInitiationResolver = (scope: GroupScope) => OAuthInitiationCallback | null;
+type OAuthInitiationCallback = (
+  authUrl: string,
+  providerId: string,
+  containerIP: string,
+) => void;
+type OAuthInitiationResolver = (
+  scope: GroupScope,
+) => OAuthInitiationCallback | null;
 
 let _oauthInitiationResolver: OAuthInitiationResolver | null = null;
 
-export function setOAuthInitiationResolver(resolver: OAuthInitiationResolver): void {
+export function setOAuthInitiationResolver(
+  resolver: OAuthInitiationResolver,
+): void {
   _oauthInitiationResolver = resolver;
 }
 
@@ -113,7 +129,7 @@ function findTokenEndpoint(provider: OAuthProvider): string | null {
   const pathSource = rule.pathPattern.source
     .replace(/^\^/, '')
     .replace(/\$$/, '')
-    .replace(/\\\//g, '/');  // unescape regex-escaped slashes
+    .replace(/\\\//g, '/'); // unescape regex-escaped slashes
   return `https://${rule.anchor}${pathSource}`;
 }
 
@@ -133,7 +149,11 @@ async function refreshViaTokenEndpoint(
   if (!tokenEndpoint) return false;
 
   // Read refresh token through engine (handles sourceScope indirection internally)
-  const realRefreshToken = tokenEngine.resolveRealToken(groupScope, provider.id, 'refresh');
+  const realRefreshToken = tokenEngine.resolveRealToken(
+    groupScope,
+    provider.id,
+    'refresh',
+  );
   if (!realRefreshToken) return false;
 
   try {
@@ -155,7 +175,7 @@ async function refreshViaTokenEndpoint(
       return false;
     }
 
-    const tokens = await response.json() as {
+    const tokens = (await response.json()) as {
       access_token?: string;
       refresh_token?: string;
       expires_in?: number;
@@ -167,16 +187,33 @@ async function refreshViaTokenEndpoint(
     const expiresTs = tokens.expires_in
       ? Date.now() + tokens.expires_in * 1000
       : 0;
-    tokenEngine.refreshCredential(groupScope, provider.id, 'access', tokens.access_token, expiresTs);
+    tokenEngine.refreshCredential(
+      groupScope,
+      provider.id,
+      'access',
+      tokens.access_token,
+      expiresTs,
+    );
 
     if (tokens.refresh_token) {
-      tokenEngine.refreshCredential(groupScope, provider.id, 'refresh', tokens.refresh_token);
+      tokenEngine.refreshCredential(
+        groupScope,
+        provider.id,
+        'refresh',
+        tokens.refresh_token,
+      );
     }
 
-    logger.info({ provider: provider.id, scope: groupScope }, 'Token refresh succeeded');
+    logger.info(
+      { provider: provider.id, scope: groupScope },
+      'Token refresh succeeded',
+    );
     return true;
   } catch (err) {
-    logger.warn({ err, provider: provider.id, scope: groupScope }, 'Token refresh failed');
+    logger.warn(
+      { err, provider: provider.id, scope: groupScope },
+      'Token refresh failed',
+    );
     return false;
   }
 }
@@ -208,7 +245,11 @@ const BUFFER_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
  * Must be called BEFORE clientRes.end() so the record exists when
  * the container surfaces the error in stdout.
  */
-function fireAuthErrorCb(scope: GroupScope, body: string, statusCode: number): void {
+function fireAuthErrorCb(
+  scope: GroupScope,
+  body: string,
+  statusCode: number,
+): void {
   const authErrorCb = _authErrorResolver?.(scope);
   if (authErrorCb) {
     try {
@@ -230,15 +271,30 @@ function sendUpstream(
   path: string,
   headers: HeaderMap,
   body: Buffer,
-): Promise<{ statusCode: number; headers: import('http').IncomingHttpHeaders; body: Buffer }> {
+): Promise<{
+  statusCode: number;
+  headers: import('http').IncomingHttpHeaders;
+  body: Buffer;
+}> {
   return new Promise((resolve, reject) => {
     const req = httpsRequest(
-      { hostname: targetHost, port: targetPort, path, method, headers, agent: _upstreamAgent } as RequestOptions,
+      {
+        hostname: targetHost,
+        port: targetPort,
+        path,
+        method,
+        headers,
+        agent: _upstreamAgent,
+      } as RequestOptions,
       async (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (c) => chunks.push(c));
         await new Promise<void>((r) => res.on('end', r));
-        resolve({ statusCode: res.statusCode!, headers: res.headers, body: Buffer.concat(chunks) });
+        resolve({
+          statusCode: res.statusCode!,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        });
       },
     );
     req.on('error', reject);
@@ -280,7 +336,10 @@ function createBearerSwapHandler(
     /** Pipe queued + future chunks to a writable. Ends it when source ends. */
     function pipeTo(dest: import('http').ClientRequest): void {
       for (const c of pending) dest.write(c);
-      if (ended) { dest.end(); return; }
+      if (ended) {
+        dest.end();
+        return;
+      }
       sink = (c) => dest.write(c);
       onEnd = () => dest.end();
     }
@@ -288,7 +347,9 @@ function createBearerSwapHandler(
     /** Wait for all data and return as a single Buffer. */
     function collect(): Promise<Buffer> {
       if (ended) return Promise.resolve(Buffer.concat(pending));
-      return new Promise<Buffer>((res) => { onEnd = () => res(Buffer.concat(pending)); });
+      return new Promise<Buffer>((res) => {
+        onEnd = () => res(Buffer.concat(pending));
+      });
     }
 
     const scopeAttrs = extractScopeAttrs(targetHost, rule);
@@ -299,7 +360,11 @@ function createBearerSwapHandler(
     const authHeader = headers['authorization'];
     if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
       substitutedToken = authHeader.slice(7);
-      const entry = tokenEngine.resolveWithRestriction(substitutedToken, groupScope, scopeAttrs);
+      const entry = tokenEngine.resolveWithRestriction(
+        substitutedToken,
+        groupScope,
+        scopeAttrs,
+      );
       if (entry) {
         headers['authorization'] = `Bearer ${entry.realToken}`;
       }
@@ -328,7 +393,9 @@ function createBearerSwapHandler(
           port: targetPort,
           path: clientReq.url,
           method: clientReq.method,
-          headers: reqBody ? { ...headers, 'content-length': reqBody.length } : headers,
+          headers: reqBody
+            ? { ...headers, 'content-length': reqBody.length }
+            : headers,
           agent: _upstreamAgent,
         } as RequestOptions,
         async (upRes) => {
@@ -344,7 +411,12 @@ function createBearerSwapHandler(
 
           // Auth error (401 only) — buffer upstream body, then attempt refresh
           logger.info(
-            { provider: provider.id, scope: groupScope, status: statusCode, strategy: effectiveStrategy },
+            {
+              provider: provider.id,
+              scope: groupScope,
+              status: statusCode,
+              strategy: effectiveStrategy,
+            },
             'Bearer-swap: auth error, attempting refresh',
           );
 
@@ -353,14 +425,24 @@ function createBearerSwapHandler(
           await new Promise<void>((r) => upRes.on('end', r));
           const upstreamBodyBuf = Buffer.concat(bodyChunks);
 
-          const refreshed = await tokenEngine.sharedOp(groupScope, provider.id, 'refresh', () =>
-            refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
+          const refreshed = await tokenEngine.sharedOp(
+            groupScope,
+            provider.id,
+            'refresh',
+            () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
           );
 
           // Decode body text for error callbacks (may be gzip-compressed)
-          const decodeBody = (buf: Buffer, headers: typeof upRes.headers): string => {
+          const decodeBody = (
+            buf: Buffer,
+            headers: typeof upRes.headers,
+          ): string => {
             if (headers['content-encoding'] === 'gzip') {
-              try { return gunzipSync(buf).toString(); } catch { /* fall through */ }
+              try {
+                return gunzipSync(buf).toString();
+              } catch {
+                /* fall through */
+              }
             }
             return buf.toString();
           };
@@ -368,7 +450,11 @@ function createBearerSwapHandler(
           // Forward a buffered upstream response with correct content-length.
           // Keep original encoding intact (don't decompress) — just fix the
           // transfer-encoding since we're sending the whole body at once.
-          const forwardBuffered = (status: number, rawHeaders: typeof upRes.headers, body: Buffer) => {
+          const forwardBuffered = (
+            status: number,
+            rawHeaders: typeof upRes.headers,
+            body: Buffer,
+          ) => {
             const h = { ...rawHeaders };
             delete h['transfer-encoding'];
             h['content-length'] = String(body.length);
@@ -377,7 +463,11 @@ function createBearerSwapHandler(
           };
 
           if (!refreshed) {
-            fireAuthErrorCb(groupScope, decodeBody(upstreamBodyBuf, upRes.headers), statusCode);
+            fireAuthErrorCb(
+              groupScope,
+              decodeBody(upstreamBodyBuf, upRes.headers),
+              statusCode,
+            );
             forwardBuffered(statusCode, upRes.headers, upstreamBodyBuf);
             resolve();
             return;
@@ -387,7 +477,10 @@ function createBearerSwapHandler(
           switch (effectiveStrategy) {
             case 'redirect': {
               const redirectUrl = `https://${targetHost}${clientReq.url}`;
-              clientRes.writeHead(307, { location: redirectUrl, 'content-length': '0' });
+              clientRes.writeHead(307, {
+                location: redirectUrl,
+                'content-length': '0',
+              });
               clientRes.end();
               resolve();
               break;
@@ -397,23 +490,39 @@ function createBearerSwapHandler(
               // Replay the original request with the refreshed real token
               try {
                 const freshEntry = substitutedToken
-                  ? tokenEngine.resolveWithRestriction(substitutedToken, groupScope, scopeAttrs)
+                  ? tokenEngine.resolveWithRestriction(
+                      substitutedToken,
+                      groupScope,
+                      scopeAttrs,
+                    )
                   : null;
                 const replayHeaders = { ...headers };
                 if (freshEntry) {
-                  replayHeaders['authorization'] = `Bearer ${freshEntry.realToken}`;
+                  replayHeaders['authorization'] =
+                    `Bearer ${freshEntry.realToken}`;
                 }
                 const replay = await sendUpstream(
-                  targetHost, targetPort, clientReq.method || 'GET',
-                  clientReq.url || '/', replayHeaders, reqBody!,
+                  targetHost,
+                  targetPort,
+                  clientReq.method || 'GET',
+                  clientReq.url || '/',
+                  replayHeaders,
+                  reqBody!,
                 );
                 // If replay also fails with auth error, record for the guard
                 if (replay.statusCode === 401 || replay.statusCode === 403) {
-                  fireAuthErrorCb(groupScope, decodeBody(replay.body, replay.headers), replay.statusCode);
+                  fireAuthErrorCb(
+                    groupScope,
+                    decodeBody(replay.body, replay.headers),
+                    replay.statusCode,
+                  );
                 }
                 forwardBuffered(replay.statusCode, replay.headers, replay.body);
               } catch (err) {
-                logger.error({ err, provider: provider.id }, 'Buffer replay failed');
+                logger.error(
+                  { err, provider: provider.id },
+                  'Buffer replay failed',
+                );
                 if (!clientRes.headersSent) {
                   clientRes.writeHead(502);
                   clientRes.end('Bad Gateway');
@@ -426,7 +535,11 @@ function createBearerSwapHandler(
             case 'passthrough': {
               // Forward the original 401 body. Token is already refreshed,
               // so the client's next request will succeed.
-              fireAuthErrorCb(groupScope, decodeBody(upstreamBodyBuf, upRes.headers), statusCode);
+              fireAuthErrorCb(
+                groupScope,
+                decodeBody(upstreamBodyBuf, upRes.headers),
+                statusCode,
+              );
               forwardBuffered(statusCode, upRes.headers, upstreamBodyBuf);
               resolve();
               break;
@@ -436,7 +549,10 @@ function createBearerSwapHandler(
       );
 
       upstream.on('error', (err) => {
-        logger.error({ err, host: targetHost, url: clientReq.url }, 'Bearer-swap upstream error');
+        logger.error(
+          { err, host: targetHost, url: clientReq.url },
+          'Bearer-swap upstream error',
+        );
         if (!clientRes.headersSent) {
           clientRes.writeHead(502);
           clientRes.end('Bad Gateway');
@@ -479,21 +595,35 @@ function createTokenExchangeHandler(
       targetPort,
       // Header injection: strip accept-encoding so upstream sends plaintext
       // (proxyBuffered does toString() which corrupts gzip binary)
-      (headers) => { delete headers['accept-encoding']; },
+      (headers) => {
+        delete headers['accept-encoding'];
+      },
       // Request transform: swap substitute refresh_token → real
       (body) => {
         try {
           const parsed = JSON.parse(body);
           if (parsed.grant_type === 'refresh_token' && parsed.refresh_token) {
-            const entry = tokenEngine.resolveSubstitute(parsed.refresh_token, groupScope);
+            const entry = tokenEngine.resolveSubstitute(
+              parsed.refresh_token,
+              groupScope,
+            );
             if (entry) {
-              return replaceJsonStringValue(body, 'refresh_token', entry.realToken);
+              return replaceJsonStringValue(
+                body,
+                'refresh_token',
+                entry.realToken,
+              );
             }
           }
-        } catch { /* not JSON — check form encoding */ }
+        } catch {
+          /* not JSON — check form encoding */
+        }
 
         // Form-encoded body
-        if (body.includes('grant_type=refresh_token') && body.includes('refresh_token=')) {
+        if (
+          body.includes('grant_type=refresh_token') &&
+          body.includes('refresh_token=')
+        ) {
           const params = new URLSearchParams(body);
           const subRefresh = params.get('refresh_token');
           if (subRefresh) {
@@ -543,13 +673,20 @@ function createTokenExchangeHandler(
               'refresh',
             );
             if (subRefresh) {
-              result = replaceJsonStringValue(result, 'refresh_token', subRefresh);
+              result = replaceJsonStringValue(
+                result,
+                'refresh_token',
+                subRefresh,
+              );
             }
           }
 
           return result;
         } catch (err) {
-          logger.error({ err, provider: provider.id }, 'Token-exchange: failed to process response');
+          logger.error(
+            { err, provider: provider.id },
+            'Token-exchange: failed to process response',
+          );
           return body;
         }
       },
@@ -585,17 +722,27 @@ function createAuthorizeStubHandler(
       // Return a stub response — don't forward to upstream.
       // The container's HTTP client gets a 200 with an explanation.
       clientRes.writeHead(200, { 'content-type': 'application/json' });
-      clientRes.end(JSON.stringify({
-        status: 'intercepted',
-        message: 'OAuth authorization URL intercepted by proxy and queued for user authentication',
-        url: authUrl,
-      }));
+      clientRes.end(
+        JSON.stringify({
+          status: 'intercepted',
+          message:
+            'OAuth authorization URL intercepted by proxy and queued for user authentication',
+          url: authUrl,
+        }),
+      );
       return;
     }
 
     // No session context — forward the authorize request (passthrough).
     const { proxyPipe } = await import('../credential-proxy.js');
-    proxyPipe(clientReq, clientRes, targetHost, targetPort, () => {}, groupScope);
+    proxyPipe(
+      clientReq,
+      clientRes,
+      targetHost,
+      targetPort,
+      () => {},
+      groupScope,
+    );
   };
 }
 
@@ -614,7 +761,12 @@ export function createHandler(
 ): HostHandler {
   switch (rule.mode) {
     case 'bearer-swap':
-      return createBearerSwapHandler(provider, rule, tokenEngine, refreshStrategy);
+      return createBearerSwapHandler(
+        provider,
+        rule,
+        tokenEngine,
+        refreshStrategy,
+      );
     case 'token-exchange':
       return createTokenExchangeHandler(provider, rule, tokenEngine);
     case 'authorize-stub':

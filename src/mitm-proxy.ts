@@ -12,10 +12,7 @@
  * The CA cert is persisted to disk so containers can trust it across restarts.
  */
 import { createServer, Server, IncomingMessage, ServerResponse } from 'http';
-import {
-  createServer as createTlsServer,
-  TlsOptions,
-} from 'tls';
+import { createServer as createTlsServer, TlsOptions } from 'tls';
 import { connect as netConnect, Socket } from 'net';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
@@ -104,7 +101,9 @@ function loadOrCreateCa(caDir: string): CaBundle {
   cert.serialNumber = '01';
   cert.validity.notBefore = new Date();
   cert.validity.notAfter = new Date();
-  cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 10);
+  cert.validity.notAfter.setFullYear(
+    cert.validity.notBefore.getFullYear() + 10,
+  );
 
   const attrs = [
     { name: 'commonName', value: 'NanoClaw MITM CA' },
@@ -225,7 +224,10 @@ export interface MitmContext {
  * Create a MITM context with CA and cert cache, without starting a server.
  * Used by credential-proxy.ts to handle transparent TLS connections.
  */
-export function createMitmContext(caDir?: string, certCacheSize = 100): MitmContext {
+export function createMitmContext(
+  caDir?: string,
+  certCacheSize = 100,
+): MitmContext {
   const ca = loadOrCreateCa(caDir || getDefaultCaDir());
   const certCache = new CertLruCache(certCacheSize);
 
@@ -235,7 +237,10 @@ export function createMitmContext(caDir?: string, certCacheSize = 100): MitmCont
       if (!cached) {
         cached = generateHostCert(hostname, ca);
         certCache.set(hostname, cached);
-        logger.debug({ hostname, cacheSize: certCache.size }, 'Generated host cert');
+        logger.debug(
+          { hostname, cacheSize: certCache.size },
+          'Generated host cert',
+        );
       }
       return cached;
     },
@@ -375,7 +380,10 @@ function forwardWithStaticRules(
     );
 
     upstream.on('error', (err) => {
-      logger.error({ err, host: targetHost, url: req.url }, 'MITM upstream error');
+      logger.error(
+        { err, host: targetHost, url: req.url },
+        'MITM upstream error',
+      );
       if (!res.headersSent) {
         res.writeHead(502);
         res.end('Bad Gateway');
@@ -410,25 +418,45 @@ async function handleRequest(
     if (mode) {
       switch (mode.mode) {
         case 'authorize-stub': {
-          const result = await handleAuthorizeStub(req, res, targetHost, mode.provider);
+          const result = await handleAuthorizeStub(
+            req,
+            res,
+            targetHost,
+            mode.provider,
+          );
           if (result === 'stub') return;
           // 'forward' — fall through to bearer-swap (passthrough)
           await handleBearerSwap(
-            req, res, targetHost, targetPort, mode.provider,
-            useTls, rejectUnauthorized,
+            req,
+            res,
+            targetHost,
+            targetPort,
+            mode.provider,
+            useTls,
+            rejectUnauthorized,
           );
           return;
         }
         case 'token-exchange':
           await handleTokenExchange(
-            req, res, targetHost, targetPort, mode.provider,
-            useTls, rejectUnauthorized,
+            req,
+            res,
+            targetHost,
+            targetPort,
+            mode.provider,
+            useTls,
+            rejectUnauthorized,
           );
           return;
         case 'bearer-swap':
           await handleBearerSwap(
-            req, res, targetHost, targetPort, mode.provider,
-            useTls, rejectUnauthorized,
+            req,
+            res,
+            targetHost,
+            targetPort,
+            mode.provider,
+            useTls,
+            rejectUnauthorized,
           );
           return;
       }
@@ -437,7 +465,15 @@ async function handleRequest(
 
   // Fall back to static rules
   const rules = staticRules.get(targetHost) || [];
-  forwardWithStaticRules(req, res, targetHost, targetPort, rules, useTls, rejectUnauthorized);
+  forwardWithStaticRules(
+    req,
+    res,
+    targetHost,
+    targetPort,
+    rules,
+    useTls,
+    rejectUnauthorized,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +496,10 @@ export function startMitmProxy(options: MitmProxyOptions): Promise<Server> {
     if (!cached) {
       cached = generateHostCert(hostname, ca);
       certCache.set(hostname, cached);
-      logger.debug({ hostname, cacheSize: certCache.size }, 'Generated host cert');
+      logger.debug(
+        { hostname, cacheSize: certCache.size },
+        'Generated host cert',
+      );
     }
     return cached;
   }
@@ -488,8 +527,14 @@ export function startMitmProxy(options: MitmProxyOptions): Promise<Server> {
       const targetPort = parseInt(targetUrl.port || '80');
       req.url = targetUrl.pathname + targetUrl.search;
       handleRequest(
-        req, res, targetHost, targetPort, false, rejectUpstream,
-        staticRules, oauthProviders,
+        req,
+        res,
+        targetHost,
+        targetPort,
+        false,
+        rejectUpstream,
+        staticRules,
+        oauthProviders,
       );
     });
 
@@ -527,8 +572,14 @@ export function startMitmProxy(options: MitmProxyOptions): Promise<Server> {
         const mitmServer = createTlsServer(tlsOptions, (tlsSocket) => {
           const innerServer = createServer((innerReq, innerRes) => {
             handleRequest(
-              innerReq, innerRes, targetHost, targetPort, true, rejectUpstream,
-              staticRules, oauthProviders,
+              innerReq,
+              innerRes,
+              targetHost,
+              targetPort,
+              true,
+              rejectUpstream,
+              staticRules,
+              oauthProviders,
             );
           });
           innerServer.emit('connection', tlsSocket);

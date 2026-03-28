@@ -373,7 +373,10 @@ export class GroupQueue {
           new Promise<void>((resolve) => {
             exec(stopContainer(name), { timeout: gracePeriodMs }, (err) => {
               if (err) {
-                logger.warn({ container: name, err }, 'Failed to stop container on shutdown');
+                logger.warn(
+                  { container: name, err },
+                  'Failed to stop container on shutdown',
+                );
               }
               resolve();
             });

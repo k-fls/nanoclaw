@@ -35,11 +35,13 @@ import { RegisteredGroup, scopeOf } from './types.js';
 /** Query a running container's status via docker inspect. */
 function getContainerStatus(containerName: string): string | null {
   try {
-    return execFileSync(
-      CONTAINER_RUNTIME_BIN,
-      ['inspect', '--format', '{{.State.Status}}', containerName],
-      { encoding: 'utf-8', timeout: 5000 },
-    ).trim() || null;
+    return (
+      execFileSync(
+        CONTAINER_RUNTIME_BIN,
+        ['inspect', '--format', '{{.State.Status}}', containerName],
+        { encoding: 'utf-8', timeout: 5000 },
+      ).trim() || null
+    );
   } catch {
     return null;
   }
@@ -50,7 +52,12 @@ export function getContainerIP(containerName: string): string | null {
   try {
     const ip = execFileSync(
       CONTAINER_RUNTIME_BIN,
-      ['inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', containerName],
+      [
+        'inspect',
+        '--format',
+        '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}',
+        containerName,
+      ],
       { encoding: 'utf-8', timeout: 5000 },
     ).trim();
     return ip || null;
@@ -234,7 +241,12 @@ export function buildVolumeMounts(
 
   // Mount tsconfig.json so the entrypoint can compile from /app (image root).
   // Only package*.json are COPY'd into the image; tsconfig.json is not.
-  const agentRunnerTsconfig = path.join(projectRoot, 'container', 'agent-runner', 'tsconfig.json');
+  const agentRunnerTsconfig = path.join(
+    projectRoot,
+    'container',
+    'agent-runner',
+    'tsconfig.json',
+  );
   if (fs.existsSync(agentRunnerTsconfig)) {
     mounts.push({
       hostPath: agentRunnerTsconfig,
@@ -289,7 +301,11 @@ export function buildVolumeMounts(
  * using the group's flags (useDefaultCredentials, isMain).
  * Providers handle writing any provider-specific files (e.g. .credentials.json).
  */
-function injectSubstituteCredentials(args: string[], group: RegisteredGroup, tokenEngine: TokenSubstituteEngine): void {
+function injectSubstituteCredentials(
+  args: string[],
+  group: RegisteredGroup,
+  tokenEngine: TokenSubstituteEngine,
+): void {
   for (const provider of getAllProviders()) {
     const { env } = provider.provision(group, tokenEngine);
     for (const [key, value] of Object.entries(env)) {
@@ -324,10 +340,15 @@ export function buildContainerArgs(
 
     // Mount MITM CA cert so system CA store trusts our forged certs
     const caCertPath = getMitmCaCertPath();
-    args.push('-v', `${caCertPath}:/usr/local/share/ca-certificates/nanoclaw-mitm.crt:ro`);
+    args.push(
+      '-v',
+      `${caCertPath}:/usr/local/share/ca-certificates/nanoclaw-mitm.crt:ro`,
+    );
     // Also set NODE_EXTRA_CA_CERTS for Node.js apps that don't use system store
-    args.push('-e', 'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/nanoclaw-mitm.crt');
-
+    args.push(
+      '-e',
+      'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/nanoclaw-mitm.crt',
+    );
   } else {
     // Non-transparent mode: containers use the proxy as a standard HTTPS proxy.
     // Set http_proxy/https_proxy so apps route traffic through the credential proxy,
@@ -390,7 +411,12 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group, tokenEngine);
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    group,
+    tokenEngine,
+  );
 
   logger.debug(
     {
@@ -427,7 +453,9 @@ export async function runContainerAgent(
   // Capture early stderr from Docker (e.g. mount errors, image not found)
   // before entering the IP-wait loop, so failures are not silently lost.
   let earlyStderr = '';
-  const earlyStderrHandler = (data: Buffer) => { earlyStderr += data.toString(); };
+  const earlyStderrHandler = (data: Buffer) => {
+    earlyStderr += data.toString();
+  };
   container.stderr.on('data', earlyStderrHandler);
 
   // Register this container's bridge IP so the credential proxy can
@@ -443,7 +471,11 @@ export async function runContainerAgent(
       const status = getContainerStatus(containerName);
       if (status) seenContainer = true;
       // If we previously saw the container but now it's gone/exited, stop retrying
-      if (seenContainer && (!status || status === 'exited' || status === 'dead')) return res();
+      if (
+        seenContainer &&
+        (!status || status === 'exited' || status === 'dead')
+      )
+        return res();
       if (status === 'running') {
         containerIP = getContainerIP(containerName);
         if (containerIP) return res();
@@ -457,16 +489,25 @@ export async function runContainerAgent(
   if (!containerIP) {
     const status = getContainerStatus(containerName);
     logger.error(
-      { group: group.name, containerName, status, earlyStderr: earlyStderr.trim() },
+      {
+        group: group.name,
+        containerName,
+        status,
+        earlyStderr: earlyStderr.trim(),
+      },
       'Could not determine container IP — killing container',
     );
     container.kill();
-    return { status: 'error', result: null, error: `Could not determine container IP (status: ${status}): ${earlyStderr.trim()}`, fatal: true };
+    return {
+      status: 'error',
+      result: null,
+      error: `Could not determine container IP (status: ${status}): ${earlyStderr.trim()}`,
+      fatal: true,
+    };
   }
   getProxy().registerContainerIP(containerIP, scopeOf(group));
 
   return new Promise((resolve) => {
-
     let stdout = '';
     let stderr = '';
     let stdoutTruncated = false;

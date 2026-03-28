@@ -20,7 +20,10 @@ import { PendingAuthErrors } from './pending-auth-errors.js';
  * and refresh fails. Receives the buffered upstream response body
  * so the callback can extract provider-specific data (e.g. request_id).
  */
-export type AuthErrorCallback = (responseBody: string, statusCode: number) => void;
+export type AuthErrorCallback = (
+  responseBody: string,
+  statusCode: number,
+) => void;
 
 // ── ContainerSessionContext ─────────────────────────────────────────
 

@@ -44,7 +44,9 @@ export interface RegisteredGroup {
 }
 
 /** Group's folder as a typed GroupScope for engine use. */
-export function scopeOf(group: RegisteredGroup): import('./auth/oauth-types.js').GroupScope {
+export function scopeOf(
+  group: RegisteredGroup,
+): import('./auth/oauth-types.js').GroupScope {
   return group.folder as unknown as import('./auth/oauth-types.js').GroupScope;
 }
 

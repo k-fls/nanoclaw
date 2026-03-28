@@ -15,7 +15,12 @@
  *   (c) URL matches authorizeEndpoint → authorize-stub
  *   (d) Fallback → bearer-swap
  */
-import { IncomingMessage, ServerResponse, request as httpRequest, RequestOptions } from 'http';
+import {
+  IncomingMessage,
+  ServerResponse,
+  request as httpRequest,
+  RequestOptions,
+} from 'http';
 import { request as httpsRequest } from 'https';
 
 import { logger } from './logger.js';
@@ -53,9 +58,10 @@ export interface StubResponse {
 
 export interface OAuthCallbacks {
   /** authorize-stub: authorize URL detected. Return stub response for the container. */
-  onAuthorize(params: AuthorizeParams): Promise<
-    | { action: 'forward' }
-    | { action: 'stub'; response: StubResponse }
+  onAuthorize(
+    params: AuthorizeParams,
+  ): Promise<
+    { action: 'forward' } | { action: 'stub'; response: StubResponse }
   >;
 
   /**
@@ -157,13 +163,20 @@ function serializeForm(fields: Array<[string, string]>): string {
 }
 
 /** Get a field value from ordered form fields. */
-function getField(fields: Array<[string, string]>, name: string): string | undefined {
+function getField(
+  fields: Array<[string, string]>,
+  name: string,
+): string | undefined {
   const entry = fields.find(([k]) => k === name);
   return entry?.[1];
 }
 
 /** Replace a field value in-place, preserving position. */
-function setField(fields: Array<[string, string]>, name: string, value: string): void {
+function setField(
+  fields: Array<[string, string]>,
+  name: string,
+  value: string,
+): void {
   const entry = fields.find(([k]) => k === name);
   if (entry) {
     entry[1] = value;
@@ -188,9 +201,7 @@ export function replaceJsonStringValue(
 ): string {
   // Match "key" : "value" with flexible whitespace
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(
-    `("${escaped}"\\s*:\\s*)"((?:[^"\\\\]|\\\\.)*)"`,
-  );
+  const re = new RegExp(`("${escaped}"\\s*:\\s*)"((?:[^"\\\\]|\\\\.)*)"`);
   const match = re.exec(json);
   if (!match) return json;
   // Escape the new value for JSON string context
@@ -296,7 +307,10 @@ export async function handleBearerSwap(
   );
 
   upstream.on('error', (err) => {
-    logger.error({ err, host: targetHost, url: req.url }, 'OAuth bearer-swap upstream error');
+    logger.error(
+      { err, host: targetHost, url: req.url },
+      'OAuth bearer-swap upstream error',
+    );
     if (!res.headersSent) {
       res.writeHead(502);
       res.end('Bad Gateway');
@@ -339,7 +353,8 @@ export async function handleTokenExchange(
     if (grantType === 'refresh_token') {
       const substituteRefresh = getField(fields, 'refresh_token');
       if (substituteRefresh) {
-        const realRefresh = await provider.callbacks.resolveRefreshToken(substituteRefresh);
+        const realRefresh =
+          await provider.callbacks.resolveRefreshToken(substituteRefresh);
         setField(fields, 'refresh_token', realRefresh);
         reqBody = serializeForm(fields);
       }
@@ -424,7 +439,10 @@ export async function handleTokenExchange(
     );
 
     upstream.on('error', (err) => {
-      logger.error({ err, host: targetHost, url: req.url }, 'OAuth token-exchange upstream error');
+      logger.error(
+        { err, host: targetHost, url: req.url },
+        'OAuth token-exchange upstream error',
+      );
       if (!res.headersSent) {
         res.writeHead(502);
         res.end('Bad Gateway');

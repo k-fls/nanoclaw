@@ -130,7 +130,10 @@ export function buildHostMatch(host: string): {
 }
 
 /** Build a path regex from a URL path string. */
-export function buildPathPattern(urlPath: string, prefixMatch: boolean): RegExp {
+export function buildPathPattern(
+  urlPath: string,
+  prefixMatch: boolean,
+): RegExp {
   // Replace placeholders with [^/]+ for matching
   PLACEHOLDER_RE.lastIndex = 0;
   const regexSource = urlPath
@@ -182,7 +185,10 @@ export function parseDiscoveryFile(
 ): OAuthProvider | null {
   // Must have at least token_endpoint or authorization_endpoint
   if (!data.token_endpoint && !data.authorization_endpoint) {
-    logger.debug({ id }, 'Discovery: skipping file (no token or authorization endpoint)');
+    logger.debug(
+      { id },
+      'Discovery: skipping file (no token or authorization endpoint)',
+    );
     return null;
   }
 
@@ -200,13 +206,19 @@ export function parseDiscoveryFile(
 
     const parsed = parseEndpointUrl(url);
     if (!parsed) {
-      logger.debug({ id, field: def.field, url }, 'Discovery: could not parse URL');
+      logger.debug(
+        { id, field: def.field, url },
+        'Discovery: could not parse URL',
+      );
       continue;
     }
 
     const hostMatch = buildHostMatch(parsed.host);
     if (!hostMatch) {
-      logger.debug({ id, host: parsed.host }, 'Discovery: skipping fully-templated host');
+      logger.debug(
+        { id, host: parsed.host },
+        'Discovery: skipping fully-templated host',
+      );
       continue;
     }
 
@@ -271,9 +283,12 @@ export function parseDiscoveryFile(
   let substituteConfig: SubstituteConfig = DEFAULT_SUBSTITUTE_CONFIG;
   if (data._token_format) {
     substituteConfig = {
-      prefixLen: data._token_format.prefixLen ?? DEFAULT_SUBSTITUTE_CONFIG.prefixLen,
-      suffixLen: data._token_format.suffixLen ?? DEFAULT_SUBSTITUTE_CONFIG.suffixLen,
-      delimiters: data._token_format.delimiters ?? DEFAULT_SUBSTITUTE_CONFIG.delimiters,
+      prefixLen:
+        data._token_format.prefixLen ?? DEFAULT_SUBSTITUTE_CONFIG.prefixLen,
+      suffixLen:
+        data._token_format.suffixLen ?? DEFAULT_SUBSTITUTE_CONFIG.suffixLen,
+      delimiters:
+        data._token_format.delimiters ?? DEFAULT_SUBSTITUTE_CONFIG.delimiters,
     };
   }
 

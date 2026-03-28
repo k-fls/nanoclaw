@@ -7,7 +7,13 @@ import { logger } from '../logger.js';
 import { getAllProviders } from './registry.js';
 import { execInContainer, authSessionDir } from './exec.js';
 import { asGroupScope } from './oauth-types.js';
-import type { AuthContext, AuthExecOpts, AuthOption, ChatIO, ExecHandle } from './types.js';
+import type {
+  AuthContext,
+  AuthExecOpts,
+  AuthOption,
+  ChatIO,
+  ExecHandle,
+} from './types.js';
 import { RESELECT } from './types.js';
 
 /** Prefix for all scripted reauth messages. */
@@ -40,7 +46,14 @@ export async function runReauth(
   // (e.g. missing prerequisite). The menu has Cancel + timeout to exit.
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const result = await showMenuAndRun(scope, chat, reason, allOptions, providerHint, engine);
+    const result = await showMenuAndRun(
+      scope,
+      chat,
+      reason,
+      allOptions,
+      providerHint,
+      engine,
+    );
     if (result === 'reselect') continue;
     return result;
   }
@@ -71,9 +84,10 @@ async function showMenuAndRun(
   const DELETE_CHOICE = 99;
   const CANCEL_CHOICE = allOptions.length + 1;
 
-  const scopeNote = scope === 'default'
-    ? '⚠️ This will change the *default* credentials used by all groups that don\'t have their own.'
-    : `Group: *${scope}*`;
+  const scopeNote =
+    scope === 'default'
+      ? "⚠️ This will change the *default* credentials used by all groups that don't have their own."
+      : `Group: *${scope}*`;
 
   await chat.send(
     [
@@ -84,9 +98,7 @@ async function showMenuAndRun(
       ``,
       `Choose an authentication method:`,
       ``,
-      ...optionBlocks.flatMap((block, i) =>
-        i === 0 ? [block] : ['', block],
-      ),
+      ...optionBlocks.flatMap((block, i) => (i === 0 ? [block] : ['', block])),
       ``,
       `_Scripted dialog — reply with a number only._`,
     ].join('\n'),
@@ -106,12 +118,19 @@ async function showMenuAndRun(
     for (const provider of providers) {
       engine.revokeByScope(asGroupScope(scope), provider.id);
     }
-    await chat.send(`${REAUTH_PREFIX} Credentials deleted for scope *${scope}*.`);
+    await chat.send(
+      `${REAUTH_PREFIX} Credentials deleted for scope *${scope}*.`,
+    );
     logger.info({ scope }, 'Credentials deleted via reauth menu');
     return false;
   }
 
-  if (isNaN(choice) || choice < 1 || choice > allOptions.length || choice === CANCEL_CHOICE) {
+  if (
+    isNaN(choice) ||
+    choice < 1 ||
+    choice > allOptions.length ||
+    choice === CANCEL_CHOICE
+  ) {
     await chat.send(`${REAUTH_PREFIX} Cancelled.`);
     return false;
   }
@@ -141,11 +160,10 @@ async function showMenuAndRun(
     }
 
     selected.provider.storeResult(scope, result, engine);
-    await chat.send(`${REAUTH_PREFIX} Credentials stored for ${selected.provider.displayName}.`);
-    logger.info(
-      { scope, provider: selected.provider.id },
-      'Reauth completed',
+    await chat.send(
+      `${REAUTH_PREFIX} Credentials stored for ${selected.provider.displayName}.`,
     );
+    logger.info({ scope, provider: selected.provider.id }, 'Reauth completed');
     return true;
   } catch (err) {
     // Advance cursor even on error to prevent message leakage
@@ -154,7 +172,9 @@ async function showMenuAndRun(
       { scope, provider: selected.provider.id, err },
       'Reauth flow error',
     );
-    await chat.send(`${REAUTH_PREFIX} Auth flow error: ${err instanceof Error ? err.message : String(err)}`);
+    await chat.send(
+      `${REAUTH_PREFIX} Auth flow error: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return false;
   }
 }

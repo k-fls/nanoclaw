@@ -11,16 +11,34 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { initCredentialStore, importEnvToDefault, createAuthGuard, registerBuiltinProviders, registerDiscoveryProviders, getTokenEngine } from './auth/index.js';
+import {
+  initCredentialStore,
+  importEnvToDefault,
+  createAuthGuard,
+  registerBuiltinProviders,
+  registerDiscoveryProviders,
+  getTokenEngine,
+} from './auth/index.js';
 import { createAccessCheck } from './auth/provision.js';
-import { claudeProvider, extractUpstreamRequestId } from './auth/providers/claude.js';
+import {
+  claudeProvider,
+  extractUpstreamRequestId,
+} from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
 import { AsyncMutex } from './auth/async-mutex.js';
 import { createSessionContext } from './auth/session-context.js';
 import { consumeFlows } from './auth/flow-consumer.js';
-import { setAuthErrorResolver, setOAuthInitiationResolver } from './auth/universal-oauth-handler.js';
+import {
+  setAuthErrorResolver,
+  setOAuthInitiationResolver,
+} from './auth/universal-oauth-handler.js';
 import { setBrowserOpenCallback } from './auth/browser-open-handler.js';
-import { CredentialProxy, setProxyInstance, getProxy, setProxyResponseHook } from './credential-proxy.js';
+import {
+  CredentialProxy,
+  setProxyInstance,
+  getProxy,
+  setProxyResponseHook,
+} from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -174,7 +192,8 @@ function createChatIO(channel: Channel, chatJid: string): ChatIO {
     async receive(timeoutMs = 120_000): Promise<string | null> {
       const start = Date.now();
       const cursor = getMessagesSince(chatJid, '', ASSISTANT_NAME);
-      const lastTs = cursor.length > 0 ? cursor[cursor.length - 1].timestamp : '';
+      const lastTs =
+        cursor.length > 0 ? cursor[cursor.length - 1].timestamp : '';
       while (Date.now() - start < timeoutMs) {
         await new Promise((r) => setTimeout(r, 2000));
         const newer = getMessagesSince(chatJid, lastTs, ASSISTANT_NAME);
@@ -249,7 +268,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // If reauth failed, advance cursor so trigger messages don't re-trigger
   if (!credentialsOk) {
-    lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+    lastAgentTimestamp[chatJid] =
+      missedMessages[missedMessages.length - 1].timestamp;
     saveState();
     return true;
   }
@@ -457,7 +477,10 @@ async function runAgent(
     return { status: 'success' };
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
-    return { status: 'error', error: err instanceof Error ? err.message : String(err) };
+    return {
+      status: 'error',
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -607,19 +630,21 @@ async function main(): Promise<void> {
   // Wire token engine with group resolver and access check.
   // Must happen after providers are registered and before any provision calls.
   {
-    const engine = tokenEngine = getTokenEngine();
+    const engine = (tokenEngine = getTokenEngine());
     engine.setGroupResolver((folder) => {
       for (const g of Object.values(registeredGroups)) {
         if (g.folder === folder) return g;
       }
       return undefined;
     });
-    engine.setAccessCheck(createAccessCheck((folder) => {
-      for (const g of Object.values(registeredGroups)) {
-        if (g.folder === folder) return g;
-      }
-      return undefined;
-    }));
+    engine.setAccessCheck(
+      createAccessCheck((folder) => {
+        for (const g of Object.values(registeredGroups)) {
+          if (g.folder === folder) return g;
+        }
+        return undefined;
+      }),
+    );
   }
 
   // Import .env credentials after engine is ready (migration runs inside getTokenEngine)
@@ -657,21 +682,28 @@ async function main(): Promise<void> {
       if (redirectUri) {
         const redirectUrl = new URL(redirectUri);
         const host = redirectUrl.hostname;
-        isLocalhost = host === 'localhost'
-          || host === '127.0.0.1'
-          || host === '[::1]'
-          || host === '::1';
+        isLocalhost =
+          host === 'localhost' ||
+          host === '127.0.0.1' ||
+          host === '[::1]' ||
+          host === '::1';
         if (isLocalhost) {
           callbackPort = parseInt(redirectUrl.port, 10) || null;
           callbackPath = redirectUrl.pathname || '/callback';
         }
       }
       const state = parsed.searchParams.get('state') || url;
-      const stateHash = crypto.createHash('sha256')
-        .update(state).digest('base64url').slice(0, 8);
+      const stateHash = crypto
+        .createHash('sha256')
+        .update(state)
+        .digest('base64url')
+        .slice(0, 8);
       flowId = `${providerId}:${callbackPort || 0}:${stateHash}`;
     } catch (err) {
-      logger.warn({ err, providerId, url }, 'Failed to parse OAuth URL for flowId');
+      logger.warn(
+        { err, providerId, url },
+        'Failed to parse OAuth URL for flowId',
+      );
       flowId = `${providerId}:0:${Date.now()}`;
     }
 
@@ -689,14 +721,19 @@ async function main(): Promise<void> {
         const host = ip.includes(':') ? `[${ip}]` : ip;
         const callbackUrl = `http://${host}:${port}${cbPath}?code=${code}`;
         try {
-          const res = await fetch(callbackUrl, { signal: AbortSignal.timeout(10_000) });
+          const res = await fetch(callbackUrl, {
+            signal: AbortSignal.timeout(10_000),
+          });
           if (res.ok) {
             return { ok: true };
           }
           return { ok: false, error: `callback returned ${res.status}` };
         } catch (err) {
           // ECONNREFUSED, timeout, etc — container may be dead
-          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
         }
       };
     }
@@ -710,20 +747,37 @@ async function main(): Promise<void> {
     const ctx = proxy.getSessionContext(eventScope);
     if (!ctx) return null;
     return (authUrl: string, providerId: string, containerIP: string) => {
-      pushOAuthFlow(ctx, authUrl, containerIP, providerId, 'proxy intercepted authorization endpoint');
+      pushOAuthFlow(
+        ctx,
+        authUrl,
+        containerIP,
+        providerId,
+        'proxy intercepted authorization endpoint',
+      );
     };
   });
 
   // Wire browser-open callback: xdg-open shim pushes to session's flow queue.
   // Returns flowId so the handler can include it in the HTTP response to the shim.
-  setBrowserOpenCallback(({ url, scope: eventScope, containerIP, providerId }) => {
-    const ctx = proxy.getSessionContext(eventScope);
-    if (!ctx) {
-      logger.warn({ scope: eventScope }, 'browser-open: no session context for scope');
-      return null;
-    }
-    return pushOAuthFlow(ctx, url, containerIP, providerId, 'xdg-open shim detected OAuth URL');
-  });
+  setBrowserOpenCallback(
+    ({ url, scope: eventScope, containerIP, providerId }) => {
+      const ctx = proxy.getSessionContext(eventScope);
+      if (!ctx) {
+        logger.warn(
+          { scope: eventScope },
+          'browser-open: no session context for scope',
+        );
+        return null;
+      }
+      return pushOAuthFlow(
+        ctx,
+        url,
+        containerIP,
+        providerId,
+        'xdg-open shim detected OAuth URL',
+      );
+    },
+  );
 
   initDatabase();
   logger.info('Database initialized');
@@ -731,12 +785,20 @@ async function main(): Promise<void> {
 
   // Register additional Claude hosts from ANTHROPIC_BASE_URL if configured
   {
-    const envVars = await import('./env.js').then(m => m.readEnvFile(['ANTHROPIC_BASE_URL']));
+    const envVars = await import('./env.js').then((m) =>
+      m.readEnvFile(['ANTHROPIC_BASE_URL']),
+    );
     if (envVars.ANTHROPIC_BASE_URL) {
-      const { registerClaudeBaseUrl } = await import('./auth/providers/claude.js');
-      const { createHandler } = await import('./auth/universal-oauth-handler.js');
+      const { registerClaudeBaseUrl } =
+        await import('./auth/providers/claude.js');
+      const { createHandler } =
+        await import('./auth/universal-oauth-handler.js');
       const { getTokenEngine } = await import('./auth/registry.js');
-      registerClaudeBaseUrl(envVars.ANTHROPIC_BASE_URL, getTokenEngine(), createHandler);
+      registerClaudeBaseUrl(
+        envVars.ANTHROPIC_BASE_URL,
+        getTokenEngine(),
+        createHandler,
+      );
     }
   }
 

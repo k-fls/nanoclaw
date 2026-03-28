@@ -35,12 +35,19 @@ export interface CredentialProvider {
    * Returns substitutes only — never real tokens. The engine resolves
    * credential source scopes internally using the group's flags.
    */
-  provision(group: import('../types.js').RegisteredGroup, tokenEngine: import('./token-substitute.js').TokenSubstituteEngine): {
+  provision(
+    group: import('../types.js').RegisteredGroup,
+    tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
+  ): {
     env: Record<string, string>;
   };
 
   /** After flow completes, parse raw result and save via token engine. */
-  storeResult(scope: string, result: FlowResult, tokenEngine: import('./token-substitute.js').TokenSubstituteEngine): void;
+  storeResult(
+    scope: string,
+    result: FlowResult,
+    tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
+  ): void;
 
   /** Auth options for the reauth menu. */
   authOptions(scope: string): AuthOption[];
@@ -50,7 +57,10 @@ export interface CredentialProvider {
    * Each provider reads its own keys from .env and writes to the resolver.
    * Called once at startup for the 'default' scope.
    */
-  importEnv?(scope: string, resolver: import('./oauth-types.js').TokenResolver): void;
+  importEnv?(
+    scope: string,
+    resolver: import('./oauth-types.js').TokenResolver,
+  ): void;
 }
 
 /** A single auth method offered by a provider. */

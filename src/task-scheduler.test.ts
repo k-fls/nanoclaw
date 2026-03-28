@@ -215,7 +215,13 @@ describe('task scheduler', () => {
     });
 
     mockRunContainerAgent.mockImplementation(
-      async (_group: unknown, _input: unknown, _onProc: unknown, _engine: unknown, onOutput?: (o: unknown) => Promise<void>) => {
+      async (
+        _group: unknown,
+        _input: unknown,
+        _onProc: unknown,
+        _engine: unknown,
+        onOutput?: (o: unknown) => Promise<void>,
+      ) => {
         if (onOutput) {
           await onOutput({ status: 'success', result: 'task completed' });
         }
@@ -316,7 +322,13 @@ describe('task scheduler', () => {
     });
 
     mockRunContainerAgent.mockImplementation(
-      async (_group: unknown, _input: unknown, _onProc: unknown, _engine: unknown, onOutput?: (o: unknown) => Promise<void>) => {
+      async (
+        _group: unknown,
+        _input: unknown,
+        _onProc: unknown,
+        _engine: unknown,
+        onOutput?: (o: unknown) => Promise<void>,
+      ) => {
         // Simulate streaming: callback fires before resolve
         if (onOutput) {
           await onOutput({ status: 'success', result: 'streamed result' });

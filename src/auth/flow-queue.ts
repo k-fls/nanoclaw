@@ -69,14 +69,21 @@ export class FlowQueue {
    */
   push(entry: FlowEntry, reason: string): void {
     // Dedup by provider
-    const idx = this.entries.findIndex((e) => e.providerId === entry.providerId);
+    const idx = this.entries.findIndex(
+      (e) => e.providerId === entry.providerId,
+    );
     if (idx !== -1) {
       const old = this.entries.splice(idx, 1)[0];
       logger.info(
         { flowId: old.flowId, providerId: old.providerId },
         'Flow queue: removed superseded entry',
       );
-      this._onMutation?.(old.flowId, old.providerId, 'removed', `superseded: ${reason}`);
+      this._onMutation?.(
+        old.flowId,
+        old.providerId,
+        'removed',
+        `superseded: ${reason}`,
+      );
     }
 
     this.entries.push(entry);

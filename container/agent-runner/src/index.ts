@@ -336,13 +336,14 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; errorEmitted: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
+  let errorEmitted = false;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -461,6 +462,7 @@ async function runQuery(
         });
       } else {
         // error_during_execution, error_max_turns, etc.
+        errorEmitted = true;
         writeOutput({
           status: 'error',
           result: null,
@@ -473,7 +475,7 @@ async function runQuery(
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  return { newSessionId, lastAssistantUuid, closedDuringQuery, errorEmitted };
 }
 
 async function main(): Promise<void> {
@@ -519,13 +521,14 @@ async function main(): Promise<void> {
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
-  let hadResults = false;
+  let lastErrorEmitted = false;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
+      lastErrorEmitted = false;
       const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
-      hadResults = true;
+      lastErrorEmitted = queryResult.errorEmitted;
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -559,9 +562,9 @@ async function main(): Promise<void> {
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    // Only emit error if we haven't already (the SDK throws after emitting
-    // an error result, so we may have already written the error output above)
-    if (!hadResults || !errorMessage.includes('exited with code')) {
+    // Only emit error if runQuery didn't already (the SDK throws after
+    // emitting an error result, so the error output was already written).
+    if (!lastErrorEmitted) {
       writeOutput({
         status: 'error',
         result: null,

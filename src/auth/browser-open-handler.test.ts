@@ -24,7 +24,10 @@ function mockRequest(body: string): http.IncomingMessage {
 }
 
 /** Create a mock ServerResponse that captures the output. */
-function mockResponse(): http.ServerResponse & { _status: number; _body: string } {
+function mockResponse(): http.ServerResponse & {
+  _status: number;
+  _body: string;
+} {
   const res = {
     _status: 0,
     _body: '',
@@ -53,9 +56,16 @@ describe('browser-open-handler', () => {
 
   describe('handleBrowserOpen', () => {
     it('returns exit_code 0 for known OAuth URLs', async () => {
-      registerAuthorizationEndpoint('https://accounts.google.com/o/oauth2/v2/auth', 'google');
+      registerAuthorizationEndpoint(
+        'https://accounts.google.com/o/oauth2/v2/auth',
+        'google',
+      );
 
-      const req = mockRequest(JSON.stringify({ url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=foo' }));
+      const req = mockRequest(
+        JSON.stringify({
+          url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=foo',
+        }),
+      );
       const res = mockResponse();
 
       await handleBrowserOpen(req, res, asGroupScope('test-scope'));
@@ -66,7 +76,9 @@ describe('browser-open-handler', () => {
     });
 
     it('returns empty object (pass-through) for unknown URLs', async () => {
-      const req = mockRequest(JSON.stringify({ url: 'https://docs.example.com/help' }));
+      const req = mockRequest(
+        JSON.stringify({ url: 'https://docs.example.com/help' }),
+      );
       const res = mockResponse();
 
       await handleBrowserOpen(req, res, asGroupScope('test-scope'));
@@ -99,18 +111,30 @@ describe('browser-open-handler', () => {
     });
 
     it('invokes callback with url and scope for known OAuth URLs', async () => {
-      registerAuthorizationEndpoint('https://claude.ai/oauth/authorize', 'claude');
+      registerAuthorizationEndpoint(
+        'https://claude.ai/oauth/authorize',
+        'claude',
+      );
 
       const events: BrowserOpenEvent[] = [];
-      setBrowserOpenCallback((e) => { events.push(e); return 'claude:12345'; });
+      setBrowserOpenCallback((e) => {
+        events.push(e);
+        return 'claude:12345';
+      });
 
-      const req = mockRequest(JSON.stringify({ url: 'https://claude.ai/oauth/authorize?client_id=abc' }));
+      const req = mockRequest(
+        JSON.stringify({
+          url: 'https://claude.ai/oauth/authorize?client_id=abc',
+        }),
+      );
       const res = mockResponse();
 
       await handleBrowserOpen(req, res, asGroupScope('my-group'));
 
       expect(events).toHaveLength(1);
-      expect(events[0].url).toBe('https://claude.ai/oauth/authorize?client_id=abc');
+      expect(events[0].url).toBe(
+        'https://claude.ai/oauth/authorize?client_id=abc',
+      );
       expect(events[0].scope).toBe('my-group');
       expect(events[0].providerId).toBe('claude');
 
@@ -121,9 +145,14 @@ describe('browser-open-handler', () => {
 
     it('does not invoke callback for unknown URLs', async () => {
       const events: BrowserOpenEvent[] = [];
-      setBrowserOpenCallback((e) => { events.push(e); return null; });
+      setBrowserOpenCallback((e) => {
+        events.push(e);
+        return null;
+      });
 
-      const req = mockRequest(JSON.stringify({ url: 'https://example.com/page' }));
+      const req = mockRequest(
+        JSON.stringify({ url: 'https://example.com/page' }),
+      );
       const res = mockResponse();
 
       await handleBrowserOpen(req, res, asGroupScope('test-scope'));
@@ -132,9 +161,14 @@ describe('browser-open-handler', () => {
     });
 
     it('matches patterns registered via registerAuthorizationPattern', async () => {
-      registerAuthorizationPattern(/^https:\/\/custom\.idp\.com\/auth/, 'custom-idp');
+      registerAuthorizationPattern(
+        /^https:\/\/custom\.idp\.com\/auth/,
+        'custom-idp',
+      );
 
-      const req = mockRequest(JSON.stringify({ url: 'https://custom.idp.com/auth?state=xyz' }));
+      const req = mockRequest(
+        JSON.stringify({ url: 'https://custom.idp.com/auth?state=xyz' }),
+      );
       const res = mockResponse();
 
       await handleBrowserOpen(req, res, asGroupScope('test-scope'));

@@ -15,13 +15,15 @@ const MAX_REASON_LEN = 200;
 
 /** Strip formatting, control chars, and truncate to make agent error text safe for chat display. */
 function sanitizeReason(raw: string): string {
-  return raw
-    .replace(/<[^>]*>/g, '')            // HTML tags
-    .replace(/[*_`~[\]]/g, '')          // markdown formatting
-    .replace(/[^\p{L}\p{N}\p{P}\p{Z}\p{S}]/gu, '') // keep only letters, numbers, punctuation, spaces, symbols
-    .replace(/\s+/g, ' ')              // collapse whitespace
-    .trim()
-    .slice(0, MAX_REASON_LEN) + (raw.length > MAX_REASON_LEN ? '…' : '');
+  return (
+    raw
+      .replace(/<[^>]*>/g, '') // HTML tags
+      .replace(/[*_`~[\]]/g, '') // markdown formatting
+      .replace(/[^\p{L}\p{N}\p{P}\p{Z}\p{S}]/gu, '') // keep only letters, numbers, punctuation, spaces, symbols
+      .replace(/\s+/g, ' ') // collapse whitespace
+      .trim()
+      .slice(0, MAX_REASON_LEN) + (raw.length > MAX_REASON_LEN ? '…' : '')
+  );
 }
 
 export function createAuthGuard(
@@ -67,15 +69,34 @@ export function createAuthGuard(
       const engine = getTokenEngine();
       if (engine.hasAnyCredential(scopeOf(group), provider.id)) return true;
 
-      logger.warn({ group: group.name }, 'No credentials available, starting reauth');
-      return runReauth(group.folder, createChat(), 'No credentials configured', provider.displayName, engine);
+      logger.warn(
+        { group: group.name },
+        'No credentials available, starting reauth',
+      );
+      return runReauth(
+        group.folder,
+        createChat(),
+        'No credentials configured',
+        provider.displayName,
+        engine,
+      );
     },
 
     /** Call from streaming callback. Detects auth errors and kills container. */
-    onStreamResult(result: { status: string; result?: string | null; error?: string }): void {
-      if (typeof result.error === 'string' && isConfirmedAuthError(result.error)) {
+    onStreamResult(result: {
+      status: string;
+      result?: string | null;
+      error?: string;
+    }): void {
+      if (
+        typeof result.error === 'string' &&
+        isConfirmedAuthError(result.error)
+      ) {
         streamedAuthError = result.error;
-      } else if (typeof result.result === 'string' && isConfirmedAuthError(result.result)) {
+      } else if (
+        typeof result.result === 'string' &&
+        isConfirmedAuthError(result.result)
+      ) {
         streamedAuthError = result.result;
       }
       if (streamedAuthError) {
@@ -87,7 +108,9 @@ export function createAuthGuard(
      * Handle auth errors after agent run.
      * Returns 'not-auth' if not an auth error, 'reauth-ok' or 'reauth-failed' otherwise.
      */
-    async handleAuthError(agentError?: string): Promise<'not-auth' | 'reauth-ok' | 'reauth-failed'> {
+    async handleAuthError(
+      agentError?: string,
+    ): Promise<'not-auth' | 'reauth-ok' | 'reauth-failed'> {
       if (agentError && isAuthError(agentError)) {
         streamedAuthError = agentError;
       }
@@ -98,8 +121,17 @@ export function createAuthGuard(
       pendingErrors?.clear();
 
       const engine = getTokenEngine();
-      logger.warn({ group: group.name, reason }, 'Auth error detected, starting reauth');
-      const ok = await runReauth(group.folder, createChat(), `Agent failed: ${sanitizeReason(reason)}`, provider.displayName, engine);
+      logger.warn(
+        { group: group.name, reason },
+        'Auth error detected, starting reauth',
+      );
+      const ok = await runReauth(
+        group.folder,
+        createChat(),
+        `Agent failed: ${sanitizeReason(reason)}`,
+        provider.displayName,
+        engine,
+      );
       return ok ? 'reauth-ok' : 'reauth-failed';
     },
   };

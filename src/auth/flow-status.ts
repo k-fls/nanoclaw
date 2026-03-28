@@ -13,7 +13,12 @@ import { logger } from '../logger.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export type FlowEventType = 'queued' | 'active' | 'completed' | 'failed' | 'removed';
+export type FlowEventType =
+  | 'queued'
+  | 'active'
+  | 'completed'
+  | 'failed'
+  | 'removed';
 
 export interface FlowEvent {
   type: FlowEventType;
@@ -33,14 +38,24 @@ export class FlowStatusRegistry {
   private flows = new Map<string, FlowState>();
 
   /** Emit an event for a flow. Creates the flow state if it doesn't exist. */
-  emit(flowId: string, providerId: string, type: FlowEventType, explanation: string): void {
+  emit(
+    flowId: string,
+    providerId: string,
+    type: FlowEventType,
+    explanation: string,
+  ): void {
     let state = this.flows.get(flowId);
     if (!state) {
       state = { events: [], subscribers: new Set() };
       this.flows.set(flowId, state);
     }
 
-    const event: FlowEvent = { type, providerId, explanation, timestamp: Date.now() };
+    const event: FlowEvent = {
+      type,
+      providerId,
+      explanation,
+      timestamp: Date.now(),
+    };
     state.events.push(event);
 
     // Broadcast to SSE subscribers
@@ -53,7 +68,10 @@ export class FlowStatusRegistry {
       }
     }
 
-    logger.debug({ flowId, type, providerId, explanation }, 'Flow status event');
+    logger.debug(
+      { flowId, type, providerId, explanation },
+      'Flow status event',
+    );
   }
 
   /** Get current state for a flow (latest event type). */
@@ -69,8 +87,16 @@ export class FlowStatusRegistry {
   }
 
   /** List all tracked flow IDs with their current state. */
-  listFlows(): Array<{ flowId: string; state: FlowEventType; providerId: string }> {
-    const result: Array<{ flowId: string; state: FlowEventType; providerId: string }> = [];
+  listFlows(): Array<{
+    flowId: string;
+    state: FlowEventType;
+    providerId: string;
+  }> {
+    const result: Array<{
+      flowId: string;
+      state: FlowEventType;
+      providerId: string;
+    }> = [];
     for (const [flowId, flowState] of this.flows) {
       if (flowState.events.length > 0) {
         const last = flowState.events[flowState.events.length - 1];
@@ -89,7 +115,7 @@ export class FlowStatusRegistry {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
-      'connection': 'keep-alive',
+      connection: 'keep-alive',
     });
 
     let state = this.flows.get(flowId);
@@ -100,7 +126,10 @@ export class FlowStatusRegistry {
 
     // Replay existing events
     for (const event of state.events) {
-      const sseData = JSON.stringify({ providerId: event.providerId, explanation: event.explanation });
+      const sseData = JSON.stringify({
+        providerId: event.providerId,
+        explanation: event.explanation,
+      });
       res.write(`event: ${event.type}\ndata: ${sseData}\n\n`);
     }
 
@@ -125,7 +154,11 @@ export class FlowStatusRegistry {
   destroy(): void {
     for (const [, state] of this.flows) {
       for (const res of state.subscribers) {
-        try { res.end(); } catch { /* ignore */ }
+        try {
+          res.end();
+        } catch {
+          /* ignore */
+        }
       }
       state.subscribers.clear();
     }

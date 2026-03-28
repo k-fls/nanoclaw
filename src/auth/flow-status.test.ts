@@ -33,7 +33,14 @@ function mockResponse(): {
       return true;
     }),
   }) as unknown as import('http').ServerResponse;
-  return { res, chunks, headArgs, get ended() { return ended; } };
+  return {
+    res,
+    chunks,
+    headArgs,
+    get ended() {
+      return ended;
+    },
+  };
 }
 
 describe('FlowStatusRegistry', () => {
@@ -74,8 +81,16 @@ describe('FlowStatusRegistry', () => {
 
     const github = flows.find((f) => f.flowId === 'github:1');
     const google = flows.find((f) => f.flowId === 'google:1');
-    expect(github).toEqual({ flowId: 'github:1', state: 'queued', providerId: 'github' });
-    expect(google).toEqual({ flowId: 'google:1', state: 'active', providerId: 'google' });
+    expect(github).toEqual({
+      flowId: 'github:1',
+      state: 'queued',
+      providerId: 'github',
+    });
+    expect(google).toEqual({
+      flowId: 'google:1',
+      state: 'active',
+      providerId: 'google',
+    });
   });
 
   it('events include timestamps', () => {
@@ -106,7 +121,7 @@ describe('FlowStatusRegistry', () => {
       expect(res.writeHead).toHaveBeenCalledWith(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
-        'connection': 'keep-alive',
+        connection: 'keep-alive',
       });
     });
 

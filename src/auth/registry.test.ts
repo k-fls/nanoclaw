@@ -11,11 +11,7 @@ vi.mock('../credential-proxy.js', () => ({
   }),
 }));
 
-import {
-  registerProvider,
-  getProvider,
-  getAllProviders,
-} from './registry.js';
+import { registerProvider, getProvider, getAllProviders } from './registry.js';
 import type { CredentialProvider, HostHandler } from './types.js';
 
 const makeStub = (id: string): CredentialProvider => ({

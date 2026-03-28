@@ -679,14 +679,20 @@ describe('migrateJsonState', () => {
     const db = await freshDb();
     db.initDatabase();
 
-    expect(db.getRouterState('last_timestamp')).toBe('2024-06-01T00:00:00.000Z');
+    expect(db.getRouterState('last_timestamp')).toBe(
+      '2024-06-01T00:00:00.000Z',
+    );
     const agentTs = db.getRouterState('last_agent_timestamp');
     expect(agentTs).toBeDefined();
     expect(JSON.parse(agentTs!)).toEqual({ main: '2024-06-01T00:00:01.000Z' });
 
     // Original file should be renamed to .migrated
-    expect(fs.existsSync(path.join(tmpDataDir, 'router_state.json.migrated'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDataDir, 'router_state.json'))).toBe(false);
+    expect(
+      fs.existsSync(path.join(tmpDataDir, 'router_state.json.migrated')),
+    ).toBe(true);
+    expect(fs.existsSync(path.join(tmpDataDir, 'router_state.json'))).toBe(
+      false,
+    );
   });
 
   it('migrates sessions.json', async () => {
@@ -706,7 +712,9 @@ describe('migrateJsonState', () => {
       whatsapp_family: 'session-def',
     });
 
-    expect(fs.existsSync(path.join(tmpDataDir, 'sessions.json.migrated'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDataDir, 'sessions.json.migrated'))).toBe(
+      true,
+    );
   });
 
   it('migrates registered_groups.json', async () => {
@@ -730,7 +738,9 @@ describe('migrateJsonState', () => {
     expect(groups['group@g.us'].name).toBe('Test Group');
     expect(groups['group@g.us'].folder).toBe('whatsapp_test');
 
-    expect(fs.existsSync(path.join(tmpDataDir, 'registered_groups.json.migrated'))).toBe(true);
+    expect(
+      fs.existsSync(path.join(tmpDataDir, 'registered_groups.json.migrated')),
+    ).toBe(true);
   });
 
   it('skips migration when JSON files do not exist', async () => {

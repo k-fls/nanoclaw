@@ -12,8 +12,14 @@ import { fileURLToPath } from 'url';
 
 import type { CredentialProvider } from './types.js';
 import { getProxy } from '../credential-proxy.js';
-import { loadDiscoveryProviders, type DiscoveryFile } from './discovery-loader.js';
-import { TokenSubstituteEngine, PersistentTokenResolver } from './token-substitute.js';
+import {
+  loadDiscoveryProviders,
+  type DiscoveryFile,
+} from './discovery-loader.js';
+import {
+  TokenSubstituteEngine,
+  PersistentTokenResolver,
+} from './token-substitute.js';
 import { CREDENTIALS_DIR } from './store.js';
 import { createHandler } from './universal-oauth-handler.js';
 import { registerAuthorizationEndpoint } from './browser-open-handler.js';
@@ -32,7 +38,11 @@ export function registerProvider(provider: CredentialProvider): void {
   if (provider.hostRules) {
     const proxy = getProxy();
     for (const rule of provider.hostRules) {
-      proxy.registerProviderHost(rule.hostPattern, rule.pathPattern, rule.handler);
+      proxy.registerProviderHost(
+        rule.hostPattern,
+        rule.pathPattern,
+        rule.handler,
+      );
     }
   }
 }
@@ -82,7 +92,9 @@ export function getTokenEngine(): TokenSubstituteEngine {
 function migrateAllScopes(): void {
   try {
     if (!fs.existsSync(CREDENTIALS_DIR)) return;
-    for (const entry of fs.readdirSync(CREDENTIALS_DIR, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(CREDENTIALS_DIR, {
+      withFileTypes: true,
+    })) {
       if (!entry.isDirectory()) continue;
       migrateClaudeCredentials(entry.name);
     }
@@ -125,7 +137,12 @@ function registerClaudeUniversalRules(provider: CredentialProvider): void {
       handler = wrapWithApiKeySupport(handler, tokenEngine);
     }
 
-    proxy.registerAnchoredRule(rule.anchor, hostPattern, rule.pathPattern, handler);
+    proxy.registerAnchoredRule(
+      rule.anchor,
+      hostPattern,
+      rule.pathPattern,
+      handler,
+    );
   }
 
   logger.info('Registered Claude provider via universal handler');
@@ -141,10 +158,12 @@ function registerClaudeUniversalRules(provider: CredentialProvider): void {
  * rules take priority (matchHostRule uses first-match via find()).
  */
 export function registerDiscoveryProviders(discoveryDir?: string): void {
-  const dir = discoveryDir ?? path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '../../docs/oauth-discovery',
-  );
+  const dir =
+    discoveryDir ??
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../../docs/oauth-discovery',
+    );
 
   const providers = loadDiscoveryProviders(dir);
   const tokenEngine = getTokenEngine();
@@ -153,24 +172,45 @@ export function registerDiscoveryProviders(discoveryDir?: string): void {
   // Register authorization_endpoint patterns for browser-open detection
   // by reading raw discovery files
   try {
-    for (const file of fs.readdirSync(dir).filter((f: string) => f.endsWith('.json'))) {
+    for (const file of fs
+      .readdirSync(dir)
+      .filter((f: string) => f.endsWith('.json'))) {
       try {
         const providerId = file.replace(/\.json$/, '');
-        const data = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf-8')) as DiscoveryFile;
-        if (data.authorization_endpoint && typeof data.authorization_endpoint === 'string') {
-          registerAuthorizationEndpoint(data.authorization_endpoint, providerId);
+        const data = JSON.parse(
+          fs.readFileSync(path.join(dir, file), 'utf-8'),
+        ) as DiscoveryFile;
+        if (
+          data.authorization_endpoint &&
+          typeof data.authorization_endpoint === 'string'
+        ) {
+          registerAuthorizationEndpoint(
+            data.authorization_endpoint,
+            providerId,
+          );
         }
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
-  } catch { /* dir not readable */ }
+  } catch {
+    /* dir not readable */
+  }
 
   let ruleCount = 0;
   for (const [_id, provider] of providers) {
     for (const rule of provider.rules) {
-      const hostPattern = rule.hostPattern ?? new RegExp(`^${rule.anchor.replace(/\./g, '\\.')}$`);
+      const hostPattern =
+        rule.hostPattern ??
+        new RegExp(`^${rule.anchor.replace(/\./g, '\\.')}$`);
       const handler = createHandler(provider, rule, tokenEngine);
 
-      proxy.registerAnchoredRule(rule.anchor, hostPattern, rule.pathPattern, handler);
+      proxy.registerAnchoredRule(
+        rule.anchor,
+        hostPattern,
+        rule.pathPattern,
+        handler,
+      );
       ruleCount++;
     }
   }

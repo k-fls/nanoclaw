@@ -52,22 +52,38 @@ describe('CredentialProxy class', () => {
 
   describe('shouldIntercept', () => {
     it('matches registered hostnames', () => {
-      proxy.registerProviderHost(/^api\.anthropic\.com$/, /^\//, async () => {});
-      proxy.registerProviderHost(/^console\.anthropic\.com$/, /^\/api\/oauth\/token/, async () => {});
+      proxy.registerProviderHost(
+        /^api\.anthropic\.com$/,
+        /^\//,
+        async () => {},
+      );
+      proxy.registerProviderHost(
+        /^console\.anthropic\.com$/,
+        /^\/api\/oauth\/token/,
+        async () => {},
+      );
 
       expect(proxy.shouldIntercept('api.anthropic.com')).toBe(true);
       expect(proxy.shouldIntercept('console.anthropic.com')).toBe(true);
     });
 
     it('does not match unregistered hostnames', () => {
-      proxy.registerProviderHost(/^api\.anthropic\.com$/, /^\//, async () => {});
+      proxy.registerProviderHost(
+        /^api\.anthropic\.com$/,
+        /^\//,
+        async () => {},
+      );
 
       expect(proxy.shouldIntercept('github.com')).toBe(false);
       expect(proxy.shouldIntercept('example.com')).toBe(false);
     });
 
     it('does not partial-match hostnames', () => {
-      proxy.registerProviderHost(/^api\.anthropic\.com$/, /^\//, async () => {});
+      proxy.registerProviderHost(
+        /^api\.anthropic\.com$/,
+        /^\//,
+        async () => {},
+      );
 
       expect(proxy.shouldIntercept('evil-api.anthropic.com')).toBe(false);
       expect(proxy.shouldIntercept('api.anthropic.com.evil.com')).toBe(false);
@@ -76,17 +92,35 @@ describe('CredentialProxy class', () => {
 
   describe('matchHostRule', () => {
     it('matches host + path', () => {
-      proxy.registerProviderHost(/^api\.anthropic\.com$/, /^\//, async () => {});
-      proxy.registerProviderHost(/^console\.anthropic\.com$/, /^\/api\/oauth\/token/, async () => {});
+      proxy.registerProviderHost(
+        /^api\.anthropic\.com$/,
+        /^\//,
+        async () => {},
+      );
+      proxy.registerProviderHost(
+        /^console\.anthropic\.com$/,
+        /^\/api\/oauth\/token/,
+        async () => {},
+      );
 
-      expect(proxy.matchHostRule('api.anthropic.com', '/v1/messages')).not.toBeNull();
-      expect(proxy.matchHostRule('console.anthropic.com', '/api/oauth/token')).not.toBeNull();
+      expect(
+        proxy.matchHostRule('api.anthropic.com', '/v1/messages'),
+      ).not.toBeNull();
+      expect(
+        proxy.matchHostRule('console.anthropic.com', '/api/oauth/token'),
+      ).not.toBeNull();
     });
 
     it('does not match console.anthropic.com for non-token paths', () => {
-      proxy.registerProviderHost(/^console\.anthropic\.com$/, /^\/api\/oauth\/token/, async () => {});
+      proxy.registerProviderHost(
+        /^console\.anthropic\.com$/,
+        /^\/api\/oauth\/token/,
+        async () => {},
+      );
 
-      expect(proxy.matchHostRule('console.anthropic.com', '/dashboard')).toBeNull();
+      expect(
+        proxy.matchHostRule('console.anthropic.com', '/dashboard'),
+      ).toBeNull();
       expect(proxy.matchHostRule('console.anthropic.com', '/')).toBeNull();
     });
 
@@ -159,7 +193,10 @@ describe('credential-proxy HTTP server', () => {
     proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
     proxyPort = (proxyServer.address() as AddressInfo).port;
 
-    const res = await makeRequest(proxyPort, { method: 'GET', path: '/health' });
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/health',
+    });
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ ok: true });

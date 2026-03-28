@@ -48,7 +48,10 @@ interface AuthorizationPatternEntry {
 const authorizationPatterns: AuthorizationPatternEntry[] = [];
 
 /** Register an authorization_endpoint URL pattern with its provider ID. */
-export function registerAuthorizationPattern(pattern: RegExp, providerId: string): void {
+export function registerAuthorizationPattern(
+  pattern: RegExp,
+  providerId: string,
+): void {
   authorizationPatterns.push({ pattern, providerId });
 }
 
@@ -56,7 +59,10 @@ export function registerAuthorizationPattern(pattern: RegExp, providerId: string
  * Register authorization patterns from a discovery endpoint URL.
  * Extracts the host and builds a regex that matches URLs starting with that host.
  */
-export function registerAuthorizationEndpoint(url: string, providerId: string): void {
+export function registerAuthorizationEndpoint(
+  url: string,
+  providerId: string,
+): void {
   try {
     const parsed = new URL(url);
     const escaped = parsed.hostname.replace(/\./g, '\\.');
@@ -133,12 +139,20 @@ export async function handleBrowserOpen(
     return;
   }
 
-  logger.info({ url, scope, providerId }, 'browser-open: known OAuth URL, relaying');
+  logger.info(
+    { url, scope, providerId },
+    'browser-open: known OAuth URL, relaying',
+  );
 
   let flowId: string | null = null;
   if (_onBrowserOpen) {
     try {
-      flowId = _onBrowserOpen({ url, scope, containerIP: containerIP || '', providerId });
+      flowId = _onBrowserOpen({
+        url,
+        scope,
+        containerIP: containerIP || '',
+        providerId,
+      });
     } catch (err) {
       logger.error({ err, scope }, 'browser-open: callback error');
     }
