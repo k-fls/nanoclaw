@@ -30,6 +30,7 @@ import {
   asCredentialScope,
 } from './oauth-types.js';
 import { muteLogger, restoreLogger } from '../test-helpers.js';
+import { initCredentialStore } from './store.js';
 
 // ---------------------------------------------------------------------------
 // Self-signed HTTPS test server
@@ -478,6 +479,249 @@ describe('universal-oauth-handler', () => {
       );
       expect(allowed).not.toBeNull();
       expect(allowed!.realToken).toBe(realToken);
+    });
+
+    it('proactive strategy refreshes before send when token is near expiry', async () => {
+      initCredentialStore();
+      const spies = muteLogger();
+      try {
+        const resolver = new PersistentTokenResolver();
+        const engine = new TokenSubstituteEngine(resolver);
+
+        const provider: OAuthProvider = {
+          id: 'proactive-test',
+          rules: [
+            {
+              anchor: `127.0.0.1:${serverPort}`,
+              pathPattern: /^\/oauth\/token$/,
+              mode: 'token-exchange',
+            },
+          ],
+          scopeKeys: [],
+          substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+        };
+
+        // Generate a substitute first (stores with expires_ts=0 internally)
+        const realAccess =
+          'old_access_abcdefghijklmnopqrstuvwxyz1234567890abcde';
+        const sub = engine.generateSubstitute(
+          realAccess,
+          'proactive-test',
+          {},
+          asGroupScope('test-scope'),
+          DEFAULT_SUBSTITUTE_CONFIG,
+        )!;
+        expect(sub).not.toBeNull();
+
+        // Now set the expiry to near-future (within 60s REFRESH_AHEAD_MS window)
+        resolver.store(
+          realAccess,
+          'proactive-test',
+          asCredentialScope('test-scope'),
+          'access',
+          Date.now() + 10_000, // 10s from now
+        );
+        resolver.store(
+          'real_refresh_token_value',
+          'proactive-test',
+          asCredentialScope('test-scope'),
+          'refresh',
+        );
+
+        const rule = makeBearerSwapRule();
+        const handler = createHandler(provider, rule, engine, 'proactive');
+
+        // Mock the token fetch so refresh succeeds
+        const newAccess =
+          'new_access_abcdefghijklmnopqrstuvwxyz1234567890abcde';
+        setTokenFetch(
+          async () =>
+            new Response(
+              JSON.stringify({
+                access_token: newAccess,
+                refresh_token: 'new_refresh_value',
+                expires_in: 3600,
+              }),
+              { status: 200 },
+            ),
+        );
+
+        try {
+          const res = await executeHandler(handler, {
+            headers: { authorization: `Bearer ${sub}` },
+          });
+
+          // Request should succeed — upstream sees the NEW token, not the old one
+          expect(res.status).toBe(200);
+          expect(lastRequest).not.toBeNull();
+          expect(lastRequest!.headers['authorization']).toBe(
+            `Bearer ${newAccess}`,
+          );
+        } finally {
+          setTokenFetch(globalThis.fetch);
+        }
+      } finally {
+        restoreLogger(spies);
+      }
+    });
+
+    it('proactive strategy skips reactive refresh on 401 after proactive attempt', async () => {
+      initCredentialStore();
+      const spies = muteLogger();
+      try {
+        const resolver = new PersistentTokenResolver();
+        const engine = new TokenSubstituteEngine(resolver);
+
+        const provider: OAuthProvider = {
+          id: 'proactive-fail',
+          rules: [
+            {
+              anchor: `127.0.0.1:${serverPort}`,
+              pathPattern: /^\/oauth\/token$/,
+              mode: 'token-exchange',
+            },
+          ],
+          scopeKeys: [],
+          substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+        };
+
+        // Generate substitute first, then set expired expiry
+        const realAccess =
+          'expired_access_abcdefghijklmnopqrstuvwxyz12345678ab';
+        const sub = engine.generateSubstitute(
+          realAccess,
+          'proactive-fail',
+          {},
+          asGroupScope('test-scope'),
+          DEFAULT_SUBSTITUTE_CONFIG,
+        )!;
+
+        // Set access token as already expired
+        resolver.store(
+          realAccess,
+          'proactive-fail',
+          asCredentialScope('test-scope'),
+          'access',
+          Date.now() - 5_000, // 5s ago — expired
+        );
+        resolver.store(
+          'real_refresh_token_value',
+          'proactive-fail',
+          asCredentialScope('test-scope'),
+          'refresh',
+        );
+
+        const rule = makeBearerSwapRule();
+        const handler = createHandler(provider, rule, engine, 'proactive');
+
+        // Mock refresh to fail
+        setTokenFetch(async () => new Response('{}', { status: 400 }));
+
+        // Track auth error callbacks
+        let authErrorCalled = false;
+        setAuthErrorResolver(() => () => {
+          authErrorCalled = true;
+        });
+
+        // Upstream returns 401
+        serverResponseOverride = {
+          status: 401,
+          body: '{"error":"unauthorized"}',
+        };
+
+        try {
+          const res = await executeHandler(handler, {
+            headers: { authorization: `Bearer ${sub}` },
+          });
+
+          // Should get 401 forwarded (no redirect, no retry)
+          expect(res.status).toBe(401);
+          expect(authErrorCalled).toBe(true);
+        } finally {
+          setTokenFetch(globalThis.fetch);
+          setAuthErrorResolver(() => null);
+          serverResponseOverride = null;
+        }
+      } finally {
+        restoreLogger(spies);
+      }
+    });
+
+    it('proactive strategy forwards 401 without reactive refresh when token is not near expiry', async () => {
+      initCredentialStore();
+      const spies = muteLogger();
+      try {
+        const resolver = new PersistentTokenResolver();
+        const engine = new TokenSubstituteEngine(resolver);
+
+        const provider: OAuthProvider = {
+          id: 'proactive-noretry',
+          rules: [
+            {
+              anchor: `127.0.0.1:${serverPort}`,
+              pathPattern: /^\/oauth\/token$/,
+              mode: 'token-exchange',
+            },
+          ],
+          scopeKeys: [],
+          substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+        };
+
+        const realAccess =
+          'valid_access_abcdefghijklmnopqrstuvwxyz1234567890abcd';
+        const sub = engine.generateSubstitute(
+          realAccess,
+          'proactive-noretry',
+          {},
+          asGroupScope('test-scope'),
+          DEFAULT_SUBSTITUTE_CONFIG,
+        )!;
+
+        // Access token valid for another hour — no proactive refresh triggered
+        resolver.store(
+          realAccess,
+          'proactive-noretry',
+          asCredentialScope('test-scope'),
+          'access',
+          Date.now() + 3_600_000,
+        );
+        resolver.store(
+          'real_refresh_token_value',
+          'proactive-noretry',
+          asCredentialScope('test-scope'),
+          'refresh',
+        );
+
+        const rule = makeBearerSwapRule();
+        const handler = createHandler(provider, rule, engine, 'proactive');
+
+        // Track auth error callbacks
+        let authErrorCalled = false;
+        setAuthErrorResolver(() => () => {
+          authErrorCalled = true;
+        });
+
+        // Upstream returns 401 (e.g. server-side revocation)
+        serverResponseOverride = {
+          status: 401,
+          body: '{"error":"unauthorized"}',
+        };
+
+        try {
+          const res = await executeHandler(handler, {
+            headers: { authorization: `Bearer ${sub}` },
+          });
+
+          // Proactive strategy never does reactive refresh — just forwards 401
+          expect(res.status).toBe(401);
+          expect(authErrorCalled).toBe(true);
+        } finally {
+          setAuthErrorResolver(() => null);
+          serverResponseOverride = null;
+        }
+      } finally {
+        restoreLogger(spies);
+      }
     });
   });
 

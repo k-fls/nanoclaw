@@ -186,4 +186,8 @@ export interface TokenResolver {
 // Refresh strategy for bearer-swap 401/403 handling
 // ---------------------------------------------------------------------------
 
-export type RefreshStrategy = 'redirect' | 'buffer' | 'passthrough';
+export type RefreshStrategy =
+  | 'redirect'
+  | 'buffer'
+  | 'passthrough'
+  | 'proactive';

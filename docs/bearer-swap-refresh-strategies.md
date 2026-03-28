@@ -39,6 +39,20 @@ If refresh succeeded, the proxy has already updated the token — the client's n
 
 **Trade-off:** Simplest implementation. No redirect, no request buffering. Works with any client. The cost is one extra round-trip (client sees 401, retries, second request succeeds). Useful as a fallback when the client doesn't handle 307, or when `buffer` can't hold the request body.
 
+### `proactive`
+
+Unlike other strategies which are reactive (refresh after 401), `proactive` refreshes **before** sending the request when the access token is expired or about to expire.
+
+**Before sending:** The proxy checks the access token's `expires_ts`. If the token expires within `REFRESH_AHEAD_MS` (60 seconds), it calls `refreshViaTokenEndpoint()` immediately.
+
+**Proactive refresh succeeded:** The request goes out with the fresh token. No 401, no round-trip wasted.
+
+**Proactive refresh failed:** The request goes out with the existing (possibly expired) token. If upstream returns 401, the handler does **not** retry the refresh — it forwards the 401 body to the container and reports to the auth error callback.
+
+**Token not near expiry:** No pre-request refresh. If an unexpected 401 occurs (e.g. server-side revocation), the handler forwards the 401 to the container and reports to the auth error callback. No reactive refresh is attempted — `proactive` never does reactive refresh.
+
+**Trade-off:** Avoids the 401 round-trip entirely for the common case of clock-predictable token expiry. Requires that `expires_ts` is stored when the token is issued (providers that don't return `expires_in` won't benefit). The ahead-of-time window (`REFRESH_AHEAD_MS`) is a global constant — too large wastes refresh tokens, too small misses the window. No request buffering needed. Server-side revocations (token invalidated before expiry) surface as 401 to the container without automatic recovery.
+
 ## Strategy selection
 
 The strategy is set per handler at registration time via `createBearerSwapHandler(..., refreshStrategy)`. Default is `redirect`. The strategy is a property of the provider rule, not of the request — all requests to a given host/path use the same strategy.
@@ -48,6 +62,7 @@ The strategy is set per handler at registration time via `createBearerSwapHandle
 | `redirect` | 307 redirect | Forward 401 + callback | No |
 | `buffer` | Replay request | Forward 401 + callback | Yes (up to size limit) |
 | `passthrough` | Forward 401 + callback | Forward 401 + callback | No |
+| `proactive` | Refreshes before send (no 401) | Send with stale token, no retry on 401 | No |
 
 ## Auth error callback ordering
 

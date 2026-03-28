@@ -253,6 +253,14 @@ export function setTokenFetch(fn: typeof fetch): void {
 const BUFFER_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
 
 /**
+ * How far ahead of actual expiry to trigger proactive refresh (ms).
+ * When the 'proactive' strategy is active, the proxy checks the access
+ * token's expires_ts before sending the request. If the token expires
+ * within this window, it refreshes first — avoiding a 401 round-trip.
+ */
+const REFRESH_AHEAD_MS = 60_000; // 60 seconds
+
+/**
  * Fire the auth error callback (records request_id in pendingErrors).
  * Must be called BEFORE clientRes.end() so the record exists when
  * the container surfaces the error in stdout.
@@ -369,6 +377,7 @@ function createBearerSwapHandler(
 
     // Swap Bearer token
     let substitutedToken: string | null = null;
+    let proactiveRefreshAttempted = false;
     const authHeader = headers['authorization'];
     if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
       substitutedToken = authHeader.slice(7);
@@ -379,6 +388,52 @@ function createBearerSwapHandler(
       );
       if (entry) {
         headers['authorization'] = `Bearer ${entry.realToken}`;
+
+        // Proactive strategy: check token expiry before sending upstream.
+        // If expired or about to expire, attempt refresh now so the first
+        // request goes out with a fresh token instead of hitting a 401.
+        if (refreshStrategy === 'proactive') {
+          const expiresTs = tokenEngine.getKeyExpiry(
+            groupScope,
+            provider.id,
+            'access',
+          );
+          if (expiresTs > 0 && expiresTs < Date.now() + REFRESH_AHEAD_MS) {
+            proactiveRefreshAttempted = true;
+            logger.info(
+              {
+                provider: provider.id,
+                scope: groupScope,
+                expiresIn: Math.round((expiresTs - Date.now()) / 1000),
+              },
+              'Proactive strategy: token expired or expiring soon, refreshing before send',
+            );
+
+            const refreshed = await tokenEngine.sharedOp(
+              groupScope,
+              provider.id,
+              'refresh',
+              () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
+            );
+
+            if (refreshed) {
+              // Re-resolve substitute to pick up the fresh real token
+              const freshEntry = tokenEngine.resolveWithRestriction(
+                substitutedToken,
+                groupScope,
+                scopeAttrs,
+              );
+              if (freshEntry) {
+                headers['authorization'] = `Bearer ${freshEntry.realToken}`;
+              }
+            } else {
+              logger.warn(
+                { provider: provider.id, scope: groupScope },
+                'Proactive strategy: refresh failed, sending with existing token',
+              );
+            }
+          }
+        }
       }
     }
 
@@ -422,27 +477,42 @@ function createBearerSwapHandler(
           }
 
           // Auth error (401 only) — buffer upstream body, then attempt refresh
-          logger.info(
-            {
-              provider: provider.id,
-              scope: groupScope,
-              status: statusCode,
-              strategy: effectiveStrategy,
-            },
-            'Bearer-swap: auth error, attempting refresh',
-          );
-
           const bodyChunks: Buffer[] = [];
           upRes.on('data', (c) => bodyChunks.push(c));
           await new Promise<void>((r) => upRes.on('end', r));
           const upstreamBodyBuf = Buffer.concat(bodyChunks);
 
-          const refreshed = await tokenEngine.sharedOp(
-            groupScope,
-            provider.id,
-            'refresh',
-            () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
-          );
+          // Proactive strategy never does reactive refresh — whether or not
+          // the pre-request check fired. Refresh only happens before send.
+          let refreshed: boolean;
+          if (refreshStrategy === 'proactive') {
+            logger.info(
+              {
+                provider: provider.id,
+                scope: groupScope,
+                status: statusCode,
+                proactiveRefreshAttempted,
+              },
+              'Proactive strategy: forwarding 401 (no reactive refresh)',
+            );
+            refreshed = false;
+          } else {
+            logger.info(
+              {
+                provider: provider.id,
+                scope: groupScope,
+                status: statusCode,
+                strategy: effectiveStrategy,
+              },
+              'Bearer-swap: auth error, attempting refresh',
+            );
+            refreshed = await tokenEngine.sharedOp(
+              groupScope,
+              provider.id,
+              'refresh',
+              () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
+            );
+          }
 
           // Decode body text for error callbacks (may be gzip-compressed)
           const decodeBody = (
