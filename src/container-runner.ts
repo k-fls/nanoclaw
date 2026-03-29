@@ -396,6 +396,39 @@ export function buildContainerArgs(
   return args;
 }
 
+/**
+ * Wait for a container to reach Running state, then read its bridge IP.
+ * Docker transitions Created → Running before the entrypoint starts;
+ * if it exits or is never found, returns null instead of looping forever.
+ *
+ * @internal Exported for e2e test reuse and static-IP integration.
+ */
+export async function waitForContainerIP(
+  containerName: string,
+): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    let attempts = 0;
+    let seenContainer = false;
+    const retry = () => {
+      const status = getContainerStatus(containerName);
+      if (status) seenContainer = true;
+      // If we previously saw the container but now it's gone/exited, stop retrying
+      if (
+        seenContainer &&
+        (!status || status === 'exited' || status === 'dead')
+      )
+        return resolve(null);
+      if (status === 'running') {
+        const ip = getContainerIP(containerName);
+        if (ip) return resolve(ip);
+      }
+      if (++attempts >= 20) return resolve(null);
+      setTimeout(retry, 500);
+    };
+    setTimeout(retry, 500);
+  });
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -458,33 +491,8 @@ export async function runContainerAgent(
   };
   container.stderr.on('data', earlyStderrHandler);
 
-  // Register this container's bridge IP so the credential proxy can
-  // identify it and inject the correct group's credentials.
-  // Wait for container to reach Running state, then read its bridge IP.
-  // Docker transitions Created → Running before the entrypoint starts;
-  // if it exits or is never found, bail out early instead of looping.
-  let containerIP: string | null = null;
-  await new Promise<void>((res) => {
-    let attempts = 0;
-    let seenContainer = false;
-    const retry = () => {
-      const status = getContainerStatus(containerName);
-      if (status) seenContainer = true;
-      // If we previously saw the container but now it's gone/exited, stop retrying
-      if (
-        seenContainer &&
-        (!status || status === 'exited' || status === 'dead')
-      )
-        return res();
-      if (status === 'running') {
-        containerIP = getContainerIP(containerName);
-        if (containerIP) return res();
-      }
-      if (++attempts >= 20) return res();
-      setTimeout(retry, 500);
-    };
-    setTimeout(retry, 500);
-  });
+  // Wait for the container to reach Running state and read its bridge IP.
+  const containerIP = await waitForContainerIP(containerName);
   container.stderr.off('data', earlyStderrHandler);
   if (!containerIP) {
     const status = getContainerStatus(containerName);
