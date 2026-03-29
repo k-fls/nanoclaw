@@ -168,7 +168,10 @@ async function showMenuAndRun(
     await chat.send(
       `${REAUTH_PREFIX} Credentials stored for ${selected.provider.displayName}.`,
     );
-    logger.info({ groupScope, provider: selected.provider.id }, 'Reauth completed');
+    logger.info(
+      { groupScope, provider: selected.provider.id },
+      'Reauth completed',
+    );
     return true;
   } catch (err) {
     // Advance cursor even on error to prevent message leakage

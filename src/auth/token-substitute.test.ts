@@ -430,7 +430,11 @@ describe('TokenSubstituteEngine', () => {
       engine.generateSubstitute(real, 'claude', {}, scope, config);
 
       expect(
-        resolver.resolve(asCredentialScope(scope as string), 'claude', 'access'),
+        resolver.resolve(
+          asCredentialScope(scope as string),
+          'claude',
+          'access',
+        ),
       ).toBe(real);
     });
   });
@@ -544,7 +548,12 @@ describe('TokenSubstituteEngine', () => {
       // Simulate restart: new engine, load from persisted refs
       const resolver2 = new PersistentTokenResolver();
       // Store the real token so the new resolver can find it
-      resolver2.store(real, 'multi', asCredentialScope(scope as string), 'access');
+      resolver2.store(
+        real,
+        'multi',
+        asCredentialScope(scope as string),
+        'access',
+      );
       const engine2 = new TokenSubstituteEngine(resolver2);
       engine2.loadPersistedRefs(scope, 'multi');
 

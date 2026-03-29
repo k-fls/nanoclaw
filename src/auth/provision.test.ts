@@ -85,16 +85,14 @@ describe('createAccessCheck', () => {
 
   it('allows default scope for main group (implicit useDefaultCredentials)', () => {
     groups.set('main-group', makeGroup('main-group', { isMain: true }));
-    expect(
-      check(asGroupScope('main-group'), DEFAULT_CREDENTIAL_SCOPE),
-    ).toBe(true);
+    expect(check(asGroupScope('main-group'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
+      true,
+    );
   });
 
   it('denies default scope when useDefaultCredentials is false', () => {
     groups.set('locked', makeGroup('locked', { useDefaultCredentials: false }));
-    expect(check(asGroupScope('locked'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
-      false,
-    );
+    expect(check(asGroupScope('locked'), DEFAULT_CREDENTIAL_SCOPE)).toBe(false);
   });
 
   it('denies default scope when useDefaultCredentials is not set (non-main)', () => {
@@ -109,15 +107,15 @@ describe('createAccessCheck', () => {
       'main-locked',
       makeGroup('main-locked', { isMain: true, useDefaultCredentials: false }),
     );
-    expect(
-      check(asGroupScope('main-locked'), DEFAULT_CREDENTIAL_SCOPE),
-    ).toBe(false);
+    expect(check(asGroupScope('main-locked'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
+      false,
+    );
   });
 
   it('denies default scope for unknown group', () => {
-    expect(
-      check(asGroupScope('nonexistent'), DEFAULT_CREDENTIAL_SCOPE),
-    ).toBe(false);
+    expect(check(asGroupScope('nonexistent'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
+      false,
+    );
   });
 
   it('allows own scope', () => {

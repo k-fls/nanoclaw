@@ -38,7 +38,6 @@ export function asCredentialScope(scope: string): CredentialScope {
 export const DEFAULT_CREDENTIAL_SCOPE: CredentialScope =
   asCredentialScope('default');
 
-
 // ---------------------------------------------------------------------------
 // Intercept rules (3-level matching: anchor → host regex → path regex)
 // ---------------------------------------------------------------------------

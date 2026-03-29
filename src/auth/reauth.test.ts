@@ -173,7 +173,13 @@ describe('runReauth', () => {
     mockProviders.push(provider);
 
     const chat = createChat(['1']);
-    await runReauth(TEST_GROUP_SCOPE, chat, 'test', 'Test Provider', mockEngine);
+    await runReauth(
+      TEST_GROUP_SCOPE,
+      chat,
+      'test',
+      'Test Provider',
+      mockEngine,
+    );
 
     expect(chat.sent[0]).toContain('Group: *test-group*');
   });
@@ -197,7 +203,13 @@ describe('runReauth', () => {
     mockProviders.push(provider);
 
     const chat = createChat(['1']);
-    await runReauth(TEST_GROUP_SCOPE, chat, 'test', 'Test Provider', mockEngine);
+    await runReauth(
+      TEST_GROUP_SCOPE,
+      chat,
+      'test',
+      'Test Provider',
+      mockEngine,
+    );
 
     expect(chat.sent[0]).toContain('default');
     expect(chat.sent[0]).toContain('all groups');
@@ -219,7 +231,13 @@ describe('runReauth', () => {
     mockProviders.push(provider);
 
     const chat = createChat(['3']); // cancel
-    await runReauth(TEST_GROUP_SCOPE, chat, 'reason', 'Test Provider', mockEngine);
+    await runReauth(
+      TEST_GROUP_SCOPE,
+      chat,
+      'reason',
+      'Test Provider',
+      mockEngine,
+    );
 
     const menu = chat.sent[0];
     expect(menu).toContain('1. *Option A*');
@@ -245,7 +263,13 @@ describe('runReauth', () => {
     mockProviders.push(provider);
 
     const chat = createChat(['2']); // cancel
-    await runReauth(TEST_GROUP_SCOPE, chat, 'reason', 'Test Provider', mockEngine);
+    await runReauth(
+      TEST_GROUP_SCOPE,
+      chat,
+      'reason',
+      'Test Provider',
+      mockEngine,
+    );
 
     const menu = chat.sent[0];
     const cancelPos = menu.indexOf('Cancel');
@@ -446,7 +470,13 @@ describe('runReauth', () => {
       mockProviders.push(provider);
 
       const chat = createChat(['1']);
-      await runReauth(TEST_GROUP_SCOPE, chat, 'reason', 'Test Provider', mockEngine);
+      await runReauth(
+        TEST_GROUP_SCOPE,
+        chat,
+        'reason',
+        'Test Provider',
+        mockEngine,
+      );
 
       const providerMsg = chat.sent.find((m) =>
         m.includes('Hello from provider'),
