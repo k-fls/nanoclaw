@@ -20,7 +20,7 @@ export type CredentialScope = string & { readonly [__credentialScope]: true };
 
 /**
  * A group's folder name used as the engine's primary scope key.
- * NOT assignable to CredentialScope — use toCredentialScope() for explicit conversion.
+ * NOT directly assignable to CredentialScope — the two are deliberately incompatible.
  */
 export type GroupScope = string & { readonly [__groupScope]: true };
 
@@ -34,14 +34,10 @@ export function asCredentialScope(scope: string): CredentialScope {
   return scope as unknown as CredentialScope;
 }
 
-/**
- * Explicit conversion: use a group's own folder as a credential scope.
- * This is a deliberate decision — the caller is saying "this group owns
- * its credentials in its own scope."
- */
-export function toCredentialScope(groupScope: GroupScope): CredentialScope {
-  return groupScope as unknown as CredentialScope;
-}
+/** The shared credential scope used by main and groups with useDefaultCredentials. */
+export const DEFAULT_CREDENTIAL_SCOPE: CredentialScope =
+  asCredentialScope('default');
+
 
 // ---------------------------------------------------------------------------
 // Intercept rules (3-level matching: anchor → host regex → path regex)

@@ -1,6 +1,7 @@
 /**
  * Per-group credential system — type definitions.
  */
+import type { CredentialScope, GroupScope } from './oauth-types.js';
 
 /** On-disk credential file format at ~/.config/nanoclaw/credentials/{scope}/{service}.json */
 export interface StoredCredential {
@@ -44,13 +45,13 @@ export interface CredentialProvider {
 
   /** After flow completes, parse raw result and save via token engine. */
   storeResult(
-    scope: string,
+    scope: CredentialScope,
     result: FlowResult,
     tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
   ): void;
 
   /** Auth options for the reauth menu. */
-  authOptions(scope: string): AuthOption[];
+  authOptions(scope: CredentialScope): AuthOption[];
 
   /**
    * Import credentials from .env into the given scope.
@@ -58,7 +59,7 @@ export interface CredentialProvider {
    * Called once at startup for the 'default' scope.
    */
   importEnv?(
-    scope: string,
+    scope: CredentialScope,
     resolver: import('./oauth-types.js').TokenResolver,
   ): void;
 }
@@ -69,6 +70,8 @@ export interface AuthOption {
   /** Extra explanatory text shown below the label in the menu. */
   description?: string;
   provider: CredentialProvider;
+  /** Where credentials will be stored. Set by the caller of authOptions(). */
+  credentialScope: CredentialScope;
   run(ctx: AuthContext): Promise<FlowResult | null>;
 }
 
@@ -80,8 +83,8 @@ export interface AuthExecOpts {
 
 /** Context passed to auth option run(). */
 export interface AuthContext {
-  /** The credential scope (group folder or 'default'). */
-  scope: string;
+  /** Where credentials are stored (group folder or 'default'). */
+  scope: CredentialScope;
   /** Spawn a command inside a container. Caller doesn't know it's Docker. */
   exec(command: string[], opts?: AuthExecOpts): ExecHandle;
   /** Send/receive messages to the user through normal routing. */

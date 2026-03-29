@@ -33,10 +33,18 @@ import type {
 } from './oauth-types.js';
 import {
   MIN_RANDOM_CHARS,
+  DEFAULT_CREDENTIAL_SCOPE,
   asGroupScope,
   asCredentialScope,
-  toCredentialScope,
 } from './oauth-types.js';
+
+/**
+ * Use a group's own folder as a credential scope.
+ * Internal to the engine — callers should use resolveCredentialScope() instead.
+ */
+function toCredentialScope(groupScope: GroupScope): CredentialScope {
+  return groupScope as unknown as CredentialScope;
+}
 import { encrypt, decrypt, CREDENTIALS_DIR } from './store.js';
 import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
@@ -503,30 +511,38 @@ export class TokenSubstituteEngine {
   }
 
   /**
-   * Resolve credential source scope for a (group, provider) pair.
-   * Uses group flags (useDefaultCredentials, isMain) and keys file checks.
-   * Returns groupScope (as CredentialScope) if resolution is impossible.
+   * Resolve where credentials live for a (group, provider) pair.
+   * Returns the credential scope and whether the group can modify it
+   * (owns it or is main managing default).
    */
-  private resolveCredentialScope(
+  private resolveCredentialScopeInternal(
     groupScope: GroupScope,
     providerId: string,
-  ): CredentialScope {
+    defaultScope: CredentialScope = DEFAULT_CREDENTIAL_SCOPE,
+  ): { scope: CredentialScope; writable: boolean } {
+    const ownScope = toCredentialScope(groupScope);
     const group = this.groupResolver?.(groupScope);
-    if (!group) return toCredentialScope(groupScope);
+    if (!group) return { scope: ownScope, writable: true };
     const useDefault =
       group.containerConfig?.useDefaultCredentials ?? group.isMain === true;
     // Main + default: main manages default directly
-    if (group.isMain && useDefault) return asCredentialScope('default');
+    if (group.isMain && useDefault)
+      return { scope: defaultScope, writable: true };
     // Check own scope first
-    if (this.hasKeysInScope(toCredentialScope(groupScope), providerId))
-      return toCredentialScope(groupScope);
-    // Fall back to default if allowed
-    if (
-      useDefault &&
-      this.hasKeysInScope(asCredentialScope('default'), providerId)
-    )
-      return asCredentialScope('default');
-    return toCredentialScope(groupScope);
+    if (this.hasKeysInScope(ownScope, providerId))
+      return { scope: ownScope, writable: true };
+    // Fall back to default if allowed — read-only (non-main borrowing)
+    if (useDefault && this.hasKeysInScope(defaultScope, providerId))
+      return { scope: defaultScope, writable: false };
+    return { scope: ownScope, writable: true };
+  }
+
+  /** Resolve where credentials live for a (group, provider) pair. */
+  resolveCredentialScope(
+    groupScope: GroupScope,
+    providerId: string,
+  ): CredentialScope {
+    return this.resolveCredentialScopeInternal(groupScope, providerId).scope;
   }
 
   /** Effective credential scope: sourceScope if borrowed, groupScope if own. */
@@ -963,19 +979,28 @@ export class TokenSubstituteEngine {
     this.deleteRefs(groupScope, providerId);
   }
 
-  /** Revoke all substitutes for a group scope (and optionally a provider). */
+  /**
+   * Revoke substitutes for a group scope (and optionally a provider).
+   * Always removes substitutes from the group's own maps.
+   * Only deletes keys files if the group owns the credential scope
+   * (own scope, or main managing default). Non-main groups borrowing
+   * from default never have their keys deleted.
+   */
   revokeByScope(groupScope: GroupScope, providerId?: string): number {
     if (providerId) {
       const ps = this.scopes.get(groupScope)?.get(providerId);
       if (!ps) return 0;
       const count = ps.substitutes.size;
       this.revokeProvider(groupScope, providerId);
-      // Always revoke from resolver + delete keys file when explicitly requested
-      this.resolver.revoke(toCredentialScope(groupScope), providerId);
-      (this.resolver as PersistentTokenResolver).deleteKeys(
-        toCredentialScope(groupScope),
-        providerId,
-      );
+      const { scope: credScope, writable } =
+        this.resolveCredentialScopeInternal(groupScope, providerId);
+      if (writable) {
+        this.resolver.revoke(credScope, providerId);
+        (this.resolver as PersistentTokenResolver).deleteKeys(
+          credScope,
+          providerId,
+        );
+      }
       return count;
     }
 
@@ -989,9 +1014,14 @@ export class TokenSubstituteEngine {
       }
       count += ps.substitutes.size;
       this.deleteRefs(groupScope, pid);
+      const { scope: credScope, writable } =
+        this.resolveCredentialScopeInternal(groupScope, pid);
+      if (writable) {
+        this.resolver.revoke(credScope, pid);
+        (this.resolver as PersistentTokenResolver).deleteKeys(credScope, pid);
+      }
     }
     this.scopes.delete(groupScope);
-    this.resolver.revoke(toCredentialScope(groupScope));
     return count;
   }
 

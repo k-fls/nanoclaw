@@ -5,6 +5,14 @@ import path from 'path';
 
 import type { ChatIO, CredentialProvider, FlowResult } from './types.js';
 import { RESELECT } from './types.js';
+import {
+  asGroupScope,
+  asCredentialScope,
+  DEFAULT_CREDENTIAL_SCOPE,
+} from './oauth-types.js';
+
+const TEST_GROUP_SCOPE = asGroupScope('test-group');
+const TEST_CRED_SCOPE = asCredentialScope('test-scope');
 
 const tmpDir = path.join(os.tmpdir(), `nanoclaw-reauth-test-${Date.now()}`);
 vi.stubEnv('HOME', tmpDir);
@@ -50,6 +58,7 @@ function makeProvider(
       options.map((opt) => ({
         label: opt.label,
         description: opt.description,
+        credentialScope: TEST_CRED_SCOPE,
         provider: provider,
         run: vi.fn(async () => opt.result),
       })),
@@ -73,6 +82,7 @@ function createProvider(
       options.map((opt) => ({
         label: opt.label,
         description: opt.description,
+        credentialScope: TEST_CRED_SCOPE,
         provider,
         run: opt.run,
       })),
@@ -110,7 +120,10 @@ vi.mock('./registry.js', () => ({
 
 const { runReauth } = await import('./reauth.js');
 
-const mockEngine = { revokeByScope: vi.fn() } as any;
+const mockEngine = {
+  revokeByScope: vi.fn(),
+  resolveCredentialScope: vi.fn(() => TEST_CRED_SCOPE),
+} as any;
 
 describe('runReauth', () => {
   beforeEach(() => {
@@ -120,7 +133,7 @@ describe('runReauth', () => {
   it('returns false when no providers registered', async () => {
     const chat = createChat([]);
     const result = await runReauth(
-      'test-scope',
+      TEST_GROUP_SCOPE,
       chat,
       'no creds',
       'Test Provider',
@@ -141,7 +154,7 @@ describe('runReauth', () => {
 
     const chat = createChat(['1']); // select option 1
     await runReauth(
-      'test-scope',
+      TEST_GROUP_SCOPE,
       chat,
       'test reason',
       'Test Provider',
@@ -160,19 +173,31 @@ describe('runReauth', () => {
     mockProviders.push(provider);
 
     const chat = createChat(['1']);
-    await runReauth('my-group', chat, 'test', 'Test Provider', mockEngine);
+    await runReauth(TEST_GROUP_SCOPE, chat, 'test', 'Test Provider', mockEngine);
 
-    expect(chat.sent[0]).toContain('Group: *my-group*');
+    expect(chat.sent[0]).toContain('Group: *test-group*');
   });
 
-  it('shows default scope warning', async () => {
-    const provider = createProvider([
-      { label: 'Option A', run: async () => null },
-    ]);
+  it('shows default scope warning when options target default scope', async () => {
+    // Provider whose authOptions return credentialScope = DEFAULT_CREDENTIAL_SCOPE
+    const provider: CredentialProvider = {
+      id: 'test',
+      displayName: 'Test Provider',
+      provision: () => ({ env: {} }),
+      storeResult: vi.fn(),
+      authOptions: () => [
+        {
+          label: 'Option A',
+          credentialScope: DEFAULT_CREDENTIAL_SCOPE,
+          provider,
+          run: async () => null,
+        },
+      ],
+    };
     mockProviders.push(provider);
 
     const chat = createChat(['1']);
-    await runReauth('default', chat, 'test', 'Test Provider', mockEngine);
+    await runReauth(TEST_GROUP_SCOPE, chat, 'test', 'Test Provider', mockEngine);
 
     expect(chat.sent[0]).toContain('default');
     expect(chat.sent[0]).toContain('all groups');
@@ -194,7 +219,7 @@ describe('runReauth', () => {
     mockProviders.push(provider);
 
     const chat = createChat(['3']); // cancel
-    await runReauth('scope', chat, 'reason', 'Test Provider', mockEngine);
+    await runReauth(TEST_GROUP_SCOPE, chat, 'reason', 'Test Provider', mockEngine);
 
     const menu = chat.sent[0];
     expect(menu).toContain('1. *Option A*');
@@ -220,7 +245,7 @@ describe('runReauth', () => {
     mockProviders.push(provider);
 
     const chat = createChat(['2']); // cancel
-    await runReauth('scope', chat, 'reason', 'Test Provider', mockEngine);
+    await runReauth(TEST_GROUP_SCOPE, chat, 'reason', 'Test Provider', mockEngine);
 
     const menu = chat.sent[0];
     const cancelPos = menu.indexOf('Cancel');
@@ -236,7 +261,7 @@ describe('runReauth', () => {
 
     const chat = createChat(['2']); // 2 = Cancel (1 option + Cancel)
     const result = await runReauth(
-      'scope',
+      TEST_GROUP_SCOPE,
       chat,
       'reason',
       'Test Provider',
@@ -254,7 +279,7 @@ describe('runReauth', () => {
 
     const chat = createChat(['abc']);
     const result = await runReauth(
-      'scope',
+      TEST_GROUP_SCOPE,
       chat,
       'reason',
       'Test Provider',
@@ -271,7 +296,7 @@ describe('runReauth', () => {
 
     const chat = createChat([null]); // timeout
     const result = await runReauth(
-      'scope',
+      TEST_GROUP_SCOPE,
       chat,
       'reason',
       'Test Provider',
@@ -292,7 +317,7 @@ describe('runReauth', () => {
 
     const chat = createChat(['1']);
     const result = await runReauth(
-      'scope',
+      TEST_GROUP_SCOPE,
       chat,
       'reason',
       'Test Provider',
@@ -300,7 +325,7 @@ describe('runReauth', () => {
     );
     expect(result).toBe(true);
     expect(provider.storeResult).toHaveBeenCalledWith(
-      'scope',
+      TEST_CRED_SCOPE,
       {
         auth_type: 'api_key',
         token: 'my-key',
@@ -316,7 +341,7 @@ describe('runReauth', () => {
 
     const chat = createChat(['1']);
     const result = await runReauth(
-      'scope',
+      TEST_GROUP_SCOPE,
       chat,
       'reason',
       'Test Provider',
@@ -339,7 +364,7 @@ describe('runReauth', () => {
 
     const chat = createChat(['1']);
     const result = await runReauth(
-      'scope',
+      TEST_GROUP_SCOPE,
       chat,
       'reason',
       'Test Provider',
@@ -376,7 +401,7 @@ describe('runReauth', () => {
       // Second attempt: pick option 2 (succeeds)
       const chat = createChat(['1', '2']);
       const result = await runReauth(
-        'scope',
+        TEST_GROUP_SCOPE,
         chat,
         'reason',
         'Test Provider',
@@ -399,7 +424,7 @@ describe('runReauth', () => {
       // First: pick option 1 (RESELECT), second: pick cancel (2)
       const chat = createChat(['1', '2']);
       const result = await runReauth(
-        'scope',
+        TEST_GROUP_SCOPE,
         chat,
         'reason',
         'Test Provider',
@@ -421,7 +446,7 @@ describe('runReauth', () => {
       mockProviders.push(provider);
 
       const chat = createChat(['1']);
-      await runReauth('scope', chat, 'reason', 'Test Provider', mockEngine);
+      await runReauth(TEST_GROUP_SCOPE, chat, 'reason', 'Test Provider', mockEngine);
 
       const providerMsg = chat.sent.find((m) =>
         m.includes('Hello from provider'),

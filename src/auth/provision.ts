@@ -11,7 +11,7 @@ import type {
   GroupScope,
   CredentialScope,
 } from './oauth-types.js';
-import { asGroupScope } from './oauth-types.js';
+import { asGroupScope, DEFAULT_CREDENTIAL_SCOPE } from './oauth-types.js';
 import type {
   TokenSubstituteEngine,
   GroupResolver,
@@ -24,7 +24,7 @@ import type {
 export function importEnvToDefault(engine: TokenSubstituteEngine): void {
   for (const provider of getAllProviders()) {
     if (engine.hasAnyCredential(asGroupScope('default'), provider.id)) continue;
-    provider.importEnv?.('default', engine.getResolver());
+    provider.importEnv?.(DEFAULT_CREDENTIAL_SCOPE, engine.getResolver());
   }
 }
 

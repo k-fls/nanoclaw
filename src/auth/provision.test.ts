@@ -37,7 +37,11 @@ const { importEnvToDefault, createAccessCheck } =
 
 import type { CredentialProvider } from './types.js';
 import type { RegisteredGroup } from '../types.js';
-import { asGroupScope, asCredentialScope } from './oauth-types.js';
+import {
+  asGroupScope,
+  asCredentialScope,
+  DEFAULT_CREDENTIAL_SCOPE,
+} from './oauth-types.js';
 import {
   TokenSubstituteEngine,
   PersistentTokenResolver,
@@ -74,7 +78,7 @@ describe('createAccessCheck', () => {
       'my-group',
       makeGroup('my-group', { useDefaultCredentials: true }),
     );
-    expect(check(asGroupScope('my-group'), asCredentialScope('default'))).toBe(
+    expect(check(asGroupScope('my-group'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
       true,
     );
   });
@@ -82,20 +86,20 @@ describe('createAccessCheck', () => {
   it('allows default scope for main group (implicit useDefaultCredentials)', () => {
     groups.set('main-group', makeGroup('main-group', { isMain: true }));
     expect(
-      check(asGroupScope('main-group'), asCredentialScope('default')),
+      check(asGroupScope('main-group'), DEFAULT_CREDENTIAL_SCOPE),
     ).toBe(true);
   });
 
   it('denies default scope when useDefaultCredentials is false', () => {
     groups.set('locked', makeGroup('locked', { useDefaultCredentials: false }));
-    expect(check(asGroupScope('locked'), asCredentialScope('default'))).toBe(
+    expect(check(asGroupScope('locked'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
       false,
     );
   });
 
   it('denies default scope when useDefaultCredentials is not set (non-main)', () => {
     groups.set('regular', makeGroup('regular'));
-    expect(check(asGroupScope('regular'), asCredentialScope('default'))).toBe(
+    expect(check(asGroupScope('regular'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
       false,
     );
   });
@@ -106,13 +110,13 @@ describe('createAccessCheck', () => {
       makeGroup('main-locked', { isMain: true, useDefaultCredentials: false }),
     );
     expect(
-      check(asGroupScope('main-locked'), asCredentialScope('default')),
+      check(asGroupScope('main-locked'), DEFAULT_CREDENTIAL_SCOPE),
     ).toBe(false);
   });
 
   it('denies default scope for unknown group', () => {
     expect(
-      check(asGroupScope('nonexistent'), asCredentialScope('default')),
+      check(asGroupScope('nonexistent'), DEFAULT_CREDENTIAL_SCOPE),
     ).toBe(false);
   });
 

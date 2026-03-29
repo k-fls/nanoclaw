@@ -60,7 +60,8 @@ export function getContainerIP(containerName: string): string | null {
       ],
       { encoding: 'utf-8', timeout: 5000 },
     ).trim();
-    return ip || null;
+    // Validate: must look like an IP, not an error string
+    return ip && /^[\da-f.:]+$/i.test(ip) ? ip : null;
   } catch {
     return null;
   }

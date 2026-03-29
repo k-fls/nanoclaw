@@ -119,7 +119,7 @@ export function createAuthGuard(
         'No credentials available, starting reauth',
       );
       return runReauth(
-        group.folder,
+        scope,
         createChat(),
         'No credentials configured',
         provider.displayName,
@@ -166,7 +166,7 @@ export function createAuthGuard(
           'Auth error detected, starting reauth',
         );
         const ok = await runReauth(
-          group.folder,
+          scope,
           createChat(),
           `Agent failed: ${sanitizeReason(reason)}`,
           provider.displayName,

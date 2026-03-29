@@ -14,7 +14,7 @@ import { decrypt, encrypt, loadCredential } from '../store.js';
 import { readKeysFile, writeKeysFile } from '../token-substitute.js';
 import { asCredentialScope, asGroupScope } from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
-import type { GroupScope } from '../oauth-types.js';
+import type { CredentialScope, GroupScope } from '../oauth-types.js';
 import { authSessionDir, scopeClaudeDir, execInContainer } from '../exec.js';
 import {
   ensureGpgKey,
@@ -768,13 +768,13 @@ export const claudeProvider: CredentialProvider = {
   displayName: 'Claude',
 
   importEnv(
-    scope: string,
+    scope: CredentialScope,
     resolver: import('../oauth-types.js').TokenResolver,
   ): void {
     const envVars = readEnvFile(ENV_FALLBACK_KEYS);
     if (Object.keys(envVars).length === 0) return;
 
-    const credScope = asCredentialScope(scope);
+    const credScope = scope;
 
     // API key takes priority over OAuth tokens (mode exclusivity)
     if (envVars.ANTHROPIC_API_KEY) {
@@ -867,11 +867,11 @@ export const claudeProvider: CredentialProvider = {
   },
 
   storeResult(
-    scope: string,
+    scope: CredentialScope,
     result: FlowResult,
     tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
   ): void {
-    const credScope = asCredentialScope(scope);
+    const credScope = scope;
     const resolver = tokenEngine.getResolver();
 
     // Clear hot cache + keys file (refs stay for running containers)
@@ -916,7 +916,7 @@ export const claudeProvider: CredentialProvider = {
     tokenEngine.pruneStaleRefs(asGroupScope(scope), PROVIDER_ID);
   },
 
-  authOptions(_scope: string): AuthOption[] {
+  authOptions(scope: CredentialScope): AuthOption[] {
     return [
       // --- Setup token (long-lived, requires browser) ---
       {
@@ -924,6 +924,7 @@ export const claudeProvider: CredentialProvider = {
         description:
           'Generates a long-lived OAuth token via `claude setup-token`. Token is valid for ~1 year.',
         provider: this,
+        credentialScope: scope,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           const handle = await runOAuthFlow(
             ctx,
@@ -962,6 +963,7 @@ export const claudeProvider: CredentialProvider = {
         description:
           'Standard OAuth login via `claude auth login`. Does not expose long-term refresh key to agent. Access keys are refreshed automatically.',
         provider: this,
+        credentialScope: scope,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           // auth-login with xdg-open returning 0 won't show a paste prompt,
           // so disable stdin detection (null pastePrompt) — callback only.
@@ -1017,6 +1019,7 @@ export const claudeProvider: CredentialProvider = {
         description:
           'Requires use of a GPG tool to pass the key in chat safely.',
         provider: this,
+        credentialScope: scope,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           if (!isGpgAvailable()) {
             await ctx.chat.send(

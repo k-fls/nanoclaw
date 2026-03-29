@@ -66,6 +66,10 @@ const {
 const { TokenSubstituteEngine, PersistentTokenResolver } =
   await import('../token-substitute.js');
 import type { RegisteredGroup } from '../../types.js';
+import { asCredentialScope, DEFAULT_CREDENTIAL_SCOPE } from '../oauth-types.js';
+
+const TEST_CRED_SCOPE = asCredentialScope('test-scope');
+const ENC_TEST_SCOPE = asCredentialScope('enc-test');
 
 /** Create a minimal RegisteredGroup for test provision calls. */
 function makeGroup(folder: string): RegisteredGroup {
@@ -85,7 +89,7 @@ describe('claudeProvider', () => {
   describe('provision', () => {
     /** Store in old format, migrate, then provision with engine. */
     function storeAndProvision(
-      scope: string,
+      scope: import('../oauth-types.js').CredentialScope,
       result: { auth_type: string; token: string; expires_at: string | null },
     ) {
       const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
@@ -104,7 +108,7 @@ describe('claudeProvider', () => {
     it('provisions api_key as substitute ANTHROPIC_API_KEY', () => {
       const real =
         'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-      const result = storeAndProvision('test', {
+      const result = storeAndProvision(TEST_CRED_SCOPE, {
         auth_type: 'api_key',
         token: real,
         expires_at: null,
@@ -118,7 +122,7 @@ describe('claudeProvider', () => {
     it('provisions setup_token as substitute CLAUDE_CODE_OAUTH_TOKEN', () => {
       const real =
         'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-      const result = storeAndProvision('test', {
+      const result = storeAndProvision(TEST_CRED_SCOPE, {
         auth_type: 'setup_token',
         token: real,
         expires_at: null,
@@ -142,7 +146,7 @@ describe('claudeProvider', () => {
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
       });
 
-      const result = storeAndProvision('test', {
+      const result = storeAndProvision(TEST_CRED_SCOPE, {
         auth_type: 'auth_login',
         token: credsJson,
         expires_at: new Date(Date.now() + 3600_000).toISOString(),
@@ -161,7 +165,7 @@ describe('claudeProvider', () => {
     it('encrypts the token in keys file', () => {
       const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       claudeProvider.storeResult(
-        'enc-test',
+        ENC_TEST_SCOPE,
         {
           auth_type: 'api_key',
           token: 'plaintext-secret',
@@ -192,14 +196,14 @@ describe('claudeProvider', () => {
       });
 
       const resolver = new PersistentTokenResolver();
-      claudeProvider.importEnv!('default', resolver);
+      claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, resolver);
       // Verify importEnv was called without error (credentials stored via resolver)
     });
 
     it('skips import if credentials already exist', () => {
       const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
       claudeProvider.storeResult(
-        'default',
+        DEFAULT_CREDENTIAL_SCOPE,
         {
           auth_type: 'api_key',
           token: 'existing-key',
@@ -213,7 +217,7 @@ describe('claudeProvider', () => {
       });
 
       const resolver = new PersistentTokenResolver();
-      claudeProvider.importEnv!('default', resolver);
+      claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, resolver);
     });
 
     it('skips import when .env has no relevant keys', () => {
@@ -221,13 +225,13 @@ describe('claudeProvider', () => {
       vi.mocked(readEnvFile).mockReturnValue({});
 
       const resolver = new PersistentTokenResolver();
-      claudeProvider.importEnv!('empty-env-scope', resolver);
+      claudeProvider.importEnv!(asCredentialScope('empty-env-scope'), resolver);
     });
   });
 
   describe('authOptions', () => {
     it('returns 3 options with descriptions', () => {
-      const options = claudeProvider.authOptions('test');
+      const options = claudeProvider.authOptions(TEST_CRED_SCOPE);
       expect(options).toHaveLength(3);
       expect(options[0].label).toContain('Setup token');
       expect(options[1].label).toContain('Auth login');

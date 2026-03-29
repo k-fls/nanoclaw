@@ -11,7 +11,6 @@ import {
   MIN_RANDOM_CHARS,
   asGroupScope,
   asCredentialScope,
-  toCredentialScope,
 } from './oauth-types.js';
 
 // Every test calls generateSubstitute or resolver.store, both of which trigger
@@ -248,7 +247,7 @@ describe('TokenSubstituteEngine', () => {
       const sub = engine.generateSubstitute(real, 'test', {}, scope, config)!;
 
       // Revoke from resolver directly
-      resolver.revoke(toCredentialScope(scope));
+      resolver.revoke(asCredentialScope(scope as string));
 
       // Engine still has mapping, but resolver returns null
       expect(engine.resolveSubstitute(sub, scope)).toBeNull();
@@ -431,7 +430,7 @@ describe('TokenSubstituteEngine', () => {
       engine.generateSubstitute(real, 'claude', {}, scope, config);
 
       expect(
-        resolver.resolve(toCredentialScope(scope), 'claude', 'access'),
+        resolver.resolve(asCredentialScope(scope as string), 'claude', 'access'),
       ).toBe(real);
     });
   });
@@ -545,7 +544,7 @@ describe('TokenSubstituteEngine', () => {
       // Simulate restart: new engine, load from persisted refs
       const resolver2 = new PersistentTokenResolver();
       // Store the real token so the new resolver can find it
-      resolver2.store(real, 'multi', toCredentialScope(scope), 'access');
+      resolver2.store(real, 'multi', asCredentialScope(scope as string), 'access');
       const engine2 = new TokenSubstituteEngine(resolver2);
       engine2.loadPersistedRefs(scope, 'multi');
 
