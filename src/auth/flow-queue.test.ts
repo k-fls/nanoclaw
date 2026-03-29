@@ -5,9 +5,10 @@ import { FlowQueue, type FlowEntry } from './flow-queue.js';
 function entry(providerId: string, flowId?: string): FlowEntry {
   return {
     flowId: flowId ?? `${providerId}:12345`,
+    eventType: 'oauth-start',
     providerId,
-    url: `https://example.com/auth?provider=${providerId}`,
-    deliveryFn: vi.fn(async () => ({ ok: true })),
+    eventParam: `https://example.com/auth?provider=${providerId}`,
+    replyFn: vi.fn(async () => ({ done: true })),
   };
 }
 
@@ -20,32 +21,53 @@ describe('FlowQueue', () => {
       expect(q.length).toBe(2);
     });
 
-    it('deduplicates by providerId — removes old, adds new at end', () => {
-      const q = new FlowQueue();
-      const mutations: string[] = [];
-      q.onMutation((_fid, pid, event) => mutations.push(`${event}:${pid}`));
-
-      q.push(entry('github', 'github:1'), 'first');
-      q.push(entry('google', 'google:1'), 'second');
-      q.push(entry('github', 'github:2'), 'replaced');
-
-      expect(q.length).toBe(2);
-      // Old github was removed, new one added
-      expect(mutations).toEqual([
-        'queued:github',
-        'queued:google',
-        'removed:github',
-        'queued:github',
-      ]);
-    });
-
     it('fires mutation callback with reason', () => {
       const q = new FlowQueue();
       const reasons: string[] = [];
-      q.onMutation((_fid, _pid, _event, reason) => reasons.push(reason));
+      q.onMutation((_fid, _et, _event, reason) => reasons.push(reason));
 
       q.push(entry('github'), 'xdg-open shim');
       expect(reasons).toEqual(['xdg-open shim']);
+    });
+
+    it('does not dedup — callers use extract for that', () => {
+      const q = new FlowQueue();
+      q.push(entry('github', 'github:1'), 'first');
+      q.push(entry('github', 'github:2'), 'second');
+      expect(q.length).toBe(2);
+    });
+  });
+
+  describe('extract', () => {
+    it('removes matching entries and returns them', () => {
+      const q = new FlowQueue();
+      const mutations: string[] = [];
+      q.onMutation((fid, _et, event) => mutations.push(`${event}:${fid}`));
+
+      q.push(entry('github', 'github:1'), 'first');
+      q.push(entry('google', 'google:1'), 'second');
+      q.push(entry('github', 'github:2'), 'third');
+
+      const extracted = q.extract(
+        (e) => e.providerId === 'github',
+        'superseded',
+      );
+
+      expect(extracted).toHaveLength(2);
+      expect(extracted[0].flowId).toBe('github:1');
+      expect(extracted[1].flowId).toBe('github:2');
+      expect(q.length).toBe(1); // only google left
+      expect(mutations).toContain('removed:github:1');
+      expect(mutations).toContain('removed:github:2');
+    });
+
+    it('returns empty array when nothing matches', () => {
+      const q = new FlowQueue();
+      q.push(entry('github'), 'test');
+
+      const extracted = q.extract((e) => e.providerId === 'slack', 'nope');
+      expect(extracted).toHaveLength(0);
+      expect(q.length).toBe(1);
     });
   });
 
@@ -118,30 +140,22 @@ describe('FlowQueue', () => {
     });
   });
 
-  describe('hasProvider', () => {
-    it('returns true when provider has pending entry', () => {
+  describe('has', () => {
+    it('returns true when predicate matches', () => {
       const q = new FlowQueue();
       q.push(entry('github'), 'test');
-      expect(q.hasProvider('github')).toBe(true);
+      expect(q.has((e) => e.providerId === 'github')).toBe(true);
     });
 
-    it('returns false when provider has no pending entry', () => {
+    it('returns false when predicate does not match', () => {
       const q = new FlowQueue();
       q.push(entry('github'), 'test');
-      expect(q.hasProvider('slack')).toBe(false);
-    });
-  });
-
-  describe('hasProvider', () => {
-    it('returns true for existing provider', () => {
-      const q = new FlowQueue();
-      q.push(entry('github'), 'test');
-      expect(q.hasProvider('github')).toBe(true);
+      expect(q.has((e) => e.providerId === 'slack')).toBe(false);
     });
 
-    it('returns false for missing provider', () => {
+    it('returns false on empty queue', () => {
       const q = new FlowQueue();
-      expect(q.hasProvider('github')).toBe(false);
+      expect(q.has((e) => e.providerId === 'github')).toBe(false);
     });
   });
 });

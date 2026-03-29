@@ -158,13 +158,13 @@ const URL_WAIT_MS = 60_000;
 /** How long to wait for the code delivery mechanism to become available. */
 const DELIVERY_DETECT_MS = 30_000;
 
-interface CodeDeliveryHandler {
+export interface CodeDeliveryHandler {
   /** OAuth URL to show the user. */
   oauthUrl: string;
   /** User-facing instructions for completing the auth flow. */
   instructions: string;
   /** Deliver the user's response (code or redirect URL) to the CLI. */
-  deliver(userInput: string): Promise<{ ok: boolean; error?: string }>;
+  deliver(userInput: string): Promise<{ done: boolean; response?: string }>;
 }
 
 /** ANSI escape sequence pattern. */
@@ -314,7 +314,7 @@ export function detectCodeDelivery(
           if (portMatch) {
             const port = parseInt(portMatch[1], 10);
             isPortOpen(port, 5000).then((open) => {
-              done(open ? callbackHandler(url, port) : null);
+              done(open ? callbackHandler(url, 'localhost', port) : null);
             });
           } else {
             done(null);
@@ -353,12 +353,25 @@ function stdinHandler(
       handle.stdin.write(code);
       await new Promise((r) => setTimeout(r, 200));
       handle.stdin.write('\r');
-      return { ok: true };
+      return { done: true };
     },
   };
 }
 
-function callbackHandler(oauthUrl: string, port: number): CodeDeliveryHandler {
+/**
+ * Build a CodeDeliveryHandler that validates user input as a callback URL
+ * and delivers the code+state to a localhost callback port.
+ *
+ * @param host  Target host for the callback (localhost for reauth, container bridge IP for flow queue).
+ * @param port  Expected callback port — mismatches are rejected so the user can retry.
+ * @param cbPath  Callback path (default: /callback).
+ */
+export function callbackHandler(
+  oauthUrl: string,
+  host: string,
+  port: number,
+  cbPath = '/callback',
+): CodeDeliveryHandler {
   return {
     oauthUrl,
     instructions:
@@ -366,32 +379,37 @@ function callbackHandler(oauthUrl: string, port: number): CodeDeliveryHandler {
       '‼️ *The page will show an error* ("connection refused", "unable to connect", or similar) — ' +
       'this is expected! Do NOT close the tab.\n\n' +
       "Copy the full URL from your browser's *address bar* (it will look like " +
-      `\`http://localhost:${port}/callback?code=...\`) ` +
+      `\`http://localhost:${port}${cbPath}?code=...\`) ` +
       'and paste it here (or reply "cancel" to abort):',
     async deliver(userInput: string) {
       const parsed = parseCallbackUrl(userInput);
       if (!parsed) {
         return {
-          ok: false,
-          error:
+          done: false,
+          response:
             'Could not parse the URL. Expected a URL like http://localhost:PORT/callback?code=...&state=...',
         };
       }
       if (parsed.port !== port) {
         return {
-          ok: false,
-          error: `Port mismatch: URL has port ${parsed.port} but expected ${port}. Make sure you copied the correct URL.`,
+          done: false,
+          response: `Port mismatch: URL has port ${parsed.port} but expected ${port}. Make sure you copied the correct URL.`,
         };
       }
-      const callbackUrl = `http://localhost:${port}/callback?code=${encodeURIComponent(parsed.code)}&state=${encodeURIComponent(parsed.state)}`;
+      const callbackUrl = `http://${host}:${port}${cbPath}?code=${encodeURIComponent(parsed.code)}&state=${encodeURIComponent(parsed.state)}`;
       try {
-        await fetch(callbackUrl);
-        return { ok: true };
+        const res = await fetch(callbackUrl, {
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (res.ok) {
+          return { done: true };
+        }
+        return { done: false, response: `Callback returned ${res.status}` };
       } catch (err) {
         logger.warn({ callbackUrl, err }, 'Callback delivery failed');
         return {
-          ok: false,
-          error: 'Failed to deliver code to the CLI callback server.',
+          done: true,
+          response: err instanceof Error ? err.message : String(err),
         };
       }
     },
@@ -535,9 +553,9 @@ async function runOAuthFlow(
   }
 
   const delivered = await delivery.deliver(userInput);
-  if (!delivered.ok) {
+  if (!delivered.done) {
     await ctx.chat.send(
-      `Failed to deliver auth code. ${delivered.error ?? ''}`,
+      `Failed to deliver auth code. ${delivered.response ?? ''}`,
     );
     handle.kill();
     return null;

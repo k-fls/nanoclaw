@@ -63,8 +63,8 @@ export function createSessionContext(
   const statusRegistry = new FlowStatusRegistry();
 
   // Wire queue mutations to status registry
-  flowQueue.onMutation((flowId, providerId, event, reason) => {
-    statusRegistry.emit(flowId, providerId, event, reason);
+  flowQueue.onMutation((flowId, eventType, event, reason) => {
+    statusRegistry.emit(flowId, eventType, event, reason);
   });
 
   const onAuthError: AuthErrorCallback = (responseBody, statusCode) => {

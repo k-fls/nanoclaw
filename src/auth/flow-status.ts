@@ -1,7 +1,7 @@
 /**
- * OAuth flow status registry.
+ * Flow status registry.
  *
- * Receives callbacks from queue mutations and OAuth progress events.
+ * Receives callbacks from queue mutations and event progress.
  * Provides per-flow SSE endpoints for observability.
  *
  * Separate from the queue — the queue manages ordering and delivery,
@@ -9,11 +9,12 @@
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 
+import type { FlowEventKind } from './flow-queue.js';
 import { logger } from '../logger.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export type FlowEventType =
+export type FlowState =
   | 'queued'
   | 'active'
   | 'completed'
@@ -21,13 +22,13 @@ export type FlowEventType =
   | 'removed';
 
 export interface FlowEvent {
-  type: FlowEventType;
-  providerId: string;
+  state: FlowState;
+  eventType: FlowEventKind;
   explanation: string;
   timestamp: number;
 }
 
-interface FlowState {
+interface FlowRecord {
   events: FlowEvent[];
   subscribers: Set<ServerResponse>;
 }
@@ -35,50 +36,50 @@ interface FlowState {
 // ── FlowStatusRegistry ─────────────────────────────────────────────
 
 export class FlowStatusRegistry {
-  private flows = new Map<string, FlowState>();
+  private flows = new Map<string, FlowRecord>();
 
   /** Emit an event for a flow. Creates the flow state if it doesn't exist. */
   emit(
     flowId: string,
-    providerId: string,
-    type: FlowEventType,
+    eventType: FlowEventKind,
+    state: FlowState,
     explanation: string,
   ): void {
-    let state = this.flows.get(flowId);
-    if (!state) {
-      state = { events: [], subscribers: new Set() };
-      this.flows.set(flowId, state);
+    let flowState = this.flows.get(flowId);
+    if (!flowState) {
+      flowState = { events: [], subscribers: new Set() };
+      this.flows.set(flowId, flowState);
     }
 
     const event: FlowEvent = {
-      type,
-      providerId,
+      state,
+      eventType,
       explanation,
       timestamp: Date.now(),
     };
-    state.events.push(event);
+    flowState.events.push(event);
 
     // Broadcast to SSE subscribers
-    const sseData = JSON.stringify({ providerId, explanation });
-    for (const res of state.subscribers) {
+    const sseData = JSON.stringify({ eventType, explanation });
+    for (const res of flowState.subscribers) {
       try {
-        res.write(`event: ${type}\ndata: ${sseData}\n\n`);
+        res.write(`event: ${state}\ndata: ${sseData}\n\n`);
       } catch {
-        state.subscribers.delete(res);
+        flowState.subscribers.delete(res);
       }
     }
 
     logger.debug(
-      { flowId, type, providerId, explanation },
+      { flowId, state, eventType, explanation },
       'Flow status event',
     );
   }
 
-  /** Get current state for a flow (latest event type). */
-  currentState(flowId: string): FlowEventType | null {
-    const state = this.flows.get(flowId);
-    if (!state || state.events.length === 0) return null;
-    return state.events[state.events.length - 1].type;
+  /** Get current state for a flow (latest event state). */
+  currentState(flowId: string): FlowState | null {
+    const flowState = this.flows.get(flowId);
+    if (!flowState || flowState.events.length === 0) return null;
+    return flowState.events[flowState.events.length - 1].state;
   }
 
   /** Get all events for a flow. */
@@ -89,18 +90,18 @@ export class FlowStatusRegistry {
   /** List all tracked flow IDs with their current state. */
   listFlows(): Array<{
     flowId: string;
-    state: FlowEventType;
-    providerId: string;
+    state: FlowState;
+    eventType: string;
   }> {
     const result: Array<{
       flowId: string;
-      state: FlowEventType;
-      providerId: string;
+      state: FlowState;
+      eventType: string;
     }> = [];
     for (const [flowId, flowState] of this.flows) {
       if (flowState.events.length > 0) {
         const last = flowState.events[flowState.events.length - 1];
-        result.push({ flowId, state: last.type, providerId: last.providerId });
+        result.push({ flowId, state: last.state, eventType: last.eventType });
       }
     }
     return result;
@@ -118,25 +119,25 @@ export class FlowStatusRegistry {
       connection: 'keep-alive',
     });
 
-    let state = this.flows.get(flowId);
-    if (!state) {
-      state = { events: [], subscribers: new Set() };
-      this.flows.set(flowId, state);
+    let flowState = this.flows.get(flowId);
+    if (!flowState) {
+      flowState = { events: [], subscribers: new Set() };
+      this.flows.set(flowId, flowState);
     }
 
     // Replay existing events
-    for (const event of state.events) {
+    for (const event of flowState.events) {
       const sseData = JSON.stringify({
-        providerId: event.providerId,
+        eventType: event.eventType,
         explanation: event.explanation,
       });
-      res.write(`event: ${event.type}\ndata: ${sseData}\n\n`);
+      res.write(`event: ${event.state}\ndata: ${sseData}\n\n`);
     }
 
-    state.subscribers.add(res);
+    flowState.subscribers.add(res);
 
     res.on('close', () => {
-      state!.subscribers.delete(res);
+      flowState!.subscribers.delete(res);
     });
   }
 
@@ -152,15 +153,15 @@ export class FlowStatusRegistry {
 
   /** Clean up — close all SSE connections. */
   destroy(): void {
-    for (const [, state] of this.flows) {
-      for (const res of state.subscribers) {
+    for (const [, flowState] of this.flows) {
+      for (const res of flowState.subscribers) {
         try {
           res.end();
         } catch {
           /* ignore */
         }
       }
-      state.subscribers.clear();
+      flowState.subscribers.clear();
     }
     this.flows.clear();
   }

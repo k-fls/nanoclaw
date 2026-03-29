@@ -297,9 +297,10 @@ export class OAuthE2EHarness {
       this.flowQueue.push(
         {
           flowId,
+          eventType: 'oauth-start',
           providerId: event.providerId,
-          url: event.url,
-          deliveryFn: null,
+          eventParam: event.url,
+          replyFn: null,
         },
         'xdg-open shim',
       );

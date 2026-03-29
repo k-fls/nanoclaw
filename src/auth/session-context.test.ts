@@ -23,9 +23,10 @@ describe('createSessionContext', () => {
     ctx.flowQueue.push(
       {
         flowId: 'flow-1',
+        eventType: 'oauth-start',
         providerId: 'claude',
-        url: 'https://example.com',
-        deliveryFn: null,
+        eventParam: 'https://example.com',
+        replyFn: null,
       },
       'test push',
     );

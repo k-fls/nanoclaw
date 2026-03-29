@@ -629,7 +629,7 @@ describe('CodeDeliveryHandler.deliver', () => {
     expect(handler).not.toBeNull();
 
     const result = await handler!.deliver('authcode123#stateabc');
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ done: true });
     expect(handle.stdin.write).toHaveBeenNthCalledWith(
       1,
       'authcode123#stateabc',
@@ -667,7 +667,7 @@ describe('CodeDeliveryHandler.deliver', () => {
     const result = await handler!.deliver(
       'http://localhost:54321/callback?code=mycode&state=mystate',
     );
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ done: true });
     expect(handle.stdin.write).toHaveBeenNthCalledWith(1, 'mycode#mystate');
   });
 
@@ -709,8 +709,8 @@ describe('CodeDeliveryHandler.deliver', () => {
       expect(handler).not.toBeNull();
 
       const result = await handler!.deliver('not-a-url');
-      expect(result.ok).toBe(false);
-      expect(result.error).toContain('Could not parse');
+      expect(result.done).toBe(false);
+      expect(result.response).toContain('Could not parse');
     } finally {
       server.close();
     }
@@ -756,8 +756,8 @@ describe('CodeDeliveryHandler.deliver', () => {
       const result = await handler!.deliver(
         'http://localhost:54321/callback?code=c&state=s',
       );
-      expect(result.ok).toBe(false);
-      expect(result.error).toContain('Port mismatch');
+      expect(result.done).toBe(false);
+      expect(result.response).toContain('Port mismatch');
     } finally {
       server.close();
     }

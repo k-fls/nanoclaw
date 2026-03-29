@@ -23,6 +23,7 @@ import { createAccessCheck } from './auth/provision.js';
 import {
   claudeProvider,
   extractUpstreamRequestId,
+  callbackHandler,
 } from './auth/providers/claude.js';
 import type { ChatIO } from './auth/types.js';
 import { AsyncMutex } from './auth/async-mutex.js';
@@ -707,38 +708,38 @@ async function main(): Promise<void> {
       flowId = `${providerId}:0:${Date.now()}`;
     }
 
-    // Build deliveryFn only for localhost callbacks — non-localhost redirects
+    // Build replyFn only for localhost callbacks — non-localhost redirects
     // are handled by the OAuth provider directly (browser redirect), no
     // programmatic delivery possible.
-    let deliveryFn: import('./auth/flow-queue.js').DeliveryFn | null = null;
+    // Reuses callbackHandler from claude.ts for URL parsing and validation.
+    let handler: import('./auth/providers/claude.js').CodeDeliveryHandler | null =
+      null;
     if (isLocalhost && callbackPort && containerIP) {
-      const port = callbackPort;
-      const cbPath = callbackPath;
-      const ip = containerIP;
-      deliveryFn = async (reply: string) => {
-        const code = encodeURIComponent(reply);
-        // Container bridge IP — bracket-wrap if IPv6 for URL compatibility.
-        const host = ip.includes(':') ? `[${ip}]` : ip;
-        const callbackUrl = `http://${host}:${port}${cbPath}?code=${code}`;
-        try {
-          const res = await fetch(callbackUrl, {
-            signal: AbortSignal.timeout(10_000),
-          });
-          if (res.ok) {
-            return { ok: true };
-          }
-          return { ok: false, error: `callback returned ${res.status}` };
-        } catch (err) {
-          // ECONNREFUSED, timeout, etc — container may be dead
-          return {
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
-      };
+      // Container bridge IP — bracket-wrap if IPv6 for URL compatibility.
+      const host = containerIP.includes(':')
+        ? `[${containerIP}]`
+        : containerIP;
+      handler = callbackHandler(url, host, callbackPort, callbackPath);
     }
 
-    ctx.flowQueue.push({ flowId, providerId, url, deliveryFn }, reason);
+    // Dedup: new OAuth URL supersedes any pending auth-start entry for the same provider
+    ctx.flowQueue.extract(
+      (e) => e.eventType === 'oauth-start' && e.providerId === providerId,
+      `superseded: ${reason}`,
+    );
+
+    ctx.flowQueue.push(
+      {
+        flowId,
+        eventType: 'oauth-start',
+        providerId,
+        eventParam: handler
+          ? `${handler.instructions}\n\n${url}`
+          : url,
+        replyFn: handler?.deliver.bind(handler) ?? null,
+      },
+      reason,
+    );
     return flowId;
   }
 

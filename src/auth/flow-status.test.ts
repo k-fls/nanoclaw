@@ -46,13 +46,13 @@ function mockResponse(): {
 describe('FlowStatusRegistry', () => {
   it('emits and tracks events', () => {
     const reg = new FlowStatusRegistry();
-    reg.emit('github:12345', 'github', 'queued', 'xdg-open shim');
-    reg.emit('github:12345', 'github', 'active', 'presenting to user');
+    reg.emit('github:12345', 'oauth-start', 'queued', 'xdg-open shim');
+    reg.emit('github:12345', 'oauth-start', 'active', 'presenting to user');
 
     expect(reg.currentState('github:12345')).toBe('active');
     expect(reg.events('github:12345')).toHaveLength(2);
-    expect(reg.events('github:12345')[0].type).toBe('queued');
-    expect(reg.events('github:12345')[1].type).toBe('active');
+    expect(reg.events('github:12345')[0].state).toBe('queued');
+    expect(reg.events('github:12345')[1].state).toBe('active');
   });
 
   it('returns null for unknown flows', () => {
@@ -63,9 +63,9 @@ describe('FlowStatusRegistry', () => {
 
   it('tracks multiple flows independently', () => {
     const reg = new FlowStatusRegistry();
-    reg.emit('github:1', 'github', 'queued', 'test');
-    reg.emit('google:1', 'google', 'queued', 'test');
-    reg.emit('github:1', 'github', 'completed', 'done');
+    reg.emit('github:1', 'oauth-start', 'queued', 'test');
+    reg.emit('google:1', 'oauth-start', 'queued', 'test');
+    reg.emit('github:1', 'oauth-start', 'completed', 'done');
 
     expect(reg.currentState('github:1')).toBe('completed');
     expect(reg.currentState('google:1')).toBe('queued');
@@ -73,8 +73,8 @@ describe('FlowStatusRegistry', () => {
 
   it('listFlows returns all flows with current state', () => {
     const reg = new FlowStatusRegistry();
-    reg.emit('github:1', 'github', 'queued', 'test');
-    reg.emit('google:1', 'google', 'active', 'test');
+    reg.emit('github:1', 'oauth-start', 'queued', 'test');
+    reg.emit('google:1', 'oauth-start', 'active', 'test');
 
     const flows = reg.listFlows();
     expect(flows).toHaveLength(2);
@@ -84,19 +84,19 @@ describe('FlowStatusRegistry', () => {
     expect(github).toEqual({
       flowId: 'github:1',
       state: 'queued',
-      providerId: 'github',
+      eventType: 'oauth-start',
     });
     expect(google).toEqual({
       flowId: 'google:1',
       state: 'active',
-      providerId: 'google',
+      eventType: 'oauth-start',
     });
   });
 
   it('events include timestamps', () => {
     const reg = new FlowStatusRegistry();
     const before = Date.now();
-    reg.emit('f1', 'github', 'queued', 'test');
+    reg.emit('f1', 'oauth-start', 'queued', 'test');
     const after = Date.now();
 
     const events = reg.events('f1');
@@ -106,7 +106,7 @@ describe('FlowStatusRegistry', () => {
 
   it('destroy clears all state', () => {
     const reg = new FlowStatusRegistry();
-    reg.emit('f1', 'github', 'queued', 'test');
+    reg.emit('f1', 'oauth-start', 'queued', 'test');
     reg.destroy();
     expect(reg.listFlows()).toEqual([]);
   });
@@ -127,8 +127,8 @@ describe('FlowStatusRegistry', () => {
 
     it('replays existing events on connect', () => {
       const reg = new FlowStatusRegistry();
-      reg.emit('flow-1', 'github', 'queued', 'queued by proxy');
-      reg.emit('flow-1', 'github', 'active', 'presenting');
+      reg.emit('flow-1', 'oauth-start', 'queued', 'queued by proxy');
+      reg.emit('flow-1', 'oauth-start', 'active', 'presenting');
 
       const { res, chunks } = mockResponse();
       reg.handleSSE('flow-1', {} as import('http').IncomingMessage, res);
@@ -147,7 +147,7 @@ describe('FlowStatusRegistry', () => {
       // Subscribe first
       reg.handleSSE('flow-2', {} as import('http').IncomingMessage, res);
       // Then emit
-      reg.emit('flow-2', 'google', 'queued', 'test');
+      reg.emit('flow-2', 'oauth-start', 'queued', 'test');
 
       const eventLines = chunks.filter((c) => c.includes('event: queued'));
       expect(eventLines).toHaveLength(1);
@@ -167,8 +167,8 @@ describe('FlowStatusRegistry', () => {
   describe('handleListFlows', () => {
     it('returns JSON array of all flows', () => {
       const reg = new FlowStatusRegistry();
-      reg.emit('f1', 'github', 'queued', 'test');
-      reg.emit('f2', 'google', 'completed', 'done');
+      reg.emit('f1', 'oauth-start', 'queued', 'test');
+      reg.emit('f2', 'oauth-start', 'completed', 'done');
 
       const { res, chunks } = mockResponse();
       reg.handleListFlows({} as import('http').IncomingMessage, res);
@@ -181,7 +181,7 @@ describe('FlowStatusRegistry', () => {
       expect(body.find((f: { flowId: string }) => f.flowId === 'f1')).toEqual({
         flowId: 'f1',
         state: 'queued',
-        providerId: 'github',
+        eventType: 'oauth-start',
       });
     });
 

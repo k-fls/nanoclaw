@@ -15,7 +15,7 @@ const FLOW_PREFIX = '🔑🤖 ';
 /**
  * Run the FIFO consumer loop. Returns when the AbortSignal fires.
  *
- * Processes flows one at a time: acquire lock → present URL → await reply
+ * Processes flows one at a time: acquire lock → present event → await reply
  * → deliver → release lock. FIFO ordering is structural (queue.waitForEntry
  * pops from front).
  */
@@ -27,15 +27,38 @@ export async function consumeFlows(
   signal: AbortSignal,
 ): Promise<void> {
   while (!signal.aborted) {
-    const entry = await queue.waitForEntry(signal);
+    let entry: FlowEntry | null = await queue.waitForEntry(signal);
     if (!entry) break;
+
+    // oauth-start: collapse duplicates for the same provider, use newest
+    if (entry.eventType === 'oauth-start') {
+      const pid = entry.providerId;
+      const dupes = queue.extract(
+        (e) => e.eventType === 'oauth-start' && e.providerId === pid,
+        'superseded',
+      );
+      if (dupes.length > 0) {
+        const newest = dupes[dupes.length - 1];
+        const reason = `superseded by ${newest.flowId}`;
+        statusRegistry.emit(entry.flowId, entry.eventType, 'removed', reason);
+        for (let i = 0; i < dupes.length - 1; i++) {
+          statusRegistry.emit(
+            dupes[i].flowId,
+            dupes[i].eventType,
+            'removed',
+            reason,
+          );
+        }
+        entry = newest;
+      }
+    }
 
     await processFlow(entry, chatLock, chat, statusRegistry, signal);
   }
 }
 
 /**
- * Process a single flow entry. Acquires chatLock, presents URL, awaits reply,
+ * Process a single flow entry. Acquires chatLock, presents event, awaits reply,
  * delivers, releases lock.
  *
  * Exported so Claude's auth runner can process an extracted entry directly
@@ -54,95 +77,90 @@ export async function processFlow(
   try {
     statusRegistry.emit(
       entry.flowId,
-      entry.providerId,
+      entry.eventType,
       'active',
       'presenting to user',
     );
 
-    await chat.send(
-      `${FLOW_PREFIX}*${entry.providerId}* needs authentication.\n` +
-        `Please open this URL and complete the flow:\n${entry.url}\n\n` +
-        `Reply with the auth code when done, or "cancel" to skip.`,
-    );
-
-    // Await user reply — respect AbortSignal for cancellation
-    const timeoutMs = 10 * 60 * 1000; // 10 minutes
-    const reply = await chat.receive(timeoutMs);
-
-    if (signal?.aborted) {
-      statusRegistry.emit(
-        entry.flowId,
-        entry.providerId,
-        'failed',
-        'consumer cancelled (container exited)',
-      );
-      return;
-    }
-
-    if (!reply || reply.trim().toLowerCase() === 'cancel') {
-      statusRegistry.emit(
-        entry.flowId,
-        entry.providerId,
-        'failed',
-        'user cancelled',
-      );
-      logger.info({ flowId: entry.flowId }, 'Flow cancelled by user');
-      return;
-    }
-
-    chat.advanceCursor();
-
-    if (!entry.deliveryFn) {
-      // Non-localhost redirect — no callback port. The user completed auth
-      // in their browser; we collected the reply but can't deliver it.
-      statusRegistry.emit(
-        entry.flowId,
-        entry.providerId,
-        'completed',
-        'user confirmed (no callback delivery)',
-      );
+    // Notification-only: no reply expected
+    if (!entry.replyFn) {
       await chat.send(
-        `${FLOW_PREFIX}Authentication for *${entry.providerId}* noted. The OAuth provider should handle the redirect directly.`,
+        `${FLOW_PREFIX}*${entry.providerId}*: ${entry.eventType} ${entry.eventParam}`,
+      );
+      statusRegistry.emit(
+        entry.flowId,
+        entry.eventType,
+        'completed',
+        'notification delivered (no reply expected)',
       );
       logger.info(
         { flowId: entry.flowId },
-        'Flow completed (no deliveryFn, non-localhost redirect)',
+        'Flow completed (notification-only)',
       );
-    } else {
-      // Deliver — deliveryFn must catch dead-target errors internally
-      const result = await entry.deliveryFn(reply.trim());
+      return;
+    }
 
-      if (result.ok) {
+    // Interactive: present and collect reply, loop until done
+    await chat.send(
+      `${FLOW_PREFIX}*${entry.providerId}* needs input.\n` +
+        `${entry.eventParam}\n\n` +
+        `Reply when ready, or "cancel" to stop.`,
+    );
+
+    let done = false;
+    while (!done) {
+      const timeoutMs = 10 * 60 * 1000; // 10 minutes
+      const reply = await chat.receive(timeoutMs);
+
+      if (signal?.aborted) {
         statusRegistry.emit(
           entry.flowId,
-          entry.providerId,
+          entry.eventType,
+          'failed',
+          'consumer cancelled (container exited)',
+        );
+        return;
+      }
+
+      if (!reply || reply.trim().toLowerCase() === 'cancel') {
+        statusRegistry.emit(
+          entry.flowId,
+          entry.eventType,
+          'failed',
+          'user cancelled',
+        );
+        logger.info({ flowId: entry.flowId }, 'Flow cancelled by user');
+        return;
+      }
+
+      chat.advanceCursor();
+
+      const result = await entry.replyFn(reply.trim());
+      done = result.done;
+
+      if (done) {
+        statusRegistry.emit(
+          entry.flowId,
+          entry.eventType,
           'completed',
-          'callback delivered successfully',
+          result.response ?? 'done',
         );
         await chat.send(
-          `${FLOW_PREFIX}Authentication for *${entry.providerId}* completed.`,
+          `${FLOW_PREFIX}*${entry.providerId}* completed.` +
+            (result.response ? ` ${result.response}` : ''),
         );
         logger.info({ flowId: entry.flowId }, 'Flow completed successfully');
       } else {
-        statusRegistry.emit(
-          entry.flowId,
-          entry.providerId,
-          'failed',
-          `delivery failed: ${result.error ?? 'unknown'}`,
-        );
+        // Not done — show response and prompt again
         await chat.send(
-          `${FLOW_PREFIX}Authentication for *${entry.providerId}* failed: ${result.error ?? 'delivery error'}`,
-        );
-        logger.warn(
-          { flowId: entry.flowId, error: result.error },
-          'Flow delivery failed',
+          `${FLOW_PREFIX}${result.response ?? 'Please try again.'}`,
         );
       }
     }
   } catch (err) {
     statusRegistry.emit(
       entry.flowId,
-      entry.providerId,
+      entry.eventType,
       'failed',
       `error: ${err instanceof Error ? err.message : String(err)}`,
     );

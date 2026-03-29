@@ -1,46 +1,64 @@
 /**
- * OAuth flow queue — single source of truth for pending OAuth flows.
+ * Event flow queue — single source of truth for pending user-facing events.
  *
- * Ordered, async-safe queue with provider dedup, blocking pop, and
- * out-of-order extraction by providerId.
+ * Ordered, async-safe queue with blocking pop and FIFO consumption.
+ * Generic enough for any event that needs to notify the user and
+ * optionally collect a reply.
+ *
+ * The queue itself does NOT dedup — callers decide whether to supersede
+ * an existing entry via find() + remove() before pushing.
  */
 import { logger } from '../logger.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
-/** Result of a delivery attempt. */
+/** Result of delivering a user reply back to the event source. */
 export interface DeliveryResult {
-  ok: boolean;
-  error?: string;
+  /** True when the interaction is complete. False means the user should reply again. */
+  done: boolean;
+  /** Optional message to show the user (status, follow-up prompt, error detail). */
+  response?: string;
 }
 
 /**
- * Delivers a user-provided auth code/reply to the waiting consumer
- * (callback port or stdin pipe inside the container).
+ * Delivers a user-provided reply back to the event source
+ * (e.g. OAuth callback port, stdin pipe inside the container).
  *
  * Must catch dead-target errors (ECONNREFUSED, broken pipe) and return
- * `{ ok: false, error: '...' }` rather than throwing.
+ * `{ done: true, response: '...' }` rather than throwing.
  */
-export type DeliveryFn = (reply: string) => Promise<DeliveryResult>;
+export type ReplyFn = (reply: string) => Promise<DeliveryResult>;
 
-/** A pending OAuth flow in the queue. */
+/** @deprecated Use ReplyFn — kept for migration convenience. */
+export type DeliveryFn = ReplyFn;
+
+/**
+ * Event category — controls consumer behavior and message formatting.
+ * Add new values here as new event kinds are introduced.
+ */
+export type FlowEventKind = 'oauth-start' | 'oauth-refresh' | 'notification';
+
+/** A pending event in the queue. */
 export interface FlowEntry {
   flowId: string;
+  eventType: FlowEventKind;
+  /** Display label for the user (e.g. provider name, service). */
   providerId: string;
-  url: string;
+  /** Event payload shown to the user (URL, message text, etc.). */
+  eventParam: string;
   /**
-   * Delivers the user's reply to the waiting consumer.
-   * Null when the redirect_uri is non-localhost — no callback port to hit.
-   * The consumer still presents the URL and collects the reply, but cannot
-   * deliver it programmatically.
+   * Delivers the user's reply back to the event source.
+   * When present, the consumer collects user input and calls this
+   * repeatedly until `done: true` or the user cancels.
+   * When null, the event is notification-only (no reply expected).
    */
-  deliveryFn: DeliveryFn | null;
+  replyFn: ReplyFn | null;
 }
 
 /** Callback for queue mutations — wired to the status registry. */
 export type QueueMutationCallback = (
   flowId: string,
-  providerId: string,
+  eventType: FlowEventKind,
   event: 'queued' | 'removed',
   reason: string,
 ) => void;
@@ -63,38 +81,46 @@ export class FlowQueue {
   }
 
   /**
-   * Push a flow entry. If the same providerId already has a pending entry,
-   * it is removed first and the new entry is appended at the end.
-   * @param reason Textual explanation for the mutation — forwarded to status registry.
+   * Append an entry to the queue. No dedup — callers should use
+   * find() + remove() beforehand if they want to supersede.
    */
   push(entry: FlowEntry, reason: string): void {
-    // Dedup by provider
-    const idx = this.entries.findIndex(
-      (e) => e.providerId === entry.providerId,
-    );
-    if (idx !== -1) {
-      const old = this.entries.splice(idx, 1)[0];
-      logger.info(
-        { flowId: old.flowId, providerId: old.providerId },
-        'Flow queue: removed superseded entry',
-      );
-      this._onMutation?.(
-        old.flowId,
-        old.providerId,
-        'removed',
-        `superseded: ${reason}`,
-      );
-    }
-
     this.entries.push(entry);
     logger.info(
-      { flowId: entry.flowId, providerId: entry.providerId },
+      {
+        flowId: entry.flowId,
+        eventType: entry.eventType,
+        providerId: entry.providerId,
+      },
       'Flow queue: entry added',
     );
-    this._onMutation?.(entry.flowId, entry.providerId, 'queued', reason);
+    this._onMutation?.(entry.flowId, entry.eventType, 'queued', reason);
 
     // Wake consumer if blocked
     this._notify?.();
+  }
+
+  /**
+   * Extract all entries matching a predicate. Removes them from the queue
+   * and returns them. Fires the mutation callback for each removal.
+   */
+  extract(predicate: (e: FlowEntry) => boolean, reason: string): FlowEntry[] {
+    const extracted: FlowEntry[] = [];
+    this.entries = this.entries.filter((e) => {
+      if (predicate(e)) {
+        extracted.push(e);
+        return false;
+      }
+      return true;
+    });
+    for (const e of extracted) {
+      logger.info(
+        { flowId: e.flowId, eventType: e.eventType },
+        'Flow queue: entry extracted',
+      );
+      this._onMutation?.(e.flowId, e.eventType, 'removed', reason);
+    }
+    return extracted;
   }
 
   /**
@@ -115,8 +141,8 @@ export class FlowQueue {
     return this.entries.shift()!;
   }
 
-  /** Check if a provider has a pending entry without removing it. */
-  hasProvider(providerId: string): boolean {
-    return this.entries.some((e) => e.providerId === providerId);
+  /** Check if any pending entry matches a predicate. */
+  has(predicate: (e: FlowEntry) => boolean): boolean {
+    return this.entries.some(predicate);
   }
 }
