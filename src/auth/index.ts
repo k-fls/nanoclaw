@@ -3,7 +3,7 @@
  */
 export { initCredentialStore } from './store.js';
 export { importEnvToDefault } from './provision.js';
-export { createAuthGuard } from './guard.js';
+export { createAuthGuard, type AuthGuard } from './guard.js';
 export {
   registerProvider,
   getProvider,

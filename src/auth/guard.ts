@@ -1,14 +1,25 @@
 /**
- * Auth guard — thin integration layer for index.ts.
- * Encapsulates credential checking, stream auth error detection, and reauth triggering.
+ * Auth guard — single auth facade for handleMessages.
+ *
+ * Owns session lifecycle (context, flow consumer, proxy registration)
+ * and credential checking / reauth triggering. index.ts just calls
+ * start(), onStreamResult(), finish().
  */
 import type { RegisteredGroup } from '../types.js';
 import type { ChatIO, CredentialProvider } from './types.js';
-import { isAuthError, extractStreamRequestId } from './providers/claude.js';
+import type { CredentialProxy } from '../credential-proxy.js';
+import {
+  isAuthError,
+  extractStreamRequestId,
+  extractUpstreamRequestId,
+  claudeProvider,
+} from './providers/claude.js';
 import { runReauth } from './reauth.js';
 import { getTokenEngine } from './registry.js';
 import { scopeOf } from '../types.js';
-import type { PendingAuthErrors } from './pending-auth-errors.js';
+import { createSessionContext } from './session-context.js';
+import { consumeFlows } from './flow-consumer.js';
+import { AsyncMutex } from './async-mutex.js';
 import { logger } from '../logger.js';
 
 const MAX_REASON_LEN = 200;
@@ -26,48 +37,82 @@ function sanitizeReason(raw: string): string {
   );
 }
 
-export function createAuthGuard(
-  group: RegisteredGroup,
-  createChat: () => ChatIO,
-  closeStdin: () => void,
-  /** The provider whose credentials power the session. */
-  provider: CredentialProvider,
-  /** Optional pending auth errors tracker for proxy-confirmed detection. */
-  pendingErrors?: PendingAuthErrors,
-) {
-  let streamedAuthError: string | null = null;
+export interface AuthGuard {
+  /**
+   * Start auth session: register session context with proxy, start flow
+   * consumer, check credentials. Returns false if reauth failed.
+   */
+  start(): Promise<boolean>;
+
+  /** Call from streaming callback. Detects auth errors and kills container. */
+  onStreamResult(result: {
+    status: string;
+    result?: string | null;
+    error?: string;
+  }): void;
 
   /**
-   * Check if an error string is a confirmed auth error.
-   * With pendingErrors: requires both proxy and agent to agree (request_id correlation).
-   * Without pendingErrors: falls back to regex-only detection (legacy behavior).
+   * Finish auth session: stop flow consumer, handle auth errors, clean up.
+   * Returns 'not-auth' | 'reauth-ok' | 'reauth-failed'.
    */
+  finish(
+    agentError?: string,
+  ): Promise<'not-auth' | 'reauth-ok' | 'reauth-failed'>;
+
+  /**
+   * Chat lock shared between the flow consumer and the output sender.
+   * Acquire before sending messages to prevent interleaving.
+   */
+  readonly chatLock: AsyncMutex;
+}
+
+export function createAuthGuard(
+  group: RegisteredGroup,
+  proxy: CredentialProxy,
+  createChat: () => ChatIO,
+  closeStdin: () => void,
+  /** Override provider for testing. Defaults to claudeProvider. */
+  provider: CredentialProvider = claudeProvider,
+): AuthGuard {
+  const scope = scopeOf(group);
+  const sessionCtx = createSessionContext(scope, extractUpstreamRequestId);
+  const chatLock = new AsyncMutex();
+  const flowAbort = new AbortController();
+
+  let consumerPromise: Promise<void> | null = null;
+  let streamedAuthError: string | null = null;
+
   function isConfirmedAuthError(error: string): boolean {
     if (!isAuthError(error)) return false;
 
-    if (pendingErrors) {
-      // Proxy-confirmed mode: both proxy and agent must agree via request_id.
-      const requestId = extractStreamRequestId(error);
-      if (requestId && pendingErrors.has(requestId)) {
-        return true;
-      }
-      logger.debug(
-        { group: group.name, requestId },
-        'Auth error in stream not confirmed by proxy — ignoring (not a confirmed auth error)',
-      );
-      return false;
+    const requestId = extractStreamRequestId(error);
+    if (requestId && sessionCtx.pendingErrors.has(requestId)) {
+      return true;
     }
-
-    // No pendingErrors tracker — regex match alone (legacy, no proxy integration)
-    return true;
+    logger.debug(
+      { group: group.name, requestId },
+      'Auth error in stream not confirmed by proxy — ignoring',
+    );
+    return false;
   }
 
   return {
-    /** Check credentials before agent run. Returns false if reauth failed. */
-    async preCheck(): Promise<boolean> {
-      // Engine resolves credential scope internally (own → default fallback)
+    chatLock,
+
+    async start(): Promise<boolean> {
+      proxy.registerSessionContext(scope, sessionCtx);
+
+      consumerPromise = consumeFlows(
+        sessionCtx.flowQueue,
+        chatLock,
+        createChat(),
+        sessionCtx.statusRegistry,
+        flowAbort.signal,
+      );
+
+      // Check credentials
       const engine = getTokenEngine();
-      if (engine.hasAnyCredential(scopeOf(group), provider.id)) return true;
+      if (engine.hasAnyCredential(scope, provider.id)) return true;
 
       logger.warn(
         { group: group.name },
@@ -82,12 +127,7 @@ export function createAuthGuard(
       );
     },
 
-    /** Call from streaming callback. Detects auth errors and kills container. */
-    onStreamResult(result: {
-      status: string;
-      result?: string | null;
-      error?: string;
-    }): void {
+    onStreamResult(result): void {
       if (
         typeof result.error === 'string' &&
         isConfirmedAuthError(result.error)
@@ -104,35 +144,42 @@ export function createAuthGuard(
       }
     },
 
-    /**
-     * Handle auth errors after agent run.
-     * Returns 'not-auth' if not an auth error, 'reauth-ok' or 'reauth-failed' otherwise.
-     */
-    async handleAuthError(
-      agentError?: string,
-    ): Promise<'not-auth' | 'reauth-ok' | 'reauth-failed'> {
+    async finish(agentError?: string) {
+      // Stop flow consumer
+      flowAbort.abort();
+      if (consumerPromise) await consumerPromise;
+
       if (agentError && isAuthError(agentError)) {
         streamedAuthError = agentError;
       }
-      if (!streamedAuthError) return 'not-auth';
 
-      const reason = streamedAuthError;
-      streamedAuthError = null;
-      pendingErrors?.clear();
+      let authResult: 'not-auth' | 'reauth-ok' | 'reauth-failed' = 'not-auth';
 
-      const engine = getTokenEngine();
-      logger.warn(
-        { group: group.name, reason },
-        'Auth error detected, starting reauth',
-      );
-      const ok = await runReauth(
-        group.folder,
-        createChat(),
-        `Agent failed: ${sanitizeReason(reason)}`,
-        provider.displayName,
-        engine,
-      );
-      return ok ? 'reauth-ok' : 'reauth-failed';
+      if (streamedAuthError) {
+        const reason = streamedAuthError;
+        streamedAuthError = null;
+        sessionCtx.pendingErrors.clear();
+
+        const engine = getTokenEngine();
+        logger.warn(
+          { group: group.name, reason },
+          'Auth error detected, starting reauth',
+        );
+        const ok = await runReauth(
+          group.folder,
+          createChat(),
+          `Agent failed: ${sanitizeReason(reason)}`,
+          provider.displayName,
+          engine,
+        );
+        authResult = ok ? 'reauth-ok' : 'reauth-failed';
+      }
+
+      // Cleanup session
+      proxy.deregisterSessionContext(scope);
+      sessionCtx.statusRegistry.destroy();
+
+      return authResult;
     },
   };
 }

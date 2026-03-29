@@ -15,11 +15,30 @@ vi.mock('./reauth.js', () => ({
   runReauth: vi.fn(async () => true),
 }));
 
-// Mock the token engine's hasAnyCredential method used by guard.preCheck()
+// Mock the token engine's hasAnyCredential method used by guard.start()
 const mockHasAnyCredential = vi.fn(() => true);
 vi.mock('./registry.js', () => ({
   getTokenEngine: vi.fn(() => ({
     hasAnyCredential: mockHasAnyCredential,
+  })),
+}));
+
+// Mock consumeFlows — just resolve immediately
+vi.mock('./flow-consumer.js', () => ({
+  consumeFlows: vi.fn(async () => {}),
+}));
+
+// Shared pendingErrors so tests can record request IDs before triggering errors
+const sharedPendingErrors = new PendingAuthErrors();
+
+// Mock createSessionContext to avoid real PendingAuthErrors/FlowQueue wiring
+vi.mock('./session-context.js', () => ({
+  createSessionContext: vi.fn(() => ({
+    scope: 'test-scope',
+    pendingErrors: sharedPendingErrors,
+    flowQueue: { onMutation: vi.fn() },
+    statusRegistry: { destroy: vi.fn(), emit: vi.fn() },
+    onAuthError: vi.fn(),
   })),
 }));
 
@@ -46,6 +65,15 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
     advanceCursor: vi.fn(),
   };
   return chat;
+}
+
+function mockProxy() {
+  return {
+    registerSessionContext: vi.fn(),
+    deregisterSessionContext: vi.fn(),
+    getSessionContext: vi.fn(),
+    getMitmContext: vi.fn(),
+  } as any;
 }
 
 function mockProvider(
@@ -80,69 +108,85 @@ function authError(requestId = 'req_abc'): string {
 describe('createAuthGuard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sharedPendingErrors.clear();
   });
 
-  describe('preCheck', () => {
+  describe('start', () => {
     it('returns true when credentials are available', async () => {
       mockHasAnyCredential.mockReturnValue(true);
-      const provider = mockProvider();
-      const guard = createAuthGuard(group, mockChat, vi.fn(), provider);
+      const guard = createAuthGuard(
+        group,
+        mockProxy(),
+        mockChat,
+        vi.fn(),
+        mockProvider(),
+      );
 
-      expect(await guard.preCheck()).toBe(true);
+      expect(await guard.start()).toBe(true);
       expect(runReauth).not.toHaveBeenCalled();
     });
 
     it('goes straight to reauth when no credentials', async () => {
       mockHasAnyCredential.mockReturnValue(false);
-      const provider = mockProvider();
-      const guard = createAuthGuard(group, () => mockChat(), vi.fn(), provider);
+      const guard = createAuthGuard(
+        group,
+        mockProxy(),
+        () => mockChat(),
+        vi.fn(),
+        mockProvider(),
+      );
 
-      await guard.preCheck();
+      await guard.start();
 
       expect(runReauth).toHaveBeenCalled();
+    });
+
+    it('registers session context with proxy', async () => {
+      mockHasAnyCredential.mockReturnValue(true);
+      const proxy = mockProxy();
+      const guard = createAuthGuard(
+        group,
+        proxy,
+        mockChat,
+        vi.fn(),
+        mockProvider(),
+      );
+
+      await guard.start();
+
+      expect(proxy.registerSessionContext).toHaveBeenCalled();
     });
   });
 
   describe('onStreamResult', () => {
-    it('detects auth error and calls closeStdin', () => {
+    it('detects auth error and calls closeStdin', async () => {
       const closeStdin = vi.fn();
       const guard = createAuthGuard(
         group,
+        mockProxy(),
         mockChat,
         closeStdin,
         mockProvider(),
       );
+      await guard.start();
 
+      // Simulate proxy recording the request ID (bearer-swap 401)
+      sharedPendingErrors.record('req_abc');
       guard.onStreamResult({ status: 'error', error: authError() });
 
       expect(closeStdin).toHaveBeenCalled();
     });
 
-    it('uses proxy-confirmed detection when pendingErrors provided', () => {
-      const closeStdin = vi.fn();
-      const pending = new PendingAuthErrors();
-      pending.record('req_abc');
-      const guard = createAuthGuard(
-        group,
-        mockChat,
-        closeStdin,
-        mockProvider(),
-        pending,
-      );
-
-      guard.onStreamResult({ status: 'error', error: authError() });
-
-      expect(closeStdin).toHaveBeenCalled();
-    });
-
-    it('ignores non-auth errors', () => {
+    it('ignores non-auth errors', async () => {
       const closeStdin = vi.fn();
       const guard = createAuthGuard(
         group,
+        mockProxy(),
         mockChat,
         closeStdin,
         mockProvider(),
       );
+      await guard.start();
 
       guard.onStreamResult({ status: 'error', error: 'some random error' });
 
@@ -150,80 +194,68 @@ describe('createAuthGuard', () => {
     });
   });
 
-  describe('handleAuthError', () => {
+  describe('finish', () => {
     it('returns not-auth when no auth error detected', async () => {
       const guard = createAuthGuard(
         group,
+        mockProxy(),
         () => mockChat(),
         vi.fn(),
         mockProvider(),
       );
+      await guard.start();
 
-      expect(await guard.handleAuthError('some non-auth error')).toBe(
-        'not-auth',
-      );
+      expect(await guard.finish('some non-auth error')).toBe('not-auth');
     });
 
-    it('goes straight to reauth on detected auth error', async () => {
-      const provider = mockProvider({
-        provision: vi
-          .fn()
-          .mockReturnValueOnce({ env: { KEY: 'val' } }) // preCheck
-          .mockReturnValue({ env: {} }), // handleAuthError checks
-      });
-      const guard = createAuthGuard(group, () => mockChat(), vi.fn(), provider);
+    it('runs reauth on detected auth error', async () => {
+      const guard = createAuthGuard(
+        group,
+        mockProxy(),
+        () => mockChat(),
+        vi.fn(),
+        mockProvider(),
+      );
+      await guard.start();
 
+      sharedPendingErrors.record('req_abc');
       guard.onStreamResult({ status: 'error', error: authError() });
-
-      await guard.handleAuthError();
+      await guard.finish();
 
       expect(runReauth).toHaveBeenCalled();
     });
 
-    it('goes straight to reauth on auth error', async () => {
-      const provider = mockProvider({
-        provision: vi
-          .fn()
-          .mockReturnValueOnce({ env: { KEY: 'val' } })
-          .mockReturnValue({ env: {} }),
-      });
-      const guard = createAuthGuard(group, () => mockChat(), vi.fn(), provider);
+    it('returns reauth result on auth error', async () => {
+      const guard = createAuthGuard(
+        group,
+        mockProxy(),
+        () => mockChat(),
+        vi.fn(),
+        mockProvider(),
+      );
+      await guard.start();
 
+      sharedPendingErrors.record('req_abc');
       guard.onStreamResult({ status: 'error', error: authError() });
-
-      const result = await guard.handleAuthError();
+      const result = await guard.finish();
 
       expect(result).not.toBe('not-auth');
       expect(runReauth).toHaveBeenCalled();
     });
 
-    it('clears pendingErrors on auth error', async () => {
-      const pending = new PendingAuthErrors();
-      pending.record('req_abc');
-      pending.record('req_2');
-
-      const provider = mockProvider({
-        provision: vi
-          .fn()
-          .mockReturnValueOnce({ env: { KEY: 'val' } })
-          .mockReturnValue({ env: {} }),
-      });
+    it('deregisters session context on finish', async () => {
+      const proxy = mockProxy();
       const guard = createAuthGuard(
         group,
+        proxy,
         () => mockChat(),
         vi.fn(),
-        provider,
-        pending,
+        mockProvider(),
       );
+      await guard.start();
+      await guard.finish();
 
-      guard.onStreamResult({
-        status: 'error',
-        error: authError(), // uses req_abc which is in pending
-      });
-
-      await guard.handleAuthError();
-
-      expect(pending.size).toBe(0);
+      expect(proxy.deregisterSessionContext).toHaveBeenCalled();
     });
   });
 });
