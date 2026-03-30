@@ -180,6 +180,7 @@ export interface DiscoveryFile {
     delimiters?: string;
   };
   _refresh_strategy?: RefreshStrategy;
+  _env_vars?: Record<string, string>;
   _host_patterns?: string[];
   _token_field_capture?: {
     from_request?: string[];
@@ -327,6 +328,7 @@ export function parseDiscoveryFile(
     scopeKeys: [...allScopeKeys],
     substituteConfig,
     refreshStrategy,
+    ...(data._env_vars && { envVars: data._env_vars }),
     ...(tokenFieldCapture && { tokenFieldCapture }),
   };
 }

@@ -5,15 +5,22 @@
  * canAccessScope() — access check callback for the token engine.
  */
 import type { RegisteredGroup } from '../types.js';
+import { scopeOf } from '../types.js';
 import { getAllProviders } from './registry.js';
 import type {
+  OAuthProvider,
   ScopeAccessCheck,
   GroupScope,
   CredentialScope,
 } from './oauth-types.js';
-import { asGroupScope, DEFAULT_CREDENTIAL_SCOPE } from './oauth-types.js';
+import {
+  asGroupScope,
+  BEARER_SWAP_ROLES,
+  DEFAULT_CREDENTIAL_SCOPE,
+} from './oauth-types.js';
 import type {
   TokenSubstituteEngine,
+  TokenRole,
   GroupResolver,
 } from './token-substitute.js';
 
@@ -33,6 +40,36 @@ export function importEnvToDefault(engine: TokenSubstituteEngine): void {
  * The returned function checks whether a group is allowed to access
  * credentials from the given sourceScope.
  */
+/**
+ * Provision env vars from an OAuthProvider's envVars mapping.
+ * Only populates vars for bearer-swap roles (access, api_key).
+ * Skips absent roles silently — no env var emitted if no token exists.
+ */
+export function provisionEnvVars(
+  oauthProvider: OAuthProvider,
+  group: RegisteredGroup,
+  tokenEngine: TokenSubstituteEngine,
+): Record<string, string> {
+  if (!oauthProvider.envVars) return {};
+
+  const scope = scopeOf(group);
+  const env: Record<string, string> = {};
+
+  for (const [envName, role] of Object.entries(oauthProvider.envVars)) {
+    if (!BEARER_SWAP_ROLES.has(role)) continue;
+    const sub = tokenEngine.getOrCreateSubstitute(
+      oauthProvider.id,
+      {},
+      scope,
+      oauthProvider.substituteConfig,
+      role as TokenRole,
+    );
+    if (sub) env[envName] = sub;
+  }
+
+  return env;
+}
+
 export function createAccessCheck(
   groupResolver: GroupResolver,
 ): ScopeAccessCheck {

@@ -18,6 +18,7 @@ import { join } from 'path';
 
 import type { InterceptRule, OAuthProvider } from './oauth-types.js';
 import type { GroupScope } from './oauth-types.js';
+import { BEARER_SWAP_ROLES } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { HostHandler } from '../credential-proxy.js';
 import { proxyBuffered } from '../credential-proxy.js';
@@ -394,9 +395,6 @@ function createBearerSwapHandler(
     const scopeAttrs = extractScopeAttrs(targetHost, rule);
     const headers = prepareHeaders(clientReq, targetHost);
 
-    // Roles that may appear in request headers (not refresh — that's token-exchange only)
-    const HEADER_ROLES = new Set(['access', 'api_key']);
-
     // Scan all headers for substitutes, swap real tokens in.
     // Track swaps so the buffer-replay path can re-resolve after refresh.
     const swappedHeaders: Array<{
@@ -426,7 +424,7 @@ function createBearerSwapHandler(
         groupScope,
         scopeAttrs,
       );
-      if (!entry || !HEADER_ROLES.has(entry.mapping.role)) continue;
+      if (!entry || !BEARER_SWAP_ROLES.has(entry.mapping.role)) continue;
 
       headers[name] = `${prefix}${entry.realToken}`;
       swappedHeaders.push({ headerName: name, substitute: candidate, prefix });

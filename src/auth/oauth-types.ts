@@ -66,6 +66,12 @@ export interface OAuthProvider {
   /** How bearer-swap handles expired tokens. */
   refreshStrategy: RefreshStrategy;
   /**
+   * Env var → token role mapping for container provisioning.
+   * E.g. { "GH_TOKEN": "access", "ANTHROPIC_API_KEY": "api_key" }
+   * During provision, each role's substitute is looked up and set as the env var.
+   */
+  envVars?: Record<string, string>;
+  /**
    * Controls which fields are captured from token-exchange requests/responses
    * and stored alongside tokens for use in refresh requests.
    *
@@ -188,3 +194,9 @@ export type RefreshStrategy =
   | 'buffer'
   | 'passthrough'
   | 'proactive';
+
+/**
+ * Token roles allowed in bearer-swap header resolution and env var provisioning.
+ * Refresh tokens are excluded — they only appear in token-exchange requests.
+ */
+export const BEARER_SWAP_ROLES = new Set(['access', 'api_key']);

@@ -32,15 +32,17 @@ vi.mock('../env.js', () => ({
 
 const { initCredentialStore } = await import('./store.js');
 const { registerProvider } = await import('./registry.js');
-const { importEnvToDefault, createAccessCheck } =
+const { importEnvToDefault, createAccessCheck, provisionEnvVars } =
   await import('./provision.js');
 
 import type { CredentialProvider } from './types.js';
 import type { RegisteredGroup } from '../types.js';
+import type { OAuthProvider } from './oauth-types.js';
 import {
   asGroupScope,
   asCredentialScope,
   DEFAULT_CREDENTIAL_SCOPE,
+  DEFAULT_SUBSTITUTE_CONFIG,
 } from './oauth-types.js';
 import {
   TokenSubstituteEngine,
@@ -166,5 +168,126 @@ describe('importEnvToDefault', () => {
     const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
     // Should not throw
     importEnvToDefault(engine);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// provisionEnvVars
+// ---------------------------------------------------------------------------
+
+function makeOAuthProvider(envVars?: Record<string, string>): OAuthProvider {
+  return {
+    id: 'test-provider',
+    rules: [],
+    scopeKeys: [],
+    substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+    refreshStrategy: 'redirect',
+    envVars,
+  };
+}
+
+describe('provisionEnvVars', () => {
+  beforeEach(() => {
+    initCredentialStore();
+  });
+
+  it('provisions access token as env var', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({ GH_TOKEN: 'access' });
+    const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+
+    engine.generateSubstitute(
+      realToken,
+      'test-provider',
+      {},
+      asGroupScope('my-group'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      'access',
+    );
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    expect(env.GH_TOKEN).toBeDefined();
+    expect(env.GH_TOKEN).not.toBe(realToken);
+    expect(env.GH_TOKEN.length).toBe(realToken.length);
+  });
+
+  it('provisions multiple env vars for the same role', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({
+      GH_TOKEN: 'access',
+      GITHUB_TOKEN: 'access',
+    });
+    const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+
+    engine.generateSubstitute(
+      realToken,
+      'test-provider',
+      {},
+      asGroupScope('my-group'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      'access',
+    );
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    expect(env.GH_TOKEN).toBeDefined();
+    expect(env.GITHUB_TOKEN).toBeDefined();
+    // Both should resolve to the same substitute
+    expect(env.GH_TOKEN).toBe(env.GITHUB_TOKEN);
+  });
+
+  it('skips env var when no token exists for the role', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({ GH_TOKEN: 'access' });
+
+    // No tokens stored
+    const env = provisionEnvVars(provider, makeGroup('empty-group'), engine);
+    expect(env).toEqual({});
+  });
+
+  it('refuses to provision refresh tokens', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({ REFRESH: 'refresh' });
+    const realRefresh = 'refresh_abcdefghijklmnopqrstuvwxyz1234567890abcdefgh';
+
+    engine.generateSubstitute(
+      realRefresh,
+      'test-provider',
+      {},
+      asGroupScope('my-group'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      'refresh',
+    );
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    // refresh role is not in BEARER_SWAP_ROLES — must not appear
+    expect(env.REFRESH).toBeUndefined();
+    expect(env).toEqual({});
+  });
+
+  it('returns empty when provider has no envVars mapping', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider(); // no envVars
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    expect(env).toEqual({});
+  });
+
+  it('provisions api_key role', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({ API_KEY: 'api_key' });
+    const realKey = 'key_xabcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+
+    engine.generateSubstitute(
+      realKey,
+      'test-provider',
+      {},
+      asGroupScope('my-group'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      'api_key',
+    );
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    expect(env.API_KEY).toBeDefined();
+    expect(env.API_KEY).not.toBe(realKey);
   });
 });
