@@ -27,7 +27,6 @@ import { IDLE_TIMEOUT } from '../../config.js';
 import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
 import { proxyPipe, getProxy } from '../../credential-proxy.js';
-import type { HostHandler } from '../../credential-proxy.js';
 import {
   RESELECT,
   type AuthContext,
@@ -685,46 +684,6 @@ export const CLAUDE_OAUTH_PROVIDER: import('../oauth-types.js').OAuthProvider =
   };
 
 /**
- * Wrap a universal bearer-swap handler to also handle x-api-key.
- * API key requests are resolved via the token engine and passed through
- * without refresh (API keys don't refresh — 401 escalates to user).
- */
-export function wrapWithApiKeySupport(
-  universalHandler: HostHandler,
-  tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
-): HostHandler {
-  return async (clientReq, clientRes, targetHost, targetPort, scope) => {
-    const apiKeyHeader = clientReq.headers['x-api-key'];
-    if (typeof apiKeyHeader === 'string') {
-      // API key mode: resolve substitute, then delegate to the same
-      // bearer-swap handler. It handles 401 detection, body buffering,
-      // and auth error callback. Refresh will fail (no refresh token
-      // for API keys), so the 401 is forwarded with request_id recorded.
-      const entry = tokenEngine.resolveSubstitute(apiKeyHeader, scope);
-      if (entry) {
-        (clientReq.headers as Record<string, string>)['x-api-key'] =
-          entry.realToken;
-      }
-      return universalHandler(
-        clientReq,
-        clientRes,
-        targetHost,
-        targetPort,
-        scope,
-      );
-    }
-    // OAuth mode: delegate to universal bearer-swap (handles refresh)
-    return universalHandler(
-      clientReq,
-      clientRes,
-      targetHost,
-      targetPort,
-      scope,
-    );
-  };
-}
-
-/**
  * Register an additional API host for Claude from a base URL string.
  * Parses the URL, skips if it's the default host, and registers the
  * universal handler + x-api-key wrapper. Safe to call with invalid URLs.
@@ -744,8 +703,9 @@ export function registerClaudeBaseUrl(
       pathPattern: /^\//,
       mode: 'bearer-swap' as const,
     };
-    const handler = wrapWithApiKeySupport(
-      createUniversalHandler(CLAUDE_OAUTH_PROVIDER, rule, tokenEngine),
+    const handler = createUniversalHandler(
+      CLAUDE_OAUTH_PROVIDER,
+      rule,
       tokenEngine,
     );
     const hostPattern = new RegExp(`^${hostname.replace(/\./g, '\\.')}$`);

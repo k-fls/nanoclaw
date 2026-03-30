@@ -394,64 +394,86 @@ function createBearerSwapHandler(
     const scopeAttrs = extractScopeAttrs(targetHost, rule);
     const headers = prepareHeaders(clientReq, targetHost);
 
-    // Swap Bearer token
-    let substitutedToken: string | null = null;
+    // Roles that may appear in request headers (not refresh — that's token-exchange only)
+    const HEADER_ROLES = new Set(['access', 'api_key']);
+
+    // Scan all headers for substitutes, swap real tokens in.
+    // Track swaps so the buffer-replay path can re-resolve after refresh.
+    const swappedHeaders: Array<{
+      headerName: string;
+      substitute: string;
+      prefix: string; // e.g. "Bearer " — text before the token in the header value
+    }> = [];
     let proactiveRefreshAttempted = false;
-    const authHeader = headers['authorization'];
-    if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-      substitutedToken = authHeader.slice(7);
+
+    for (const [name, value] of Object.entries(headers)) {
+      if (typeof value !== 'string') continue;
+
+      // Extract candidate token: "Bearer <token>" or bare value
+      let candidate: string;
+      let prefix: string;
+      if (value.startsWith('Bearer ')) {
+        candidate = value.slice(7);
+        prefix = 'Bearer ';
+      } else {
+        candidate = value;
+        prefix = '';
+      }
+
       const entry = tokenEngine.resolveWithRestriction(
-        substitutedToken,
+        candidate,
         groupScope,
         scopeAttrs,
       );
-      if (entry) {
-        headers['authorization'] = `Bearer ${entry.realToken}`;
+      if (!entry || !HEADER_ROLES.has(entry.mapping.role)) continue;
 
-        // Proactive strategy: check token expiry before sending upstream.
-        // If expired or about to expire, attempt refresh now so the first
-        // request goes out with a fresh token instead of hitting a 401.
-        if (refreshStrategy === 'proactive') {
-          const expiresTs = tokenEngine.getKeyExpiry(
-            groupScope,
-            provider.id,
-            'access',
-          );
-          if (expiresTs > 0 && expiresTs < Date.now() + REFRESH_AHEAD_MS) {
-            proactiveRefreshAttempted = true;
-            logger.info(
-              {
-                provider: provider.id,
-                scope: groupScope,
-                expiresIn: Math.round((expiresTs - Date.now()) / 1000),
-              },
-              'Proactive strategy: token expired or expiring soon, refreshing before send',
-            );
+      headers[name] = `${prefix}${entry.realToken}`;
+      swappedHeaders.push({ headerName: name, substitute: candidate, prefix });
+    }
 
-            const refreshed = await tokenEngine.sharedOp(
+    // Proactive strategy: check token expiry before sending upstream.
+    if (refreshStrategy === 'proactive' && swappedHeaders.length > 0) {
+      const expiresTs = tokenEngine.getKeyExpiry(
+        groupScope,
+        provider.id,
+        'access',
+      );
+      if (expiresTs > 0 && expiresTs < Date.now() + REFRESH_AHEAD_MS) {
+        proactiveRefreshAttempted = true;
+        logger.info(
+          {
+            provider: provider.id,
+            scope: groupScope,
+            expiresIn: Math.round((expiresTs - Date.now()) / 1000),
+          },
+          'Proactive strategy: token expired or expiring soon, refreshing before send',
+        );
+
+        const refreshed = await tokenEngine.sharedOp(
+          groupScope,
+          provider.id,
+          'refresh',
+          () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
+        );
+
+        if (refreshed) {
+          // Re-resolve all swapped substitutes to pick up fresh real tokens
+          for (const swap of swappedHeaders) {
+            const freshEntry = tokenEngine.resolveWithRestriction(
+              swap.substitute,
               groupScope,
-              provider.id,
-              'refresh',
-              () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
+              scopeAttrs,
             );
-
-            if (refreshed) {
-              // Re-resolve substitute to pick up the fresh real token
-              const freshEntry = tokenEngine.resolveWithRestriction(
-                substitutedToken,
-                groupScope,
-                scopeAttrs,
-              );
-              if (freshEntry) {
-                headers['authorization'] = `Bearer ${freshEntry.realToken}`;
-              }
-            } else {
-              logger.warn(
-                { provider: provider.id, scope: groupScope },
-                'Proactive strategy: refresh failed, sending with existing token',
-              );
+            if (freshEntry) {
+              headers[swap.headerName] =
+                `${swap.prefix}${freshEntry.realToken}`;
             }
           }
+        } else {
+          logger.warn(
+            { provider: provider.id, scope: groupScope },
+            'Proactive strategy: refresh failed, sending with existing token',
+          );
         }
       }
     }
@@ -595,19 +617,19 @@ function createBearerSwapHandler(
             }
 
             case 'buffer': {
-              // Replay the original request with the refreshed real token
+              // Replay the original request with refreshed real tokens
               try {
-                const freshEntry = substitutedToken
-                  ? tokenEngine.resolveWithRestriction(
-                      substitutedToken,
-                      groupScope,
-                      scopeAttrs,
-                    )
-                  : null;
                 const replayHeaders = { ...headers };
-                if (freshEntry) {
-                  replayHeaders['authorization'] =
-                    `Bearer ${freshEntry.realToken}`;
+                for (const swap of swappedHeaders) {
+                  const freshEntry = tokenEngine.resolveWithRestriction(
+                    swap.substitute,
+                    groupScope,
+                    scopeAttrs,
+                  );
+                  if (freshEntry) {
+                    replayHeaders[swap.headerName] =
+                      `${swap.prefix}${freshEntry.realToken}`;
+                  }
                 }
                 const replay = await sendUpstream(
                   targetHost,

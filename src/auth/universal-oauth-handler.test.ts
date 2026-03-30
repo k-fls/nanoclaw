@@ -324,6 +324,61 @@ describe('universal-oauth-handler', () => {
       expect(res.status).toBe(200);
     });
 
+    it('does not resolve refresh token substitutes in headers', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const provider = makeProvider();
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      // Generate a refresh token substitute
+      const realRefresh =
+        'refresh_abcdefghijklmnopqrstuvwxyz1234567890abcdefgh';
+      const subRefresh = engine.generateSubstitute(
+        realRefresh,
+        'test-provider',
+        {},
+        asGroupScope('test-scope'),
+        DEFAULT_SUBSTITUTE_CONFIG,
+        'refresh',
+      )!;
+      expect(subRefresh).not.toBeNull();
+
+      const res = await executeHandler(handler, {
+        headers: { authorization: `Bearer ${subRefresh}` },
+      });
+
+      expect(res.status).toBe(200);
+      // Refresh substitute must NOT be resolved — should pass through as-is
+      expect(lastRequest!.headers['authorization']).toBe(
+        `Bearer ${subRefresh}`,
+      );
+    });
+
+    it('resolves bare header substitutes (x-api-key style)', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const provider = makeProvider();
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const realKey = 'key_xabcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+      const subKey = engine.generateSubstitute(
+        realKey,
+        'test-provider',
+        {},
+        asGroupScope('test-scope'),
+        DEFAULT_SUBSTITUTE_CONFIG,
+        'api_key',
+      )!;
+      expect(subKey).not.toBeNull();
+
+      const res = await executeHandler(handler, {
+        headers: { 'x-api-key': subKey },
+      });
+
+      expect(res.status).toBe(200);
+      expect(lastRequest!.headers['x-api-key']).toBe(realKey);
+    });
+
     it('returns 307 redirect on 401 when refresh succeeds', async () => {
       const resolver = new PersistentTokenResolver();
       const engine = new TokenSubstituteEngine(resolver);

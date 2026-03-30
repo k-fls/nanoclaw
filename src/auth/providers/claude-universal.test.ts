@@ -1,15 +1,12 @@
 /**
  * Tests for Claude's universal OAuth integration:
- * - wrapWithApiKeySupport
  * - CLAUDE_OAUTH_PROVIDER definition
  */
-import { describe, it, expect, beforeEach } from 'vitest';
-import http from 'http';
+import { describe, it, expect } from 'vitest';
 
 import {
   CLAUDE_OAUTH_PROVIDER,
   CLAUDE_SUBSTITUTE_CONFIG,
-  wrapWithApiKeySupport,
   claudeProvider,
 } from './claude.js';
 import {
@@ -17,9 +14,7 @@ import {
   PersistentTokenResolver,
   type TokenRole,
 } from '../token-substitute.js';
-import type { HostHandler } from '../../credential-proxy.js';
-import { DEFAULT_SUBSTITUTE_CONFIG, asGroupScope } from '../oauth-types.js';
-import type { GroupScope } from '../oauth-types.js';
+import { asGroupScope } from '../oauth-types.js';
 import type { RegisteredGroup } from '../../types.js';
 
 /** Create a minimal RegisteredGroup for test provision calls. */
@@ -52,40 +47,6 @@ function generateSubstitute(
     role,
   );
   return claudeProvider.provision(makeGroup(scope), engine);
-}
-
-function mockRequest(
-  headers: Record<string, string> = {},
-): http.IncomingMessage {
-  const { PassThrough } = require('stream');
-  const req = new PassThrough() as any;
-  req.headers = headers;
-  req.method = 'POST';
-  req.url = '/v1/messages';
-  req.pipe = (dest: any) => dest;
-  return req as http.IncomingMessage;
-}
-
-function mockResponse(): http.ServerResponse & {
-  _status: number;
-  _headers: Record<string, string>;
-  _body: string;
-} {
-  const res = {
-    _status: 0,
-    _body: '',
-    _headers: {} as Record<string, string>,
-    headersSent: false,
-    writeHead(status: number, headers?: Record<string, string>) {
-      res._status = status;
-      if (headers) Object.assign(res._headers, headers);
-      res.headersSent = true;
-    },
-    end(body?: string) {
-      if (body) res._body = body;
-    },
-  } as any;
-  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,84 +87,6 @@ describe('CLAUDE_OAUTH_PROVIDER', () => {
     expect(CLAUDE_SUBSTITUTE_CONFIG.prefixLen).toBe(14);
     expect(CLAUDE_SUBSTITUTE_CONFIG.suffixLen).toBe(0);
     expect(CLAUDE_SUBSTITUTE_CONFIG.delimiters).toBe('-_');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// wrapWithApiKeySupport
-// ---------------------------------------------------------------------------
-
-const testScope = asGroupScope('scope');
-
-describe('wrapWithApiKeySupport', () => {
-  let resolver: PersistentTokenResolver;
-  let engine: TokenSubstituteEngine;
-
-  beforeEach(() => {
-    resolver = new PersistentTokenResolver();
-    engine = new TokenSubstituteEngine(resolver);
-  });
-
-  it('resolves x-api-key substitute and delegates to universal handler', async () => {
-    const realKey =
-      'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const sub = engine.generateSubstitute(
-      realKey,
-      claudeProvider.id,
-      {},
-      asGroupScope('scope'),
-      CLAUDE_SUBSTITUTE_CONFIG,
-      'api_key',
-    )!;
-    expect(sub).not.toBeNull();
-
-    // Track what the universal handler receives and verify resolved header
-    let capturedHeaders: Record<string, any> = {};
-    const universalHandler: HostHandler = async (req) => {
-      capturedHeaders = { ...req.headers };
-    };
-
-    const handler = wrapWithApiKeySupport(universalHandler, engine);
-
-    const req = mockRequest({ 'x-api-key': sub });
-    const res = mockResponse();
-
-    await handler(req, res, 'api.anthropic.com', 443, testScope);
-
-    // x-api-key should be resolved to the real key before delegation
-    expect(capturedHeaders['x-api-key']).toBe(realKey);
-  });
-
-  it('delegates to universal handler for Bearer tokens', async () => {
-    let universalCalled = false;
-    const universalHandler: HostHandler = async () => {
-      universalCalled = true;
-    };
-
-    const handler = wrapWithApiKeySupport(universalHandler, engine);
-
-    const req = mockRequest({ authorization: 'Bearer some-token' });
-    const res = mockResponse();
-
-    await handler(req, res, 'api.anthropic.com', 443, testScope);
-
-    expect(universalCalled).toBe(true);
-  });
-
-  it('delegates to universal handler when no auth header present', async () => {
-    let universalCalled = false;
-    const universalHandler: HostHandler = async () => {
-      universalCalled = true;
-    };
-
-    const handler = wrapWithApiKeySupport(universalHandler, engine);
-
-    const req = mockRequest({});
-    const res = mockResponse();
-
-    await handler(req, res, 'api.anthropic.com', 443, testScope);
-
-    expect(universalCalled).toBe(true);
   });
 });
 

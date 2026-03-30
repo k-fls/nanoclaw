@@ -26,7 +26,6 @@ import { registerAuthorizationEndpoint } from './browser-open-handler.js';
 import {
   CLAUDE_OAUTH_PROVIDER,
   migrateClaudeCredentials,
-  wrapWithApiKeySupport,
 } from './providers/claude.js';
 import { logger } from '../logger.js';
 
@@ -130,12 +129,7 @@ function registerClaudeUniversalRules(provider: CredentialProvider): void {
 
   for (const rule of CLAUDE_OAUTH_PROVIDER.rules) {
     const hostPattern = new RegExp(`^${rule.anchor.replace(/\./g, '\\.')}$`);
-    let handler = createHandler(CLAUDE_OAUTH_PROVIDER, rule, tokenEngine);
-
-    // Wrap api.anthropic.com bearer-swap with x-api-key support
-    if (rule.anchor === 'api.anthropic.com' && rule.mode === 'bearer-swap') {
-      handler = wrapWithApiKeySupport(handler, tokenEngine);
-    }
+    const handler = createHandler(CLAUDE_OAUTH_PROVIDER, rule, tokenEngine);
 
     proxy.registerAnchoredRule(
       rule.anchor,

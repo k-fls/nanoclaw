@@ -99,7 +99,6 @@ describe('token engine singletons', () => {
     vi.doMock('./providers/claude.js', () => ({
       migrateClaudeCredentials: vi.fn(),
       CLAUDE_OAUTH_PROVIDER: { rules: [] },
-      wrapWithApiKeySupport: vi.fn(),
     }));
     vi.doMock('./universal-oauth-handler.js', () => ({
       createHandler: vi.fn(),
