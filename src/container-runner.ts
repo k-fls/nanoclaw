@@ -154,8 +154,29 @@ export function buildVolumeMounts(
     }
   }
 
+  // Per-group persistent home directory.
+  // Subdirectories (app config like .config/gh/, .aws/, .npm/) survive across
+  // runs. Flat files in ~/ are cleaned on each launch to prevent dotfile
+  // injection (.bashrc, .profile) between sessions.
+  const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder, 'home');
+  fs.mkdirSync(groupHomeDir, { recursive: true });
+  for (const entry of fs.readdirSync(groupHomeDir)) {
+    const full = path.join(groupHomeDir, entry);
+    try {
+      if (fs.statSync(full).isFile()) fs.unlinkSync(full);
+    } catch {
+      /* race with container shutdown, ignore */
+    }
+  }
+  mounts.push({
+    hostPath: groupHomeDir,
+    containerPath: '/home/node',
+    readonly: false,
+  });
+
   // Per-group Claude sessions directory (isolated from other groups)
   // Each group gets their own .claude/ to prevent cross-group session access
+  // Mounted on top of the persistent home dir above.
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
