@@ -379,6 +379,31 @@ describe('universal-oauth-handler', () => {
       expect(lastRequest!.headers['x-api-key']).toBe(realKey);
     });
 
+    it('resolves "token" prefix (gh CLI style: Authorization: token gho_...)', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const provider = makeProvider();
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+      const sub = engine.generateSubstitute(
+        realToken,
+        'test-provider',
+        {},
+        asGroupScope('test-scope'),
+        DEFAULT_SUBSTITUTE_CONFIG,
+      )!;
+      expect(sub).not.toBeNull();
+
+      const res = await executeHandler(handler, {
+        headers: { authorization: `token ${sub}` },
+      });
+
+      expect(res.status).toBe(200);
+      // Upstream should have "token <real>" — prefix preserved
+      expect(lastRequest!.headers['authorization']).toBe(`token ${realToken}`);
+    });
+
     it('returns 307 redirect on 401 when refresh succeeds', async () => {
       const resolver = new PersistentTokenResolver();
       const engine = new TokenSubstituteEngine(resolver);

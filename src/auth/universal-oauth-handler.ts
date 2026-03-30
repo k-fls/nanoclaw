@@ -409,14 +409,15 @@ function createBearerSwapHandler(
     for (const [name, value] of Object.entries(headers)) {
       if (typeof value !== 'string') continue;
 
-      // Extract candidate token: "Bearer <token>" or bare value
+      // Extract candidate token: "<scheme> <token>" (Bearer, token, etc.) or bare value
       let candidate: string;
       let prefix: string;
-      if (value.startsWith('Bearer ')) {
-        candidate = value.slice(7);
-        prefix = 'Bearer ';
+      const spaceIdx = value.indexOf(' ');
+      if (spaceIdx > 0 && spaceIdx < 20) {
+        prefix = value.slice(0, spaceIdx + 1);
+        candidate = value.slice(spaceIdx + 1).trim();
       } else {
-        candidate = value;
+        candidate = value.trim();
         prefix = '';
       }
 
