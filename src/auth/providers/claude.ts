@@ -265,7 +265,7 @@ function waitForPatternOrExit(
 
 /** OAuth URL pattern for Anthropic/Claude domains. */
 const OAUTH_URL_RE =
-  /https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com)\S+/;
+  /https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com|claude\.com\/cai\/oauth)\S+/;
 
 /**
  * Detect how the CLI is ready to receive the auth code and return a handler.
