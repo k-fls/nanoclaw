@@ -6,8 +6,9 @@
  *   - bearer-swap: swap Authorization header, send request, check response
  *     status before forwarding. On 401/403: attempt refresh, then apply
  *     strategy — redirect (307), buffer (replay request), or passthrough.
- *   - token-exchange: reuse handleTokenExchange from oauth-interceptor.ts
- *   - authorize-stub: reuse handleAuthorizeStub from oauth-interceptor.ts
+ *   - token-exchange: buffer body both ways, swap tokens in JSON/form bodies
+ *   - authorize-stub: stub response, push OAuth URL to flow queue
+ *   - device-code: forward request, extract user_code, push notification
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 import { request as httpsRequest, RequestOptions } from 'https';
@@ -966,6 +967,8 @@ function createDeviceCodeHandler(
       (headers) => {
         // Ensure JSON response (GitHub needs Accept header)
         headers['accept'] = 'application/json';
+        // Prevent gzip — proxyBuffered does string conversion which corrupts binary bodies
+        headers['accept-encoding'] = 'identity';
       },
       (body) => body, // pass request through
       (body, statusCode) => {
