@@ -15,11 +15,7 @@ import { gunzipSync } from 'zlib';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import type {
-  InterceptRule,
-  OAuthProvider,
-  RefreshStrategy,
-} from './oauth-types.js';
+import type { InterceptRule, OAuthProvider } from './oauth-types.js';
 import type { GroupScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { HostHandler } from '../credential-proxy.js';
@@ -326,8 +322,8 @@ function createBearerSwapHandler(
   provider: OAuthProvider,
   rule: InterceptRule,
   tokenEngine: TokenSubstituteEngine,
-  refreshStrategy: RefreshStrategy = 'redirect',
 ): HostHandler {
+  const refreshStrategy = provider.refreshStrategy;
   return async (
     clientReq: IncomingMessage,
     clientRes: ServerResponse,
@@ -922,16 +918,10 @@ export function createHandler(
   provider: OAuthProvider,
   rule: InterceptRule,
   tokenEngine: TokenSubstituteEngine,
-  refreshStrategy: RefreshStrategy = 'redirect',
 ): HostHandler {
   switch (rule.mode) {
     case 'bearer-swap':
-      return createBearerSwapHandler(
-        provider,
-        rule,
-        tokenEngine,
-        refreshStrategy,
-      );
+      return createBearerSwapHandler(provider, rule, tokenEngine);
     case 'token-exchange':
       return createTokenExchangeHandler(provider, rule, tokenEngine);
     case 'authorize-stub':

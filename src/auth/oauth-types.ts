@@ -63,6 +63,8 @@ export interface OAuthProvider {
   /** Which named groups from hostPattern regexes scope credentials. */
   scopeKeys: string[];
   substituteConfig: SubstituteConfig;
+  /** How bearer-swap handles expired tokens. */
+  refreshStrategy: RefreshStrategy;
   /**
    * Controls which fields are captured from token-exchange requests/responses
    * and stored alongside tokens for use in refresh requests.

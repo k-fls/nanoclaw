@@ -20,6 +20,7 @@ import path from 'path';
 import type {
   InterceptRule,
   OAuthProvider,
+  RefreshStrategy,
   SubstituteConfig,
 } from './oauth-types.js';
 import { DEFAULT_SUBSTITUTE_CONFIG } from './oauth-types.js';
@@ -172,6 +173,7 @@ export interface DiscoveryFile {
     suffixLen?: number;
     delimiters?: string;
   };
+  _refresh_strategy?: RefreshStrategy;
   _host_patterns?: string[];
   _token_field_capture?: {
     from_request?: string[];
@@ -309,11 +311,14 @@ export function parseDiscoveryFile(
     };
   }
 
+  const refreshStrategy: RefreshStrategy = data._refresh_strategy ?? 'redirect';
+
   return {
     id,
     rules,
     scopeKeys: [...allScopeKeys],
     substituteConfig,
+    refreshStrategy,
     ...(tokenFieldCapture && { tokenFieldCapture }),
   };
 }

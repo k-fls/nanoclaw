@@ -134,6 +134,7 @@ function makeProvider(id = 'test-provider'): OAuthProvider {
     rules: [],
     scopeKeys: [],
     substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+    refreshStrategy: 'redirect',
   };
 }
 
@@ -340,6 +341,7 @@ describe('universal-oauth-handler', () => {
         ],
         scopeKeys: [],
         substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+        refreshStrategy: 'redirect',
       };
 
       // Store a refresh token in the resolver so the refresh can find it
@@ -358,7 +360,7 @@ describe('universal-oauth-handler', () => {
       );
 
       const rule = makeBearerSwapRule();
-      const handler = createHandler(provider, rule, engine, 'redirect');
+      const handler = createHandler(provider, rule, engine);
 
       // First request (API call) returns 401, triggering refresh.
       // The refresh call to /oauth/token should get 200 with new tokens
@@ -499,6 +501,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+          refreshStrategy: 'proactive',
         };
 
         // Generate a substitute first (stores with expires_ts=0 internally)
@@ -529,7 +532,7 @@ describe('universal-oauth-handler', () => {
         );
 
         const rule = makeBearerSwapRule();
-        const handler = createHandler(provider, rule, engine, 'proactive');
+        const handler = createHandler(provider, rule, engine);
 
         // Mock the token fetch so refresh succeeds
         const newAccess =
@@ -583,6 +586,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+          refreshStrategy: 'proactive',
         };
 
         // Generate substitute first, then set expired expiry
@@ -612,7 +616,7 @@ describe('universal-oauth-handler', () => {
         );
 
         const rule = makeBearerSwapRule();
-        const handler = createHandler(provider, rule, engine, 'proactive');
+        const handler = createHandler(provider, rule, engine);
 
         // Mock refresh to fail
         setTokenFetch(async () => new Response('{}', { status: 400 }));
@@ -665,6 +669,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+          refreshStrategy: 'proactive',
         };
 
         const realAccess =
@@ -693,7 +698,7 @@ describe('universal-oauth-handler', () => {
         );
 
         const rule = makeBearerSwapRule();
-        const handler = createHandler(provider, rule, engine, 'proactive');
+        const handler = createHandler(provider, rule, engine);
 
         // Track auth error callbacks
         let authErrorCalled = false;
@@ -740,6 +745,7 @@ describe('universal-oauth-handler', () => {
       ],
       scopeKeys: [],
       substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+      refreshStrategy: 'buffer',
     };
 
     resolver.store(
@@ -756,7 +762,7 @@ describe('universal-oauth-handler', () => {
     );
 
     const rule = makeBearerSwapRule();
-    const handler = createHandler(provider, rule, engine, 'buffer');
+    const handler = createHandler(provider, rule, engine);
 
     // Track auth error callbacks
     let authErrorCalled = false;

@@ -42,6 +42,7 @@ const TEST_PROVIDER: OAuthProvider = {
   ],
   scopeKeys: [],
   substituteConfig: TEST_SUBSTITUTE_CONFIG,
+  refreshStrategy: 'redirect',
 };
 
 // ---------------------------------------------------------------------------
