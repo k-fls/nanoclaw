@@ -30,7 +30,8 @@ function entry(providerId: string, replyFn?: ReplyFn | null): FlowEntry {
     flowId: `${providerId}:12345`,
     eventType: 'oauth-start',
     providerId,
-    eventParam: `https://example.com/auth?provider=${providerId}`,
+    eventParam: '',
+    eventUrl: `https://example.com/auth?provider=${providerId}`,
     replyFn:
       replyFn === undefined ? vi.fn(async () => ({ done: true })) : replyFn,
   };
@@ -48,8 +49,32 @@ describe('processFlow', () => {
 
     expect(chat.sent[0]).toContain('github');
     expect(chat.sent[0]).toContain('https://example.com/auth?provider=github');
+    expect(chat.sent[0]).toContain('Reply when ready');
     expect(replyFn).toHaveBeenCalledWith('AUTH_CODE_123');
     expect(reg.currentState('github:12345')).toBe('completed');
+  });
+
+  it('device-code: sends bare code then prefixed instruction', async () => {
+    const chat = mockChat();
+    const reg = new FlowStatusRegistry();
+    const e: FlowEntry = {
+      flowId: 'github:device:123',
+      eventType: 'device-code',
+      providerId: 'github',
+      eventParam: 'ABCD-1234',
+      eventUrl: 'https://github.com/login/device',
+      replyFn: null,
+    };
+
+    await processFlow(e, null, chat, reg);
+
+    // First message: bare code (via sendRaw)
+    expect(chat.sent[0]).toBe('ABCD-1234');
+    // Second message: instruction with URL (via send, has prefix)
+    expect(chat.sent[1]).toContain('🔑🤖');
+    expect(chat.sent[1]).toContain('https://github.com/login/device');
+    expect(chat.sent[1]).toContain('Copy the code above');
+    expect(reg.currentState('github:device:123')).toBe('completed');
   });
 
   it('handles user cancellation', async () => {

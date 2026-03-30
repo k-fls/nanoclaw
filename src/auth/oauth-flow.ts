@@ -79,7 +79,8 @@ function pushOAuthFlow(
       flowId,
       eventType: 'oauth-start',
       providerId,
-      eventParam: handler ? `${handler.instructions}\n\n${url}` : url,
+      eventParam: handler?.instructions ?? '',
+      eventUrl: url,
       replyFn: handler?.deliver.bind(handler) ?? null,
     },
     reason,
@@ -113,7 +114,7 @@ export function wireAuthCallbacks(proxy: CredentialProxy): void {
     };
   });
 
-  // Device-code handler pushes user_code + verification_uri as notification
+  // Device-code handler pushes user_code + verification_uri
   setDeviceCodeNotifyResolver((eventScope) => {
     const ctx = proxy.getSessionContext(eventScope);
     if (!ctx) return null;
@@ -121,9 +122,10 @@ export function wireAuthCallbacks(proxy: CredentialProxy): void {
       ctx.flowQueue.push(
         {
           flowId: `${providerId}:device:${Date.now()}`,
-          eventType: 'notification',
+          eventType: 'device-code',
           providerId,
-          eventParam: `Enter code *${userCode}* at ${verificationUri}`,
+          eventParam: userCode,
+          eventUrl: verificationUri,
           replyFn: null,
         },
         'device code flow initiated',

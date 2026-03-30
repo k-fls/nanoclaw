@@ -84,9 +84,17 @@ export async function processFlow(
 
     // Notification-only: no reply expected
     if (!entry.replyFn) {
-      await chat.send(
-        `${FLOW_PREFIX}*${entry.providerId}*: ${entry.eventType} ${entry.eventParam}`,
-      );
+      if (entry.eventType === 'device-code' && entry.eventUrl) {
+        // Bare code (copyable), then instruction with URL
+        await chat.sendRaw(entry.eventParam);
+        await chat.send(
+          `${FLOW_PREFIX}Copy the code above and open ${entry.eventUrl} to complete authentication.`,
+        );
+      } else {
+        await chat.send(
+          `${FLOW_PREFIX} *${entry.providerId}* Event ${entry.eventType}\n${entry.eventParam}\n${entry.eventUrl}`,
+        );
+      }
       statusRegistry.emit(
         entry.flowId,
         entry.eventType,
@@ -101,11 +109,13 @@ export async function processFlow(
     }
 
     // Interactive: present and collect reply, loop until done
-    await chat.send(
-      `${FLOW_PREFIX}*${entry.providerId}* needs input.\n` +
-        `${entry.eventParam}\n\n` +
-        `Reply when ready, or "cancel" to stop.`,
-    );
+    const parts = [
+      `${FLOW_PREFIX}*${entry.providerId}* needs input.`,
+      entry.eventParam,
+      entry.eventUrl,
+      'Reply when ready, or "cancel" to stop.',
+    ].filter(Boolean);
+    await chat.send(parts.join('\n'));
 
     let done = false;
     while (!done) {

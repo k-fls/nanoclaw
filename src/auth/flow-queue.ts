@@ -36,7 +36,11 @@ export type DeliveryFn = ReplyFn;
  * Event category — controls consumer behavior and message formatting.
  * Add new values here as new event kinds are introduced.
  */
-export type FlowEventKind = 'oauth-start' | 'oauth-refresh' | 'notification';
+export type FlowEventKind =
+  | 'oauth-start'
+  | 'oauth-refresh'
+  | 'device-code'
+  | 'notification';
 
 /** A pending event in the queue. */
 export interface FlowEntry {
@@ -44,8 +48,10 @@ export interface FlowEntry {
   eventType: FlowEventKind;
   /** Display label for the user (e.g. provider name, service). */
   providerId: string;
-  /** Event payload shown to the user (URL, message text, etc.). */
+  /** Event payload shown to the user (code, message text, etc.). */
   eventParam: string;
+  /** URL associated with the event (authorization URL, verification URI, etc.). */
+  eventUrl?: string;
   /**
    * Delivers the user's reply back to the event source.
    * When present, the consumer collects user input and calls this
