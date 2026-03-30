@@ -21,7 +21,7 @@ import type { GroupScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { HostHandler } from '../credential-proxy.js';
 import { proxyBuffered } from '../credential-proxy.js';
-import { replaceJsonStringValue } from '../oauth-interceptor.js';
+import { parseBody } from '../oauth-interceptor.js';
 import type { AuthErrorCallback } from './session-context.js';
 import { logger } from '../logger.js';
 
@@ -771,67 +771,48 @@ function createTokenExchangeHandler(
       clientRes,
       targetHost,
       targetPort,
-      // Header injection: strip accept-encoding so upstream sends plaintext
-      // (proxyBuffered does toString() which corrupts gzip binary)
+      // Strip accept-encoding (proxyBuffered does toString → corrupts gzip).
+      // Don't override Accept — let the client control the response format.
       (headers) => {
         delete headers['accept-encoding'];
       },
       // Request transform: swap substitute refresh_token → real, capture fields
       (body) => {
-        try {
-          const parsed = JSON.parse(body);
-          capturedReqBody = parsed;
-          if (parsed.grant_type === 'refresh_token' && parsed.refresh_token) {
-            const entry = tokenEngine.resolveSubstitute(
-              parsed.refresh_token,
-              groupScope,
-            );
-            if (entry) {
-              return replaceJsonStringValue(
-                body,
-                'refresh_token',
-                entry.realToken,
-              );
-            }
-          }
-        } catch {
-          /* not JSON — check form encoding */
-        }
+        const parsed = parseBody(body);
+        if (!parsed) return body;
+        capturedReqBody = parsed.fields;
 
-        // Form-encoded body
         if (
-          body.includes('grant_type=refresh_token') &&
-          body.includes('refresh_token=')
+          parsed.fields.grant_type === 'refresh_token' &&
+          parsed.fields.refresh_token
         ) {
-          const params = new URLSearchParams(body);
-          capturedReqBody = Object.fromEntries(params);
-          const subRefresh = params.get('refresh_token');
-          if (subRefresh) {
-            const entry = tokenEngine.resolveSubstitute(subRefresh, groupScope);
-            if (entry) {
-              params.set('refresh_token', entry.realToken);
-              return params.toString();
-            }
+          const entry = tokenEngine.resolveSubstitute(
+            parsed.fields.refresh_token,
+            groupScope,
+          );
+          if (entry) {
+            parsed.set('refresh_token', entry.realToken);
+            return parsed.serialize();
           }
         }
 
         return body;
       },
-      // Response transform: capture real tokens + authFields, return substitutes
+      // Response transform: capture real tokens + authFields, return substitutes.
+      // ParsedBody handles both JSON and form-encoded transparently.
       (body, _statusCode) => {
-        try {
-          const tokens = JSON.parse(body);
-          if (!tokens.access_token) return body;
+        const parsed = parseBody(body);
+        if (!parsed?.fields.access_token) return body;
 
+        try {
           const authFields = captureAuthFields(
             capturedReqBody,
-            tokens,
+            parsed.fields,
             provider,
           );
 
-          // Generate substitute for access token
           const subAccess = tokenEngine.generateSubstitute(
-            tokens.access_token,
+            parsed.fields.access_token,
             provider.id,
             scopeAttrs,
             groupScope,
@@ -849,12 +830,11 @@ function createTokenExchangeHandler(
             return body;
           }
 
-          let result = replaceJsonStringValue(body, 'access_token', subAccess);
+          parsed.set('access_token', subAccess);
 
-          // Generate substitute for refresh token if present
-          if (tokens.refresh_token) {
+          if (parsed.fields.refresh_token) {
             const subRefresh = tokenEngine.generateSubstitute(
-              tokens.refresh_token,
+              parsed.fields.refresh_token,
               provider.id,
               scopeAttrs,
               groupScope,
@@ -864,15 +844,11 @@ function createTokenExchangeHandler(
               authFields,
             );
             if (subRefresh) {
-              result = replaceJsonStringValue(
-                result,
-                'refresh_token',
-                subRefresh,
-              );
+              parsed.set('refresh_token', subRefresh);
             }
           }
 
-          return result;
+          return parsed.serialize();
         } catch (err) {
           logger.error(
             { err, provider: provider.id },
@@ -965,25 +941,27 @@ function createDeviceCodeHandler(
       targetHost,
       targetPort,
       (headers) => {
-        // Ensure JSON response (GitHub needs Accept header)
-        headers['accept'] = 'application/json';
-        // Prevent gzip — proxyBuffered does string conversion which corrupts binary bodies
-        headers['accept-encoding'] = 'identity';
+        // Prevent gzip — proxyBuffered does string conversion which corrupts binary
+        delete headers['accept-encoding'];
       },
-      (body) => body, // pass request through
+      (body) => body,
       (body, statusCode) => {
         if (statusCode < 200 || statusCode >= 300) return body;
-        try {
-          const data = JSON.parse(body);
-          const userCode = data.user_code;
+        const parsed = parseBody(body);
+        if (parsed) {
+          const userCode = parsed.fields.user_code;
           const verificationUri =
-            data.verification_uri_complete || data.verification_uri;
+            parsed.fields.verification_uri_complete ||
+            parsed.fields.verification_uri;
           if (userCode && verificationUri) {
             const cb = _deviceCodeNotifyResolver?.(groupScope);
             cb?.(provider.id, userCode, verificationUri);
           }
-        } catch {
-          /* non-JSON response, ignore */
+        } else {
+          logger.warn(
+            { provider: provider.id, scope: groupScope },
+            'Device-code: could not parse response body',
+          );
         }
         return body;
       },

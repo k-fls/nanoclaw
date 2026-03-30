@@ -1,8 +1,80 @@
 /**
- * JSON body helper for OAuth token swapping.
+ * OAuth body helpers for token swapping.
  *
- * Preserves field order via string manipulation — no parse/serialize round-trip.
+ * ParsedBody: format-agnostic abstraction over JSON and form-encoded bodies.
+ * Provides read-only field access and order-preserving field replacement.
  */
+
+// ---------------------------------------------------------------------------
+// ParsedBody — format-agnostic parsed body
+// ---------------------------------------------------------------------------
+
+export interface ParsedBody {
+  /** Read-only field access (string values). */
+  readonly fields: Record<string, string>;
+  /** Replace a field value in-place, preserving format and field order. */
+  set(key: string, value: string): void;
+  /** Serialize back to the original format (JSON or form-encoded). */
+  serialize(): string;
+}
+
+/**
+ * Parse a token request/response body into a ParsedBody.
+ * Auto-detects JSON vs form-encoded from the body content.
+ * Returns null if the body can't be parsed as either format.
+ */
+export function parseBody(raw: string): ParsedBody | null {
+  const trimmed = raw.trimStart();
+
+  // JSON
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw);
+      const fields: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        fields[k] = String(v);
+      }
+      let current = raw;
+      return {
+        fields,
+        set(key, value) {
+          current = replaceJsonStringValue(current, key, value);
+          fields[key] = value;
+        },
+        serialize() {
+          return current;
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // Form-encoded (key=value&...)
+  if (trimmed.includes('=')) {
+    const params = new URLSearchParams(raw);
+    const fields: Record<string, string> = {};
+    for (const [k, v] of params) {
+      fields[k] = v;
+    }
+    return {
+      fields,
+      set(key, value) {
+        params.set(key, value);
+        fields[key] = value;
+      },
+      serialize() {
+        return params.toString();
+      },
+    };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// replaceJsonStringValue — low-level JSON string surgery
+// ---------------------------------------------------------------------------
 
 /**
  * Replace a string value for a given key in a JSON string, preserving
