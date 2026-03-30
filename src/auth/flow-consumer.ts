@@ -123,6 +123,8 @@ export async function processFlow(
       }
 
       if (!reply || reply.trim().toLowerCase() === 'cancel') {
+        chat.hideMessage();
+        chat.advanceCursor();
         statusRegistry.emit(
           entry.flowId,
           entry.eventType,
@@ -133,6 +135,7 @@ export async function processFlow(
         return;
       }
 
+      chat.hideMessage();
       chat.advanceCursor();
 
       const result = await entry.replyFn(reply.trim());

@@ -102,6 +102,8 @@ export interface ChatIO {
   sendRaw(text: string): Promise<void>;
   /** Polls main group messages. Returns null on timeout. */
   receive(timeoutMs?: number): Promise<string | null>;
+  /** Mark the last received message as hidden so the agent never sees it. */
+  hideMessage(): void;
   /** Advance the message cursor past all current messages so the agent won't re-see them. */
   advanceCursor(): void;
 }

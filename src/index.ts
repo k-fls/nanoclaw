@@ -56,6 +56,8 @@ import {
   setRouterState,
   setSession,
   storeChatMetadata,
+  HIDE_REASON,
+  hideMessage,
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
@@ -170,6 +172,7 @@ export function _setRegisteredGroups(
 /** Create a ChatIO that routes through the normal channel messaging. */
 function createChatIO(channel: Channel, chatJid: string): ChatIO {
   let lastReceivedTs: string | null = null;
+  let lastReceivedId: string | null = null;
   return {
     async send(text: string): Promise<void> {
       await channel.sendMessage(chatJid, text);
@@ -187,10 +190,17 @@ function createChatIO(channel: Channel, chatJid: string): ChatIO {
         const newer = getMessagesSince(chatJid, lastTs, ASSISTANT_NAME);
         if (newer.length > 0) {
           lastReceivedTs = newer[0].timestamp;
+          lastReceivedId = newer[0].id;
           return newer[0].content;
         }
       }
       return null;
+    },
+    hideMessage(): void {
+      if (lastReceivedId) {
+        hideMessage(chatJid, lastReceivedId, HIDE_REASON.FLOW);
+        lastReceivedId = null;
+      }
     },
     advanceCursor(): void {
       if (lastReceivedTs) {

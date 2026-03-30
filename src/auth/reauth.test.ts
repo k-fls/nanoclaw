@@ -108,6 +108,7 @@ function createChat(
       replyIndex++;
       return reply;
     }),
+    hideMessage: vi.fn(),
     advanceCursor: vi.fn(),
   };
 }

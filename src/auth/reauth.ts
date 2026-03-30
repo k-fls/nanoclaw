@@ -114,6 +114,7 @@ async function showMenuAndRun(
     await chat.send(`${REAUTH_PREFIX} Timed out. Skipping authentication.`);
     return false;
   }
+  chat.hideMessage();
   chat.advanceCursor();
 
   const choice = parseInt(reply.trim(), 10);
@@ -193,6 +194,7 @@ function prefixedChat(chat: ChatIO): ChatIO {
     send: (text: string) => chat.send(`${REAUTH_PREFIX} ${text}`),
     sendRaw: (text: string) => chat.send(text),
     receive: (timeoutMs?: number) => chat.receive(timeoutMs),
+    hideMessage: () => chat.hideMessage(),
     advanceCursor: () => chat.advanceCursor(),
   };
 }

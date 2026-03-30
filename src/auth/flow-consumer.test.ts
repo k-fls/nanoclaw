@@ -19,6 +19,7 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
     async receive(_timeoutMs?: number): Promise<string | null> {
       return chat.replies.shift() ?? null;
     },
+    hideMessage: vi.fn(),
     advanceCursor: vi.fn(),
   };
   return chat;
