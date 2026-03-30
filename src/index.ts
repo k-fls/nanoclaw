@@ -21,6 +21,7 @@ import {
 import { createAccessCheck } from './auth/provision.js';
 import type { ChatIO } from './auth/types.js';
 import { wireAuthCallbacks } from './auth/oauth-flow.js';
+import { runReauth } from './auth/reauth.js';
 import {
   CredentialProxy,
   setProxyInstance,
@@ -70,6 +71,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import { executeCommand, type CommandContext } from './commands.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup, scopeOf } from './types.js';
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
@@ -211,6 +213,35 @@ function createChatIO(channel: Channel, chatJid: string): ChatIO {
   };
 }
 
+/** Build a CommandContext for a group — reusable across interception points. */
+function commandContext(
+  channel: Channel,
+  chatJid: string,
+  group: RegisteredGroup,
+): CommandContext {
+  return {
+    isMainGroup: group.isMain === true,
+    isActive: () => queue.isActive(chatJid),
+    hideMessage: (id) => hideMessage(chatJid, id, HIDE_REASON.COMMAND),
+    advanceCursor: (ts) => {
+      lastAgentTimestamp[chatJid] = ts;
+      saveState();
+    },
+    closeStdin: () => queue.closeStdin(chatJid),
+    sendMessage: (text) => channel.sendMessage(chatJid, text),
+    runReauth: async () => {
+      const chat = createChatIO(channel, chatJid);
+      await runReauth(
+        scopeOf(group),
+        chat,
+        'User requested auth',
+        'claude',
+        getTokenEngine(),
+      );
+    },
+  };
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -262,6 +293,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     );
     if (!hasTrigger) return true;
   }
+
+  // Check for /command before invoking the agent
+  const cmdCtx = commandContext(channel, chatJid, group);
+  if (await executeCommand(missedMessages, cmdCtx)) return true;
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
 
@@ -516,6 +551,10 @@ async function startMessageLoop(): Promise<void> {
             );
             if (!hasTrigger) continue;
           }
+
+          // Check for /command before piping to container
+          const cmdCtx = commandContext(channel, chatJid, group);
+          if (await executeCommand(groupMessages, cmdCtx)) continue;
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.

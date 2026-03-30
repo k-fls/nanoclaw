@@ -316,6 +316,7 @@ export function storeMessageDirect(msg: {
 /** Hide reasons for messages excluded from agent context. */
 export const HIDE_REASON = {
   FLOW: 1,
+  COMMAND: 2,
 } as const;
 
 /**
