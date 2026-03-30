@@ -70,6 +70,28 @@ export function setOAuthInitiationResolver(
   _oauthInitiationResolver = resolver;
 }
 
+/**
+ * Resolves scope → device-code notification callback. Called by device-code
+ * handler after forwarding to upstream. Pushes user_code + verification_uri
+ * to the session's flow queue as a notification.
+ */
+type DeviceCodeNotifyCallback = (
+  providerId: string,
+  userCode: string,
+  verificationUri: string,
+) => void;
+type DeviceCodeNotifyResolver = (
+  scope: GroupScope,
+) => DeviceCodeNotifyCallback | null;
+
+let _deviceCodeNotifyResolver: DeviceCodeNotifyResolver | null = null;
+
+export function setDeviceCodeNotifyResolver(
+  resolver: DeviceCodeNotifyResolver,
+): void {
+  _deviceCodeNotifyResolver = resolver;
+}
+
 // ---------------------------------------------------------------------------
 // Header helpers
 // ---------------------------------------------------------------------------
@@ -915,6 +937,58 @@ function createAuthorizeStubHandler(
 }
 
 // ---------------------------------------------------------------------------
+// Device-code handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Forward the device authorization request to upstream, extract user_code
+ * and verification_uri from the response, push a notification so the host
+ * user can complete the flow, then return the real response to the container.
+ */
+function createDeviceCodeHandler(
+  provider: OAuthProvider,
+  _rule: InterceptRule,
+  _tokenEngine: TokenSubstituteEngine,
+): HostHandler {
+  return async (
+    clientReq: IncomingMessage,
+    clientRes: ServerResponse,
+    targetHost: string,
+    targetPort: number,
+    groupScope,
+  ): Promise<void> => {
+    const { proxyBuffered } = await import('../credential-proxy.js');
+    await proxyBuffered(
+      clientReq,
+      clientRes,
+      targetHost,
+      targetPort,
+      (headers) => {
+        // Ensure JSON response (GitHub needs Accept header)
+        headers['accept'] = 'application/json';
+      },
+      (body) => body, // pass request through
+      (body, statusCode) => {
+        if (statusCode < 200 || statusCode >= 300) return body;
+        try {
+          const data = JSON.parse(body);
+          const userCode = data.user_code;
+          const verificationUri =
+            data.verification_uri_complete || data.verification_uri;
+          if (userCode && verificationUri) {
+            const cb = _deviceCodeNotifyResolver?.(groupScope);
+            cb?.(provider.id, userCode, verificationUri);
+          }
+        } catch {
+          /* non-JSON response, ignore */
+        }
+        return body;
+      },
+    );
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -933,5 +1007,7 @@ export function createHandler(
       return createTokenExchangeHandler(provider, rule, tokenEngine);
     case 'authorize-stub':
       return createAuthorizeStubHandler(provider, rule, tokenEngine);
+    case 'device-code':
+      return createDeviceCodeHandler(provider, rule, tokenEngine);
   }
 }

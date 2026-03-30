@@ -49,7 +49,7 @@ export interface InterceptRule {
   hostPattern?: RegExp;
   /** Level 3: per-request path match. */
   pathPattern: RegExp;
-  mode: 'token-exchange' | 'authorize-stub' | 'bearer-swap';
+  mode: 'token-exchange' | 'authorize-stub' | 'bearer-swap' | 'device-code';
 }
 
 // ---------------------------------------------------------------------------

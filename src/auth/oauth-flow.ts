@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { callbackHandler } from './providers/claude.js';
 import {
   setAuthErrorResolver,
+  setDeviceCodeNotifyResolver,
   setOAuthInitiationResolver,
 } from './universal-oauth-handler.js';
 import { setBrowserOpenCallback } from './browser-open-handler.js';
@@ -108,6 +109,24 @@ export function wireAuthCallbacks(proxy: CredentialProxy): void {
         containerIP,
         providerId,
         'proxy intercepted authorization endpoint',
+      );
+    };
+  });
+
+  // Device-code handler pushes user_code + verification_uri as notification
+  setDeviceCodeNotifyResolver((eventScope) => {
+    const ctx = proxy.getSessionContext(eventScope);
+    if (!ctx) return null;
+    return (providerId, userCode, verificationUri) => {
+      ctx.flowQueue.push(
+        {
+          flowId: `${providerId}:device:${Date.now()}`,
+          eventType: 'notification',
+          providerId,
+          eventParam: `Enter code *${userCode}* at ${verificationUri}`,
+          replyFn: null,
+        },
+        'device code flow initiated',
       );
     };
   });

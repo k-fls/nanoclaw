@@ -42,6 +42,7 @@ interface EndpointDef {
 const ENDPOINT_FIELDS: EndpointDef[] = [
   { field: 'token_endpoint', mode: 'token-exchange' },
   { field: 'authorization_endpoint', mode: 'authorize-stub' },
+  { field: 'device_authorization_endpoint', mode: 'device-code' },
   { field: 'revocation_endpoint', mode: 'bearer-swap' },
   { field: 'userinfo_endpoint', mode: 'bearer-swap' },
   { field: 'api_base_url', mode: 'bearer-swap', prefixMatch: true },
