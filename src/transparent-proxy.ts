@@ -172,6 +172,7 @@ export function createTransparentServer(
           cb(err);
         },
       });
+      wrapper.on('error', () => socket.destroy());
       // Back-pressure: when wrapper is drained, resume socket
       wrapper.on('drain', () => socket.resume());
 

@@ -304,6 +304,7 @@ function sendUpstream(
       } as RequestOptions,
       async (res) => {
         const chunks: Buffer[] = [];
+        res.on('error', (err) => reject(err));
         res.on('data', (c) => chunks.push(c));
         await new Promise<void>((r) => res.on('end', r));
         resolve({
@@ -348,7 +349,6 @@ function createBearerSwapHandler(
       ended = true;
       onEnd?.();
     });
-
     /** Pipe queued + future chunks to a writable. Ends it when source ends. */
     function pipeTo(dest: import('http').ClientRequest): void {
       for (const c of pending) dest.write(c);
@@ -462,6 +462,13 @@ function createBearerSwapHandler(
           agent: _upstreamAgent,
         } as RequestOptions,
         async (upRes) => {
+          upRes.on('error', () => {
+            if (!clientRes.headersSent) {
+              clientRes.writeHead(502);
+              clientRes.end();
+            }
+            resolve();
+          });
           const statusCode = upRes.statusCode!;
 
           // Happy path: not an auth error, pipe through

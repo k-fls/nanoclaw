@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'http';
+import { connect as netConnect } from 'net';
 import type { AddressInfo } from 'net';
 
 vi.mock('./logger.js', () => ({
@@ -242,5 +243,106 @@ describe('credential-proxy HTTP server', () => {
 
     // HTTP proxy is transparent — no credential injection
     expect(lastUpstreamHeaders['x-api-key']).toBe('placeholder');
+  });
+
+  it('survives client destroying socket mid-request', async () => {
+    // Upstream that delays response so the client has time to disconnect
+    const slowServer = http.createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200);
+        res.end('late');
+      }, 200);
+    });
+    await new Promise<void>((r) => slowServer.listen(0, '127.0.0.1', r));
+    const slowPort = (slowServer.address() as AddressInfo).port;
+
+    proxy.registerContainerIP('127.0.0.1', asGroupScope('my-group'));
+    proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
+    proxyPort = (proxyServer.address() as AddressInfo).port;
+
+    // Connect, send partial request, then destroy
+    const sock = netConnect(proxyPort, '127.0.0.1', () => {
+      sock.write(
+        `GET http://127.0.0.1:${slowPort}/v1/test HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n`,
+      );
+      setTimeout(() => sock.destroy(), 50);
+    });
+    await new Promise<void>((r) => sock.on('close', r));
+
+    // Proxy should still be alive — verify with /health
+    await new Promise((r) => setTimeout(r, 300));
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/health',
+    });
+    expect(res.statusCode).toBe(200);
+
+    slowServer.close();
+  });
+
+  it('survives client destroying socket mid-response', async () => {
+    // Upstream that sends a large response to ensure piping is in progress
+    const bigServer = http.createServer((_req, res) => {
+      res.writeHead(200);
+      res.write(Buffer.alloc(64 * 1024, 'x'));
+      setTimeout(() => res.end(Buffer.alloc(64 * 1024, 'y')), 100);
+    });
+    await new Promise<void>((r) => bigServer.listen(0, '127.0.0.1', r));
+    const bigPort = (bigServer.address() as AddressInfo).port;
+
+    proxy.registerContainerIP('127.0.0.1', asGroupScope('my-group'));
+    proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
+    proxyPort = (proxyServer.address() as AddressInfo).port;
+
+    // Start request, destroy client as soon as we get first data
+    const sock = netConnect(proxyPort, '127.0.0.1', () => {
+      sock.write(
+        `GET http://127.0.0.1:${bigPort}/big HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n`,
+      );
+    });
+    sock.once('data', () => sock.destroy());
+    await new Promise<void>((r) => sock.on('close', r));
+
+    // Proxy should still be alive
+    await new Promise((r) => setTimeout(r, 200));
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/health',
+    });
+    expect(res.statusCode).toBe(200);
+
+    bigServer.close();
+  });
+
+  it('survives upstream reset during HTTP proxy forwarding', async () => {
+    // Upstream that immediately destroys the connection
+    const resetServer = http.createServer((req) => {
+      req.socket.destroy();
+    });
+    await new Promise<void>((r) => resetServer.listen(0, '127.0.0.1', r));
+    const resetPort = (resetServer.address() as AddressInfo).port;
+
+    proxy.registerContainerIP('127.0.0.1', asGroupScope('my-group'));
+    proxyServer = await proxy.start({ port: 0, host: '127.0.0.1' });
+    proxyPort = (proxyServer.address() as AddressInfo).port;
+
+    // This will get a connection error — that's expected
+    try {
+      await makeRequest(proxyPort, {
+        method: 'GET',
+        path: `http://127.0.0.1:${resetPort}/v1/test`,
+      });
+    } catch {
+      // connection error expected
+    }
+
+    // Proxy should still be alive
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/health',
+    });
+    expect(res.statusCode).toBe(200);
+
+    resetServer.close();
   });
 });

@@ -40,6 +40,9 @@ import { handleBrowserOpen } from './auth/browser-open-handler.js';
 import type { ContainerSessionContext } from './auth/session-context.js';
 import type { GroupScope } from './auth/oauth-types.js';
 
+/** Swallow socket/stream errors to prevent uncaughtException crashes. */
+function noop() {}
+
 // ── Types ───────────────────────────────────────────────────────────
 
 /**
@@ -169,6 +172,7 @@ export function proxyPipe(
       agent: _upstreamAgent,
     } as RequestOptions,
     (upRes) => {
+      upRes.on('error', noop);
       if (_responseHook) {
         _responseHook({
           targetHost,
@@ -247,6 +251,7 @@ export async function proxyBuffered(
       async (upRes) => {
         const resChunks: Buffer[] = [];
         await new Promise<void>((r) => {
+          upRes.on('error', noop);
           upRes.on('data', (c: Buffer) => resChunks.push(c));
           upRes.on('end', r);
         });
@@ -348,6 +353,12 @@ export class CredentialProxy {
 
   constructor() {
     this.mitmDispatcher = createServer((req, res) => {
+      // Absorb socket errors centrally — covers all HostHandlers, proxyPipe,
+      // proxyBuffered. Without this, ECONNRESET/EPIPE from either end crashes
+      // the process via uncaughtException.
+      req.on('error', noop);
+      res.on('error', noop);
+
       const meta = this.socketMeta.get(req.socket);
       if (!meta) {
         logger.error({ url: req.url }, 'MITM request with no socket metadata');
@@ -583,6 +594,8 @@ export class CredentialProxy {
   ): Duplex {
     const inTap = new PassThrough(); // client → dispatcher (request data)
     const outTap = new PassThrough(); // dispatcher → client (response data)
+    inTap.on('error', noop);
+    outTap.on('error', noop);
 
     // Inbound: socket → inTap (dispatcher reads from inTap)
     socket.on('data', (chunk: Buffer) => {
@@ -665,6 +678,9 @@ export class CredentialProxy {
     // - Plain HTTP proxy requests (explicit proxy mode) — caller validated
     // - Non-TLS traffic from transparent mode (first-byte detection)
     const httpServer = createServer((req, res) => {
+      req.on('error', noop);
+      res.on('error', noop);
+
       if (req.url === '/health') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -741,6 +757,7 @@ export class CredentialProxy {
           headers: { ...req.headers, host: targetUrl.host },
         },
         (upRes) => {
+          upRes.on('error', noop);
           res.writeHead(upRes.statusCode!, upRes.headers);
           upRes.pipe(res);
         },
@@ -759,6 +776,8 @@ export class CredentialProxy {
     httpServer.on(
       'connect',
       (req: IncomingMessage, clientSocket: Socket, head: Buffer) => {
+        clientSocket.on('error', noop);
+
         const scope = this.validateCaller(clientSocket.remoteAddress);
         if (!scope) {
           logger.warn(
