@@ -156,7 +156,7 @@ export function registerDiscoveryProviders(discoveryDir?: string): void {
     discoveryDir ??
     path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
-      '../../docs/oauth-discovery',
+      '../../src/auth/oauth-discovery',
     );
 
   const providers = loadDiscoveryProviders(dir);

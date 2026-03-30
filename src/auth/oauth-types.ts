@@ -2,7 +2,7 @@
  * Types for the universal OAuth provider system.
  *
  * Discovery-file-driven proxy rules: adding a provider = dropping a JSON file
- * in docs/oauth-discovery/. These types describe the parsed result.
+ * in src/auth/oauth-discovery/. These types describe the parsed result.
  */
 
 // ---------------------------------------------------------------------------

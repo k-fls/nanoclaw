@@ -98,12 +98,31 @@ describe('buildPathPattern', () => {
 // ---------------------------------------------------------------------------
 
 describe('parseDiscoveryFile', () => {
-  it('skips files without token or authorization endpoint', () => {
+  it('skips files that produce no usable rules', () => {
     const data: DiscoveryFile = {
-      api_base_url: 'https://iam.amazonaws.com',
       _note: 'aws-iam uses sigv4 not oauth',
     };
     expect(parseDiscoveryFile('aws-iam', data)).toBeNull();
+  });
+
+  it('skips files with only secondary endpoints (revocation/userinfo)', () => {
+    const data: DiscoveryFile = {
+      revocation_endpoint: 'https://example.com/revoke',
+      userinfo_endpoint: 'https://example.com/userinfo',
+    };
+    expect(parseDiscoveryFile('secondary-only', data)).toBeNull();
+  });
+
+  it('includes secondary endpoints when primary rules exist', () => {
+    const data: DiscoveryFile = {
+      token_endpoint: 'https://example.com/token',
+      userinfo_endpoint: 'https://example.com/userinfo',
+    };
+    const provider = parseDiscoveryFile('with-secondary', data);
+    expect(provider).not.toBeNull();
+    const modes = provider!.rules.map((r) => r.mode);
+    expect(modes).toContain('token-exchange');
+    expect(modes).toContain('bearer-swap'); // userinfo added as secondary
   });
 
   it('parses anthropic.json (fixed hosts, split-host)', () => {

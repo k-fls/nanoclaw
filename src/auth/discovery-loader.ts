@@ -1,7 +1,7 @@
 /**
  * Discovery file loader for the universal OAuth provider system.
  *
- * Reads docs/oauth-discovery/*.json at startup and converts each into
+ * Reads src/auth/oauth-discovery/*.json at startup and converts each into
  * an OAuthProvider with InterceptRules. Adding a provider = dropping a JSON file.
  *
  * Handles:
@@ -39,13 +39,18 @@ interface EndpointDef {
   prefixMatch?: boolean;
 }
 
-const ENDPOINT_FIELDS: EndpointDef[] = [
+/** Primary endpoints — justify loading the provider. */
+const PRIMARY_FIELDS: EndpointDef[] = [
   { field: 'token_endpoint', mode: 'token-exchange' },
   { field: 'authorization_endpoint', mode: 'authorize-stub' },
   { field: 'device_authorization_endpoint', mode: 'device-code' },
+  { field: 'api_base_url', mode: 'bearer-swap', prefixMatch: true },
+];
+
+/** Secondary endpoints — only added if the provider has primary rules. */
+const SECONDARY_FIELDS: EndpointDef[] = [
   { field: 'revocation_endpoint', mode: 'bearer-swap' },
   { field: 'userinfo_endpoint', mode: 'bearer-swap' },
-  { field: 'api_base_url', mode: 'bearer-swap', prefixMatch: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -192,14 +197,8 @@ export function parseDiscoveryFile(
   id: string,
   data: DiscoveryFile,
 ): OAuthProvider | null {
-  // Must have at least token_endpoint or authorization_endpoint
-  if (!data.token_endpoint && !data.authorization_endpoint) {
-    logger.debug(
-      { id },
-      'Discovery: skipping file (no token or authorization endpoint)',
-    );
-    return null;
-  }
+  // No early filter — the "no usable rules" check below handles files
+  // that produce zero rules (e.g. aws-iam.json with only static credentials).
 
   const rules: InterceptRule[] = [];
   const allScopeKeys = new Set<string>();
@@ -208,47 +207,52 @@ export function parseDiscoveryFile(
   const hostsWithEndpoints = new Set<string>();
   const hostsWithBearerSwap = new Set<string>();
 
-  // Process each endpoint field
-  for (const def of ENDPOINT_FIELDS) {
-    const url = data[def.field] as string | undefined;
-    if (!url || typeof url !== 'string') continue;
+  /** Process a list of endpoint definitions into rules. */
+  function processFields(defs: EndpointDef[]) {
+    for (const def of defs) {
+      const url = data[def.field] as string | undefined;
+      if (!url || typeof url !== 'string') continue;
 
-    const parsed = parseEndpointUrl(url);
-    if (!parsed) {
-      logger.debug(
-        { id, field: def.field, url },
-        'Discovery: could not parse URL',
-      );
-      continue;
+      const parsed = parseEndpointUrl(url);
+      if (!parsed) {
+        logger.debug(
+          { id, field: def.field, url },
+          'Discovery: could not parse URL',
+        );
+        continue;
+      }
+
+      const hostMatch = buildHostMatch(parsed.host);
+      if (!hostMatch) {
+        logger.debug(
+          { id, host: parsed.host },
+          'Discovery: skipping fully-templated host',
+        );
+        continue;
+      }
+
+      hostsWithEndpoints.add(parsed.host);
+      if (def.mode === 'bearer-swap') {
+        hostsWithBearerSwap.add(parsed.host);
+      }
+
+      for (const key of hostMatch.scopeKeys) {
+        allScopeKeys.add(key);
+      }
+
+      rules.push({
+        anchor: hostMatch.anchor,
+        hostPattern: hostMatch.hostPattern,
+        pathPattern: buildPathPattern(parsed.path, def.prefixMatch ?? false),
+        mode: def.mode,
+      });
     }
-
-    const hostMatch = buildHostMatch(parsed.host);
-    if (!hostMatch) {
-      logger.debug(
-        { id, host: parsed.host },
-        'Discovery: skipping fully-templated host',
-      );
-      continue;
-    }
-
-    hostsWithEndpoints.add(parsed.host);
-    if (def.mode === 'bearer-swap') {
-      hostsWithBearerSwap.add(parsed.host);
-    }
-
-    for (const key of hostMatch.scopeKeys) {
-      allScopeKeys.add(key);
-    }
-
-    rules.push({
-      anchor: hostMatch.anchor,
-      hostPattern: hostMatch.hostPattern,
-      pathPattern: buildPathPattern(parsed.path, def.prefixMatch ?? false),
-      mode: def.mode,
-    });
   }
 
-  // Process _api_hosts for additional bearer-swap hosts
+  // Primary endpoints first — these justify loading the provider
+  processFields(PRIMARY_FIELDS);
+
+  // _api_hosts: additional bearer-swap hosts (also primary)
   if (data._api_hosts) {
     for (const apiHost of data._api_hosts) {
       const hostMatch = buildHostMatch(apiHost);
@@ -287,6 +291,9 @@ export function parseDiscoveryFile(
     logger.debug({ id }, 'Discovery: no usable rules produced');
     return null;
   }
+
+  // Secondary endpoints — only added when primary rules exist
+  processFields(SECONDARY_FIELDS);
 
   // Build substitute config from _token_format or use defaults
   let substituteConfig: SubstituteConfig = DEFAULT_SUBSTITUTE_CONFIG;

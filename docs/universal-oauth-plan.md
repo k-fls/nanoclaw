@@ -2,7 +2,7 @@
 
 ## Context
 
-The current proxy has hardcoded Claude-specific handlers (`handleApiHost`, `handleOAuthTokenExchange` in `src/auth/providers/claude.ts`) and a generic but unused `OAuthProviderConfig` system in `src/oauth-interceptor.ts`. We have 64 OIDC discovery files in `docs/oauth-discovery/` covering 60+ providers. The goal is a discovery-file-driven system where adding a provider = dropping a JSON file, no code changes.
+The current proxy has hardcoded Claude-specific handlers (`handleApiHost`, `handleOAuthTokenExchange` in `src/auth/providers/claude.ts`) and a generic but unused `OAuthProviderConfig` system in `src/oauth-interceptor.ts`. We have 64 OIDC discovery files in `src/auth/oauth-discovery/` covering 60+ providers. The goal is a discovery-file-driven system where adding a provider = dropping a JSON file, no code changes.
 
 Key design decisions from discussion:
 - 3-level matching (anchor → host regex → path regex), each atomic
@@ -51,7 +51,7 @@ interface TokenEntry {
 
 New file: `src/auth/discovery-loader.ts`
 
-Reads `docs/oauth-discovery/*.json` at startup. For each file:
+Reads `src/auth/oauth-discovery/*.json` at startup. For each file:
 
 **Extract hosts from endpoint URLs:**
 - Parse `authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, `userinfo_endpoint`, `api_base_url`
@@ -212,7 +212,7 @@ The response hook (`ProxyResponseHook`) already has `scope`, `statusCode`, and `
 
 ## 7. Extensibility Points
 
-- **New provider**: drop JSON in `docs/oauth-discovery/`, restart
+- **New provider**: drop JSON in `src/auth/oauth-discovery/`, restart
 - **Custom/self-hosted**: user drops JSON with their specific URLs
 - **Provider-specific logic**: implement `CredentialProvider` with `hostRules` that register after discovery rules (first match wins, built-in overrides generic)
 - **Token format**: `_token_format` field in discovery JSON
