@@ -20,7 +20,23 @@ import type {
 } from './credential-proxy.js';
 import { logger } from './logger.js';
 
-const LOG_FILE = path.join(DATA_DIR, 'proxy-tap.jsonl');
+export const LOG_FILE = path.join(DATA_DIR, 'proxy-tap.jsonl');
+
+// ---------------------------------------------------------------------------
+// Active tap state (for status reporting via /tap command)
+// ---------------------------------------------------------------------------
+
+let _activeTap: { domain: string; path: string } | null = null;
+
+/** Returns the current tap filter config, or null if inactive. */
+export function getActiveTap(): { domain: string; path: string } | null {
+  return _activeTap;
+}
+
+/** Clear the active tap state. */
+export function clearActiveTap(): void {
+  _activeTap = null;
+}
 
 // Simple incremental HTTP parser for extracting request/response lines + headers
 // from raw bytes. Accumulates chunks until headers are complete, emits once.
@@ -303,6 +319,8 @@ export function createTapFilter(
 ): ProxyTapFilter {
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const fd = fs.openSync(logFile, 'a');
+
+  _activeTap = { domain: domainPattern.source, path: pathPattern.source };
 
   logger.info(
     { domain: domainPattern.source, path: pathPattern.source, logFile },

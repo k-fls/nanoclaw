@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseCommand, extractCommand, handleCommand } from './commands.js';
-import type { NewMessage } from './types.js';
+import type { NewMessage, RegisteredGroup } from './types.js';
 
 function msg(content: string, id = '1'): NewMessage {
   return {
@@ -11,6 +11,28 @@ function msg(content: string, id = '1'): NewMessage {
     content,
     timestamp: new Date().toISOString(),
   };
+}
+
+const mainGroup: RegisteredGroup = {
+  name: 'main',
+  folder: 'main',
+  trigger: '',
+  added_at: '',
+  isMain: true,
+};
+
+const otherGroup: RegisteredGroup = {
+  name: 'other',
+  folder: 'other',
+  trigger: '',
+  added_at: '',
+};
+
+function runCtx(
+  hasActiveContainer: boolean,
+  group: RegisteredGroup = mainGroup,
+) {
+  return { hasActiveContainer, group };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,13 +120,13 @@ describe('extractCommand', () => {
 describe('handleCommand', () => {
   describe('/stop', () => {
     it('stops active container', () => {
-      const result = handleCommand('stop', '', true);
+      const result = handleCommand('stop', '', runCtx(true));
       expect(result.stopContainer).toBe(true);
       expect(result.reply).toMatch(/stopping/i);
     });
 
     it('reports no container when inactive', () => {
-      const result = handleCommand('stop', '', false);
+      const result = handleCommand('stop', '', runCtx(false));
       expect(result.stopContainer).toBeUndefined();
       expect(result.reply).toMatch(/no agent/i);
     });
@@ -112,30 +134,38 @@ describe('handleCommand', () => {
 
   describe('/auth', () => {
     it('stops container and triggers reauth when active', () => {
-      const result = handleCommand('auth', '', true);
+      const result = handleCommand('auth', '', runCtx(true));
       expect(result.stopContainer).toBe(true);
       expect(result.runReauth).toBe(true);
     });
 
     it('triggers reauth without stop when no container', () => {
-      const result = handleCommand('auth', '', false);
+      const result = handleCommand('auth', '', runCtx(false));
       expect(result.stopContainer).toBeFalsy();
       expect(result.runReauth).toBe(true);
     });
   });
 
+  describe('/tap', () => {
+    it('rejects from non-main group', () => {
+      const result = handleCommand('tap', '', runCtx(false, otherGroup));
+      expect(result.reply).toMatch(/main group/i);
+    });
+  });
+
   describe('/help', () => {
     it('lists all commands with descriptions', () => {
-      const result = handleCommand('help', '', false);
+      const result = handleCommand('help', '', runCtx(false));
       expect(result.reply).toContain('/stop');
       expect(result.reply).toContain('/auth');
       expect(result.reply).toContain('/help');
+      expect(result.reply).toContain('/tap');
     });
   });
 
   describe('unknown command', () => {
     it('returns error with help hint', () => {
-      const result = handleCommand('foobar', '', true);
+      const result = handleCommand('foobar', '', runCtx(true));
       expect(result.reply).toContain('/foobar');
       expect(result.reply).toContain('/help');
       expect(result.stopContainer).toBeUndefined();

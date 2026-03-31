@@ -6,7 +6,14 @@
  */
 
 import { TRIGGER_PATTERN } from './config.js';
-import type { NewMessage } from './types.js';
+import { getProxy } from './credential-proxy.js';
+import {
+  createTapFilter,
+  getActiveTap,
+  clearActiveTap,
+  LOG_FILE,
+} from './proxy-tap-logger.js';
+import type { NewMessage, RegisteredGroup } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,15 +92,21 @@ export function extractCommand(
 // Command handlers
 // ---------------------------------------------------------------------------
 
+interface CommandRunContext {
+  hasActiveContainer: boolean;
+  group: RegisteredGroup;
+}
+
 interface Command {
   description: string;
-  run: (args: string, hasActiveContainer: boolean) => CommandResult;
+  mainOnly?: boolean;
+  run: (args: string, ctx: CommandRunContext) => CommandResult;
 }
 
 const commands: Record<string, Command> = {
   stop: {
     description: 'Stop the running agent',
-    run(_args, hasActiveContainer) {
+    run(_args, { hasActiveContainer }) {
       if (!hasActiveContainer) {
         return { reply: 'No agent running.' };
       }
@@ -103,11 +116,59 @@ const commands: Record<string, Command> = {
 
   auth: {
     description: 'Stop agent and re-authenticate',
-    run(_args, hasActiveContainer) {
+    run(_args, { hasActiveContainer }) {
       return {
         stopContainer: hasActiveContainer,
         runReauth: true,
       };
+    },
+  },
+
+  tap: {
+    description:
+      'Manage proxy tap logger — /tap <domain> <path> | /tap stop | /tap',
+    mainOnly: true,
+    run(args) {
+      // /tap (no args) — show current state
+      if (!args) {
+        const active = getActiveTap();
+        if (!active) return { reply: 'Tap is not active.' };
+        return {
+          reply: `Tap active — domain: ${active.domain}, path: ${active.path}\nLog: ${LOG_FILE}`,
+        };
+      }
+
+      // /tap stop — disable
+      if (args === 'stop') {
+        getProxy().setTapFilter(null);
+        clearActiveTap();
+        return { reply: 'Tap stopped.' };
+      }
+
+      // /tap <domain> <path> — enable
+      const parts = args.split(/\s+/);
+      if (parts.length < 2) {
+        return {
+          reply:
+            'Usage: /tap <domain-regex> <path-regex>\nExample: /tap anthropic\\.com /v1/messages',
+        };
+      }
+      const [domain, pathPattern] = parts;
+      try {
+        const filter = createTapFilter(
+          new RegExp(domain),
+          new RegExp(pathPattern),
+          LOG_FILE,
+        );
+        getProxy().setTapFilter(filter);
+        return {
+          reply: `Tap started — domain: ${domain}, path: ${pathPattern}\nLog: ${LOG_FILE}`,
+        };
+      } catch (e) {
+        return {
+          reply: `Invalid regex: ${e instanceof Error ? e.message : e}`,
+        };
+      }
     },
   },
 
@@ -123,13 +184,13 @@ const commands: Record<string, Command> = {
 };
 
 /**
- * Handle a parsed command. Pure logic — no side effects.
+ * Handle a parsed command.
  * Returns a CommandResult that the caller acts on.
  */
 export function handleCommand(
   name: string,
   args: string,
-  hasActiveContainer: boolean,
+  runCtx: CommandRunContext,
 ): CommandResult {
   const cmd = commands[name];
   if (!cmd) {
@@ -137,7 +198,10 @@ export function handleCommand(
       reply: `Unknown command: /${name}\nType /help for available commands.`,
     };
   }
-  return cmd.run(args, hasActiveContainer);
+  if (cmd.mainOnly && !runCtx.group.isMain) {
+    return { reply: `/${name} is only available in the main group.` };
+  }
+  return cmd.run(args, runCtx);
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +209,7 @@ export function handleCommand(
 // ---------------------------------------------------------------------------
 
 export interface CommandContext {
-  isMainGroup: boolean;
+  group: RegisteredGroup;
   isActive: () => boolean;
   hideMessage: (msgId: string) => void;
   advanceCursor: (timestamp: string) => void;
@@ -162,14 +226,17 @@ export async function executeCommand(
   messages: NewMessage[],
   ctx: CommandContext,
 ): Promise<boolean> {
-  const extracted = extractCommand(messages, ctx.isMainGroup);
+  const extracted = extractCommand(messages, ctx.group.isMain === true);
   if (!extracted) return false;
 
   const { cmd, message: cmdMsg } = extracted;
   ctx.hideMessage(cmdMsg.id);
   ctx.advanceCursor(messages[messages.length - 1].timestamp);
 
-  const result = handleCommand(cmd.name, cmd.args, ctx.isActive());
+  const result = handleCommand(cmd.name, cmd.args, {
+    hasActiveContainer: ctx.isActive(),
+    group: ctx.group,
+  });
   if (result.stopContainer) ctx.closeStdin();
   if (result.reply) await ctx.sendMessage(result.reply);
   if (result.runReauth) await ctx.runReauth();

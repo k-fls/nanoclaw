@@ -220,7 +220,7 @@ function commandContext(
   group: RegisteredGroup,
 ): CommandContext {
   return {
-    isMainGroup: group.isMain === true,
+    group,
     isActive: () => queue.isActive(chatJid),
     hideMessage: (id) => hideMessage(chatJid, id, HIDE_REASON.COMMAND),
     advanceCursor: (ts) => {
