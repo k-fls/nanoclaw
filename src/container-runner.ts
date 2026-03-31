@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -44,6 +44,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  script?: string;
 }
 
 export interface ContainerOutput {
@@ -196,8 +197,17 @@ export function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  if (fs.existsSync(agentRunnerSrc)) {
+    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
+    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
+    const needsCopy =
+      !fs.existsSync(groupAgentRunnerDir) ||
+      !fs.existsSync(cachedIndex) ||
+      (fs.existsSync(srcIndex) &&
+        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
+    if (needsCopy) {
+      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+    }
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
@@ -464,15 +474,15 @@ export async function runContainerAgent(
         { group: group.name, containerName },
         'Container timeout, stopping gracefully',
       );
-      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
-        if (err) {
-          logger.warn(
-            { group: group.name, containerName, err },
-            'Graceful stop failed, force killing',
-          );
-          container.kill('SIGKILL');
-        }
-      });
+      try {
+        stopContainer(containerName);
+      } catch (err) {
+        logger.warn(
+          { group: group.name, containerName, err },
+          'Graceful stop failed, force killing',
+        );
+        container.kill('SIGKILL');
+      }
     };
 
     let timeout = setTimeout(killOnTimeout, timeoutMs);
@@ -555,10 +565,20 @@ export async function runContainerAgent(
       const isError = code !== 0;
 
       if (isVerbose || isError) {
+        // On error, log input metadata only — not the full prompt.
+        // Full input is only included at verbose level to avoid
+        // persisting user conversation content on every non-zero exit.
+        if (isVerbose) {
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
+        } else {
+          logLines.push(
+            `=== Input Summary ===`,
+            `Prompt length: ${input.prompt.length} chars`,
+            `Session ID: ${input.sessionId || 'new'}`,
+            ``,
+          );
+        }
         logLines.push(
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
           `=== Container Args ===`,
           containerArgs.join(' '),
           ``,
@@ -702,6 +722,7 @@ export function writeTasksSnapshot(
     id: string;
     groupFolder: string;
     prompt: string;
+    script?: string | null;
     schedule_type: string;
     schedule_value: string;
     status: string;
@@ -737,7 +758,7 @@ export function writeGroupsSnapshot(
   groupFolder: string,
   isMain: boolean,
   groups: AvailableGroup[],
-  registeredJids: Set<string>,
+  _registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });

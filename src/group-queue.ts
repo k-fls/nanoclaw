@@ -370,13 +370,14 @@ export class GroupQueue {
     );
 
     // Stop containers in parallel with a timeout
-    const { exec } = await import('child_process');
-    const { stopContainer } = await import('./container-runtime.js');
+    const { execFile } = await import('child_process');
+    const { stopContainerArgs } = await import('./container-runtime.js');
     await Promise.allSettled(
       activeContainers.map(
         (name) =>
           new Promise<void>((resolve) => {
-            exec(stopContainer(name), { timeout: gracePeriodMs }, (err) => {
+            const [bin, args] = stopContainerArgs(name);
+            execFile(bin, args, { timeout: gracePeriodMs }, (err) => {
               if (err) {
                 logger.warn(
                   { container: name, err },

@@ -2,7 +2,7 @@
  * ExecHandle implementation — wraps container-runtime.ts to spawn commands
  * inside the agent container for auth flows.
  */
-import { exec, spawn } from 'child_process';
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -132,15 +132,15 @@ export function execInContainer(
       { containerName, timeoutMs: effectiveTimeout },
       'Auth container timeout, stopping gracefully',
     );
-    exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
-      if (err) {
-        logger.warn(
-          { containerName, err },
-          'Graceful stop failed, force killing',
-        );
-        proc.kill('SIGKILL');
-      }
-    });
+    try {
+      stopContainer(containerName);
+    } catch (err) {
+      logger.warn(
+        { containerName, err },
+        'Graceful stop failed, force killing',
+      );
+      proc.kill('SIGKILL');
+    }
   }, effectiveTimeout);
 
   proc.on('close', () => clearTimeout(killTimer));
@@ -179,9 +179,11 @@ export function execInContainer(
       return waitPromise;
     },
     kill(): void {
-      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
-        if (err) proc.kill('SIGKILL');
-      });
+      try {
+        stopContainer(containerName);
+      } catch {
+        proc.kill('SIGKILL');
+      }
     },
   };
 }

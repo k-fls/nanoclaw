@@ -185,13 +185,13 @@ describe('mount-security', () => {
       expect(mockReadFileSync).toHaveBeenCalledTimes(1);
     });
 
-    it('caches error — second call after failure does not re-check', async () => {
+    it('re-checks when file not found — not cached as error', async () => {
       mockExistsSync.mockReturnValue(false);
       const { loadMountAllowlist } = await import('./mount-security.js');
       loadMountAllowlist();
       loadMountAllowlist();
-      // existsSync called only once because error is cached
-      expect(mockExistsSync).toHaveBeenCalledTimes(1);
+      // existsSync called twice because file-not-found is not cached
+      expect(mockExistsSync).toHaveBeenCalledTimes(2);
     });
   });
 

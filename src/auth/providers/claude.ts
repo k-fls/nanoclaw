@@ -38,8 +38,6 @@ import {
   type FlowResult,
 } from '../types.js';
 
-const SERVICE = 'claude_auth';
-
 /** Substitute tokens injected into containers — never real credentials. */
 export const PLACEHOLDER_API_KEY = 'sk-ant-api00-placeholder-nanoclaw';
 export const PLACEHOLDER_ACCESS_TOKEN = 'sk-ant-oat01-placeholder-nanoclaw';
@@ -566,7 +564,7 @@ async function runOAuthFlow(
 // ── Migration: claude_auth.json → claude.keys.json ──────────────────
 
 /** Provider ID used as the keys file name and engine key. */
-const PROVIDER_ID = 'claude';
+export const PROVIDER_ID = 'claude';
 
 /**
  * If claude.keys.json doesn't exist for a scope but claude_auth.json does,
@@ -579,7 +577,7 @@ export function migrateClaudeCredentials(scope: string): void {
   const existing = readKeysFile(credScope, PROVIDER_ID);
   if (Object.keys(existing).length > 0) return;
 
-  const cred = loadCredential(scope, SERVICE);
+  const cred = loadCredential(scope, 'claude_auth');
   if (!cred) return;
 
   const plaintext = decrypt(cred.token);
@@ -721,6 +719,15 @@ export function registerClaudeBaseUrl(
 }
 
 // ── Container credential provisioning ─────────────────────────────────
+
+/**
+ * True if the given credential scope has a Claude OAuth subscription token
+ * (role = 'access'). Remote control requires a subscription — API keys won't work.
+ */
+export function hasSubscriptionCredential(scope: CredentialScope): boolean {
+  const keys = readKeysFile(scope, PROVIDER_ID);
+  return !!keys.access;
+}
 
 // ── Provider ────────────────────────────────────────────────────────
 

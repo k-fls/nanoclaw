@@ -32,7 +32,19 @@ function runCtx(
   hasActiveContainer: boolean,
   group: RegisteredGroup = mainGroup,
 ) {
-  return { hasActiveContainer, group };
+  return {
+    hasActiveContainer,
+    group,
+    tokenEngine: {} as any,
+    chatJid: 'test@g.us',
+    sender: 'user@s.whatsapp.net',
+  };
+}
+
+async function replyOf(result: {
+  asyncAction?: () => Promise<string | undefined>;
+}) {
+  return result.asyncAction ? await result.asyncAction() : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +79,13 @@ describe('parseCommand', () => {
 
   it('trims whitespace', () => {
     expect(parseCommand('  /stop  ')).toEqual({ name: 'stop', args: '' });
+  });
+
+  it('allows hyphens in command names', () => {
+    expect(parseCommand('/remote-control')).toEqual({
+      name: 'remote-control',
+      args: '',
+    });
   });
 });
 
@@ -119,16 +138,16 @@ describe('extractCommand', () => {
 
 describe('handleCommand', () => {
   describe('/stop', () => {
-    it('stops active container', () => {
+    it('stops active container', async () => {
       const result = handleCommand('stop', '', runCtx(true));
       expect(result.stopContainer).toBe(true);
-      expect(result.reply).toMatch(/stopping/i);
+      expect(await replyOf(result)).toMatch(/stopping/i);
     });
 
-    it('reports no container when inactive', () => {
+    it('reports no container when inactive', async () => {
       const result = handleCommand('stop', '', runCtx(false));
       expect(result.stopContainer).toBeUndefined();
-      expect(result.reply).toMatch(/no agent/i);
+      expect(await replyOf(result)).toMatch(/no agent/i);
     });
   });
 
@@ -147,27 +166,29 @@ describe('handleCommand', () => {
   });
 
   describe('/tap', () => {
-    it('rejects from non-main group', () => {
+    it('rejects from non-main group', async () => {
       const result = handleCommand('tap', '', runCtx(false, otherGroup));
-      expect(result.reply).toMatch(/main group/i);
+      expect(await replyOf(result)).toMatch(/main group/i);
     });
   });
 
   describe('/help', () => {
-    it('lists all commands with descriptions', () => {
+    it('lists all commands with descriptions', async () => {
       const result = handleCommand('help', '', runCtx(false));
-      expect(result.reply).toContain('/stop');
-      expect(result.reply).toContain('/auth');
-      expect(result.reply).toContain('/help');
-      expect(result.reply).toContain('/tap');
+      const text = await replyOf(result);
+      expect(text).toContain('/stop');
+      expect(text).toContain('/auth');
+      expect(text).toContain('/help');
+      expect(text).toContain('/tap');
     });
   });
 
   describe('unknown command', () => {
-    it('returns error with help hint', () => {
+    it('returns error with help hint', async () => {
       const result = handleCommand('foobar', '', runCtx(true));
-      expect(result.reply).toContain('/foobar');
-      expect(result.reply).toContain('/help');
+      const text = await replyOf(result);
+      expect(text).toContain('/foobar');
+      expect(text).toContain('/help');
       expect(result.stopContainer).toBeUndefined();
       expect(result.runReauth).toBeUndefined();
     });

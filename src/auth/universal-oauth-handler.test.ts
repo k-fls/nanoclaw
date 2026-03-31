@@ -45,6 +45,7 @@ import { tmpdir } from 'os';
 let testServer: https.Server;
 let serverPort: number;
 let tmpDir: string;
+let logSpies: ReturnType<typeof muteLogger>;
 
 // Track requests the test server receives
 let lastRequest: {
@@ -60,6 +61,7 @@ let serverResponseOverride: {
 } | null = null;
 
 beforeAll(async () => {
+  logSpies = muteLogger();
   // Generate self-signed cert
   tmpDir = mkdtempSync(join(tmpdir(), 'oauth-handler-test-'));
   execSync(
@@ -111,6 +113,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  restoreLogger(logSpies);
   testServer.close();
   try {
     rmSync(tmpDir, { recursive: true });

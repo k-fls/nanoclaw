@@ -2,7 +2,7 @@
  * Container runtime abstraction for NanoClaw.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import os from 'os';
 
 import { logger } from './logger.js';
@@ -27,9 +27,18 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/** Returns the shell command to stop a container by name. */
-export function stopContainer(name: string): string {
-  return `${CONTAINER_RUNTIME_BIN} stop ${name}`;
+/** Validated args to stop a container. Callers choose sync/async execution. */
+export function stopContainerArgs(name: string): [bin: string, args: string[]] {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
+    throw new Error(`Invalid container name: ${name}`);
+  }
+  return [CONTAINER_RUNTIME_BIN, ['stop', '-t', '1', name]];
+}
+
+/** Stop a container synchronously. */
+export function stopContainer(name: string): void {
+  const [bin, args] = stopContainerArgs(name);
+  execFileSync(bin, args, { stdio: 'pipe' });
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
@@ -66,7 +75,9 @@ export function ensureContainerRuntimeRunning(): void {
     console.error(
       '╚════════════════════════════════════════════════════════════════╝\n',
     );
-    throw new Error('Container runtime is required but failed to start');
+    throw new Error('Container runtime is required but failed to start', {
+      cause: err,
+    });
   }
 }
 
@@ -80,7 +91,7 @@ export function cleanupOrphans(): void {
     const orphans = output.trim().split('\n').filter(Boolean);
     for (const name of orphans) {
       try {
-        execSync(stopContainer(name), { stdio: 'pipe' });
+        stopContainer(name);
       } catch {
         /* already stopped */
       }
