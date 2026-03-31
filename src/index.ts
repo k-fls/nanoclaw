@@ -3,31 +3,20 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
-  CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
-  NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
 import {
-  initCredentialStore,
-  importEnvToDefault,
-  createAuthGuard,
-  registerBuiltinProviders,
-  registerDiscoveryProviders,
-  getTokenEngine,
-} from './auth/index.js';
-import { createAccessCheck } from './auth/provision.js';
-import type { ChatIO } from './auth/types.js';
-import { wireAuthCallbacks } from './auth/oauth-flow.js';
+  initAuthSystem,
+  NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
+} from './auth/init.js';
+import { createAuthGuard } from './auth/guard.js';
+import { createChatIO } from './auth/chat-io.js';
 import { runReauth } from './auth/reauth.js';
-import {
-  CredentialProxy,
-  setProxyInstance,
-  getProxy,
-  setProxyResponseHook,
-} from './credential-proxy.js';
+import { getProxy } from './credential-proxy.js';
+import { getTokenEngine } from './auth/registry.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -42,7 +31,6 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
-  PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
   getAllChats,
@@ -171,45 +159,17 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
-/** Create a ChatIO that routes through the normal channel messaging. */
-function createChatIO(channel: Channel, chatJid: string): ChatIO {
-  let lastReceivedTs: string | null = null;
-  let lastReceivedId: string | null = null;
+/** Build ChatIO deps for auth guard — bridges module state to the auth layer. */
+function chatIODeps(channel: Channel, chatJid: string) {
   return {
-    async send(text: string): Promise<void> {
-      await channel.sendMessage(chatJid, text);
+    channel,
+    chatJid,
+    assistantName: ASSISTANT_NAME,
+    getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
+    setAgentTimestamp: (ts: string) => {
+      lastAgentTimestamp[chatJid] = ts;
     },
-    async sendRaw(text: string): Promise<void> {
-      await channel.sendMessage(chatJid, text);
-    },
-    async receive(timeoutMs = 120_000): Promise<string | null> {
-      const start = Date.now();
-      const cursor = getMessagesSince(chatJid, '', ASSISTANT_NAME);
-      const lastTs =
-        cursor.length > 0 ? cursor[cursor.length - 1].timestamp : '';
-      while (Date.now() - start < timeoutMs) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const newer = getMessagesSince(chatJid, lastTs, ASSISTANT_NAME);
-        if (newer.length > 0) {
-          lastReceivedTs = newer[0].timestamp;
-          lastReceivedId = newer[0].id;
-          return newer[0].content;
-        }
-      }
-      return null;
-    },
-    hideMessage(): void {
-      if (lastReceivedId) {
-        hideMessage(chatJid, lastReceivedId, HIDE_REASON.FLOW);
-        lastReceivedId = null;
-      }
-    },
-    advanceCursor(): void {
-      if (lastReceivedTs) {
-        lastAgentTimestamp[chatJid] = lastReceivedTs;
-        saveState();
-      }
-    },
+    saveState,
   };
 }
 
@@ -230,7 +190,7 @@ function commandContext(
     closeStdin: () => queue.closeStdin(chatJid),
     sendMessage: (text) => channel.sendMessage(chatJid, text),
     runReauth: async () => {
-      const chat = createChatIO(channel, chatJid);
+      const chat = createChatIO(chatIODeps(channel, chatJid));
       await runReauth(
         scopeOf(group),
         chat,
@@ -261,7 +221,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const guard = createAuthGuard(
     group,
     getProxy(),
-    () => createChatIO(channel, chatJid),
+    () => createChatIO(chatIODeps(channel, chatJid)),
     () => queue.closeStdin(chatJid),
   );
   const credentialsOk = await guard.start();
@@ -622,84 +582,19 @@ function ensureContainerSystemRunning(): void {
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
-  initCredentialStore();
 
-  // Create and initialize the credential proxy instance.
-  // Must happen before registerProvider() calls so providers can register host rules.
-  const proxy = new CredentialProxy();
-  setProxyInstance(proxy);
-
-  // Activate proxy tap logger if PROXY_TAP_DOMAIN + PROXY_TAP_PATH are set
-  const { createTapFilterFromEnv } = await import('./proxy-tap-logger.js');
-  const tapFilter = createTapFilterFromEnv();
-  if (tapFilter) proxy.setTapFilter(tapFilter);
-
-  // Register built-in auth providers first (takes priority in first-match dispatch),
-  // then discovery-file providers to fill gaps for other OAuth services.
-  registerBuiltinProviders();
-  registerDiscoveryProviders();
-
-  // Wire token engine with group resolver and access check.
-  // Must happen after providers are registered and before any provision calls.
-  {
-    const engine = (tokenEngine = getTokenEngine());
-    engine.setGroupResolver((folder) => {
-      for (const g of Object.values(registeredGroups)) {
-        if (g.folder === folder) return g;
-      }
-      return undefined;
-    });
-    engine.setAccessCheck(
-      createAccessCheck((folder) => {
-        for (const g of Object.values(registeredGroups)) {
-          if (g.folder === folder) return g;
-        }
-        return undefined;
-      }),
-    );
-  }
-
-  // Import .env credentials after engine is ready (migration runs inside getTokenEngine)
-  importEnvToDefault(tokenEngine);
-
-  // Wire auth error resolver, OAuth initiation, and browser-open callbacks
-  wireAuthCallbacks(proxy);
+  // Initialize the full auth/credential proxy system (providers, token engine, proxy server).
+  const auth = await initAuthSystem(() => registeredGroups);
+  tokenEngine = auth.tokenEngine;
 
   initDatabase();
   logger.info('Database initialized');
   loadState();
 
-  // Register additional Claude hosts from ANTHROPIC_BASE_URL if configured
-  {
-    const envVars = await import('./env.js').then((m) =>
-      m.readEnvFile(['ANTHROPIC_BASE_URL']),
-    );
-    if (envVars.ANTHROPIC_BASE_URL) {
-      const { registerClaudeBaseUrl } =
-        await import('./auth/providers/claude.js');
-      const { createHandler } =
-        await import('./auth/universal-oauth-handler.js');
-      const { getTokenEngine } = await import('./auth/registry.js');
-      registerClaudeBaseUrl(
-        envVars.ANTHROPIC_BASE_URL,
-        getTokenEngine(),
-        createHandler,
-      );
-    }
-  }
-
-  // Start credential proxy — handles transparent TLS (iptables redirect),
-  // explicit HTTP/HTTPS proxy (CONNECT), and internal endpoints.
-  const proxyServer = await proxy.start({
-    port: CREDENTIAL_PROXY_PORT,
-    host: PROXY_BIND_HOST,
-    enableTransparent: true,
-  });
-
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
-    proxyServer.close();
+    auth.shutdown();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

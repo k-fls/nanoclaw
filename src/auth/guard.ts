@@ -3,11 +3,12 @@
  *
  * Owns session lifecycle (context, flow consumer, proxy registration)
  * and credential checking / reauth triggering. index.ts just calls
- * start(), onStreamResult(), finish().
+ * withAuthGuard() which encapsulates the full lifecycle.
  */
-import type { RegisteredGroup } from '../types.js';
+import type { RegisteredGroup, Channel } from '../types.js';
 import type { ChatIO, CredentialProvider } from './types.js';
 import type { CredentialProxy } from '../credential-proxy.js';
+import { getProxy } from '../credential-proxy.js';
 import {
   isAuthError,
   extractStreamRequestId,
@@ -19,6 +20,7 @@ import { getTokenEngine } from './registry.js';
 import { scopeOf } from '../types.js';
 import { createSessionContext } from './session-context.js';
 import { consumeFlows } from './flow-consumer.js';
+import { createChatIO, type ChatIODeps } from './chat-io.js';
 import { AsyncMutex } from './async-mutex.js';
 import { logger } from '../logger.js';
 
@@ -181,5 +183,88 @@ export function createAuthGuard(
 
       return authResult;
     },
+  };
+}
+
+// ── withAuthGuard ──────────────────────────────────────────────────
+// Higher-order wrapper that encapsulates the full auth guard lifecycle
+// so index.ts only needs a single call site.
+
+/** Outcome of a guarded agent run. */
+export type GuardedResult =
+  | { outcome: 'no-credentials' }
+  | { outcome: 'reauth-ok' }
+  | { outcome: 'reauth-failed' }
+  | {
+      outcome: 'done';
+      agentStatus: 'success' | 'error';
+      error?: string;
+      fatal?: boolean;
+    };
+
+/** Callback signature for the streaming output handler inside withAuthGuard. */
+export type GuardedOutputCallback = (
+  result: {
+    status: string;
+    result?: string | Record<string, unknown> | null;
+    error?: string;
+    newSessionId?: string;
+  },
+  chatLock: AsyncMutex,
+) => Promise<void>;
+
+export interface WithAuthGuardDeps {
+  group: RegisteredGroup;
+  chatIODeps: ChatIODeps;
+  closeStdin: () => void;
+  /**
+   * The actual agent run. Receives the guard so streaming callbacks can
+   * call guard.onStreamResult() and guard.chatLock.
+   */
+  runAgent: (guard: AuthGuard) => Promise<{
+    status: 'success' | 'error';
+    error?: string;
+    fatal?: boolean;
+  }>;
+}
+
+/**
+ * Run an agent invocation wrapped in the full auth guard lifecycle.
+ *
+ * 1. Creates guard, checks credentials (triggers reauth if missing)
+ * 2. Calls runAgent callback — caller wires streaming output through guard
+ * 3. Finishes guard — handles auth errors, reauth, cleanup
+ */
+export async function withAuthGuard(
+  deps: WithAuthGuardDeps,
+): Promise<GuardedResult> {
+  const { group, chatIODeps, closeStdin, runAgent } = deps;
+
+  const guard = createAuthGuard(
+    group,
+    getProxy(),
+    () => createChatIO(chatIODeps),
+    closeStdin,
+  );
+
+  const credentialsOk = await guard.start();
+  if (!credentialsOk) {
+    return { outcome: 'no-credentials' };
+  }
+
+  const agentResult = await runAgent(guard);
+
+  const authResult = await guard.finish(
+    agentResult.status === 'error' ? agentResult.error : undefined,
+  );
+
+  if (authResult === 'reauth-failed') return { outcome: 'reauth-failed' };
+  if (authResult === 'reauth-ok') return { outcome: 'reauth-ok' };
+
+  return {
+    outcome: 'done',
+    agentStatus: agentResult.status,
+    error: agentResult.error,
+    fatal: agentResult.fatal,
   };
 }
