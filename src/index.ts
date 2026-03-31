@@ -351,6 +351,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
+    } else {
+      // Non-text events (tool use, thinking, etc.) — refresh typing indicator
+      channel.setTyping?.(chatJid, true)?.catch(() => {});
     }
 
     queue.notifyIdle(chatJid);
