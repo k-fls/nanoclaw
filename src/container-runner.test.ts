@@ -56,6 +56,7 @@ vi.mock('./credential-proxy.js', () => ({
   getProxy: vi.fn(() => ({
     getMitmContext: vi.fn(() => null),
     detectAuthMode: vi.fn(() => 'api-key'),
+    hasContainerIP: vi.fn(() => false),
     registerContainerIP: vi.fn(),
     unregisterContainerIP: vi.fn(),
   })),

@@ -40,11 +40,8 @@ import {
 import type { OAuthProvider, SubstituteConfig } from './oauth-types.js';
 import { asGroupScope } from './oauth-types.js';
 import type { TokenRole } from './token-substitute.js';
-import {
-  buildContainerArgs,
-  buildVolumeMounts,
-  getContainerIP,
-} from '../container-runner.js';
+import { buildContainerArgs, buildVolumeMounts } from '../container-runner.js';
+import { allocateContainerIP, ensureNetwork } from './container-args.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from '../config.js';
 import {
@@ -264,8 +261,9 @@ export class OAuthE2EHarness {
   }
 
   async start(): Promise<void> {
-    // 0. Initialize credential store (needed for token persistence)
+    // 0. Initialize credential store and ensure Docker network exists
     initCredentialStore();
+    ensureNetwork();
 
     // 1. Start mock upstream
     await this.mockUpstream.start();
@@ -446,11 +444,18 @@ export class OAuthE2EHarness {
     // Use the real container setup from container-runner.ts
     const volumeMounts = buildVolumeMounts(group, false);
     const containerName = `nanoclaw-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    // Allocate static IP before spawn — no post-spawn inspection needed.
+    const { ip: containerIP, release: releaseIP } = allocateContainerIP(
+      asGroupScope(scope),
+      this.proxy,
+    );
+
     const containerArgs = buildContainerArgs(
       volumeMounts,
       containerName,
       group,
       this.tokenEngine,
+      containerIP,
     );
 
     // Override PROXY_PORT — buildContainerArgs uses CREDENTIAL_PROXY_PORT from config
@@ -504,22 +509,11 @@ export class OAuthE2EHarness {
       containerArgs.splice(imageIdx, 0, '-e', `${k}=${v}`);
     }
 
-    return new Promise(async (resolve) => {
+    return new Promise((resolve) => {
       const proc = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       proc.stdin.end();
-
-      // Poll for container IP — Docker assigns it at creation but spawn is async.
-      // Uses the real getContainerIP from container-runner.ts.
-      let containerIP: string | null = null;
-      for (let i = 0; i < 20 && !containerIP; i++) {
-        await new Promise((r) => setTimeout(r, 200));
-        containerIP = getContainerIP(containerName);
-      }
-      if (containerIP) {
-        this.proxy.registerContainerIP(containerIP, asGroupScope(scope));
-      }
 
       let stdout = '';
       let stderr = '';
@@ -541,7 +535,7 @@ export class OAuthE2EHarness {
 
       proc.on('close', (code) => {
         clearTimeout(timer);
-        if (containerIP) this.proxy.unregisterContainerIP(containerIP);
+        releaseIP();
         // Extract only test output — everything after the UUID marker
         const markerIdx = stdout.indexOf(marker);
         const cleanStdout =
@@ -552,7 +546,7 @@ export class OAuthE2EHarness {
       });
       proc.on('error', (err) => {
         clearTimeout(timer);
-        if (containerIP) this.proxy.unregisterContainerIP(containerIP);
+        releaseIP();
         resolve({ exitCode: 1, stdout, stderr: stderr + err.message });
       });
     });

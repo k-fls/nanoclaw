@@ -15,7 +15,7 @@ import {
   setProxyInstance,
   getProxy,
 } from '../credential-proxy.js';
-import { PROXY_BIND_HOST } from './container-args.js';
+import { PROXY_BIND_HOST, ensureNetwork } from './container-args.js';
 import { initCredentialStore } from './store.js';
 import { importEnvToDefault } from './provision.js';
 import {
@@ -46,6 +46,7 @@ export async function initAuthSystem(
   getGroups: () => Record<string, RegisteredGroup>,
 ): Promise<AuthSystem> {
   initCredentialStore();
+  ensureNetwork();
 
   // Create and initialize the credential proxy instance.
   // Must happen before registerProvider() calls so providers can register host rules.

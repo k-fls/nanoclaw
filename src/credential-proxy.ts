@@ -403,6 +403,10 @@ export class CredentialProxy {
     this._tapFilter = filter;
   }
 
+  hasContainerIP(ip: string): boolean {
+    return this.containerIpToScope.has(ip);
+  }
+
   registerContainerIP(ip: string, scope: GroupScope): void {
     this.containerIpToScope.set(ip, scope);
     logger.debug({ ip, scope }, 'Registered container IP');

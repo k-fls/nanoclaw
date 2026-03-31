@@ -31,6 +31,7 @@ fi
 : "${PROXY_PORT:?PROXY_PORT must be set}"
 : "${CA_CERT_PATH:?CA_CERT_PATH must be set}"
 : "${CONTAINER_IMAGE:?CONTAINER_IMAGE must be set}"
+: "${CONTAINER_IP:?CONTAINER_IP must be set}"
 
 # Build docker args
 DOCKER_ARGS=(
@@ -42,6 +43,9 @@ DOCKER_ARGS=(
   -v "$CA_CERT_PATH:/usr/local/share/ca-certificates/nanoclaw-mitm.crt:ro"
   -e "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/nanoclaw-mitm.crt"
 )
+
+# Static IP on the dedicated nanoclaw bridge network
+DOCKER_ARGS+=(--network nanoclaw --ip "$CONTAINER_IP")
 
 # Linux needs explicit host gateway mapping
 if [ "$(uname)" = "Linux" ]; then
@@ -60,23 +64,6 @@ DOCKER_ARGS+=(
    update-ca-certificates 2>/dev/null && \
    $COMMAND"
 )
-
-# Get container IP after it starts (background)
-get_ip() {
-  for i in $(seq 1 20); do
-    sleep 0.5
-    IP=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)
-    if [ -n "$IP" ]; then
-      echo "$IP"
-      return
-    fi
-  done
-}
-
-# Write container IP to fd 3 if it's open (for the test harness to read)
-if { true >&3; } 2>/dev/null; then
-  get_ip >&3 &
-fi
 
 # Run with timeout
 timeout "$TIMEOUT_SECS" docker "${DOCKER_ARGS[@]}"

@@ -11,12 +11,15 @@ import os from 'os';
 import fs from 'fs';
 
 import { CREDENTIAL_PROXY_PORT } from '../config.js';
-import { getProxy } from '../credential-proxy.js';
+import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
+import { getProxy, type CredentialProxy } from '../credential-proxy.js';
 import { getMitmCaCertPath } from '../mitm-proxy.js';
 import { getAllProviders } from './registry.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
+import type { GroupScope } from './oauth-types.js';
 import type { RegisteredGroup } from '../types.js';
 import { scopeOf } from '../types.js';
+import { logger } from '../logger.js';
 
 // ── Host constants ─────────────────────────────────────────────────
 
@@ -154,14 +157,91 @@ export function applyCredentialProxyArgs(
   }
 }
 
+// ── Dedicated Docker network for static container IPs ─────────────────
+const NANOCLAW_NETWORK = 'nanoclaw';
+
+/** Configurable /16 subnet for the nanoclaw bridge network (must end in .0.0/16). */
+function parseSubnet(value: string): { subnet: string; prefix: string } {
+  if (!/^\d+\.\d+\.0\.0\/16$/.test(value)) {
+    throw new Error(`Invalid NANOCLAW_SUBNET "${value}" — must be X.Y.0.0/16`);
+  }
+  return { subnet: value, prefix: value.split('.').slice(0, 2).join('.') };
+}
+
+const { subnet: NANOCLAW_SUBNET, prefix: NANOCLAW_SUBNET_PREFIX } = parseSubnet(
+  process.env.NANOCLAW_SUBNET || '172.29.0.0/16',
+);
+
+/** Monotonic counter for IP allocation. Starts at 2 (skip .0.0 network, .0.1 gateway). */
+let nextHostPart = 2;
+
+/** Ensure the dedicated nanoclaw bridge network exists. Idempotent. */
+export function ensureNetwork(): void {
+  try {
+    execSync(`${CONTAINER_RUNTIME_BIN} network inspect ${NANOCLAW_NETWORK}`, {
+      stdio: 'pipe',
+      timeout: 5000,
+    });
+    logger.debug('nanoclaw network already exists');
+    return;
+  } catch {
+    /* network doesn't exist yet — create it */
+  }
+
+  try {
+    execSync(
+      `${CONTAINER_RUNTIME_BIN} network create ` +
+        `--subnet ${NANOCLAW_SUBNET} ` +
+        `-o com.docker.network.bridge.enable_icc=false ` +
+        NANOCLAW_NETWORK,
+      { stdio: 'pipe', timeout: 10000 },
+    );
+    logger.info({ subnet: NANOCLAW_SUBNET }, 'Created nanoclaw network');
+  } catch {
+    // Concurrent creation race — verify the network exists now
+    try {
+      execSync(`${CONTAINER_RUNTIME_BIN} network inspect ${NANOCLAW_NETWORK}`, {
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+    } catch {
+      throw new Error('Failed to create nanoclaw Docker network');
+    }
+  }
+}
+
+export interface AllocatedIP {
+  ip: string;
+  /** Deregister the IP from the proxy — call on container exit. */
+  release: () => void;
+}
+
 /**
- * Register a running container's IP with the credential proxy.
- * Returns a cleanup function that deregisters the IP on container exit.
+ * Allocate a static container IP and register it in the proxy's IP→scope map.
+ * Both operations are synchronous — no race between check and register in
+ * the Node.js event loop.
+ *
+ * Returns the IP and a release closure for cleanup.
  */
-export function registerContainerWithProxy(
-  containerIP: string,
-  group: RegisteredGroup,
-): () => void {
-  getProxy().registerContainerIP(containerIP, scopeOf(group));
-  return () => getProxy().unregisterContainerIP(containerIP);
+export function allocateContainerIP(
+  scope: GroupScope,
+  proxy: CredentialProxy = getProxy(),
+): AllocatedIP {
+  const start = nextHostPart;
+  do {
+    const hi = (nextHostPart >> 8) & 0xff;
+    const lo = nextHostPart & 0xff;
+    const ip = `${NANOCLAW_SUBNET_PREFIX}.${hi}.${lo}`;
+    nextHostPart = nextHostPart >= 65534 ? 2 : nextHostPart + 1;
+    if (!proxy.hasContainerIP(ip)) {
+      proxy.registerContainerIP(ip, scope);
+      return { ip, release: () => proxy.unregisterContainerIP(ip) };
+    }
+  } while (nextHostPart !== start);
+  throw new Error('IP pool exhausted');
+}
+
+/** CLI args to place a container on the nanoclaw network with a static IP. */
+export function networkArgs(ip: string): string[] {
+  return ['--network', NANOCLAW_NETWORK, '--ip', ip];
 }

@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, execFileSync, spawn } from 'child_process';
+import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -24,47 +24,13 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import {
+  allocateContainerIP,
   applyCredentialProxyArgs,
-  registerContainerWithProxy,
+  networkArgs,
 } from './auth/container-args.js';
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { RegisteredGroup } from './types.js';
-
-/** Query a running container's status via docker inspect. */
-function getContainerStatus(containerName: string): string | null {
-  try {
-    return (
-      execFileSync(
-        CONTAINER_RUNTIME_BIN,
-        ['inspect', '--format', '{{.State.Status}}', containerName],
-        { encoding: 'utf-8', timeout: 5000 },
-      ).trim() || null
-    );
-  } catch {
-    return null;
-  }
-}
-
-/** Query a running container's bridge IP via docker inspect. @internal Exported for e2e test reuse. */
-export function getContainerIP(containerName: string): string | null {
-  try {
-    const ip = execFileSync(
-      CONTAINER_RUNTIME_BIN,
-      [
-        'inspect',
-        '--format',
-        '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}',
-        containerName,
-      ],
-      { encoding: 'utf-8', timeout: 5000 },
-    ).trim();
-    // Validate: must look like an IP, not an error string
-    return ip && /^[\da-f.:]+$/i.test(ip) ? ip : null;
-  } catch {
-    return null;
-  }
-}
+import { RegisteredGroup, scopeOf } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -301,6 +267,7 @@ export function buildContainerArgs(
   containerName: string,
   group: RegisteredGroup,
   tokenEngine: TokenSubstituteEngine,
+  ip: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -310,8 +277,9 @@ export function buildContainerArgs(
   // Credential proxy args: MITM certs, iptables env vars, substitute tokens, user mapping
   applyCredentialProxyArgs(args, group, tokenEngine);
 
-  // Runtime-specific args for host gateway resolution
+  // Runtime-specific args for host gateway resolution and network placement
   args.push(...hostGatewayArgs());
+  args.push(...networkArgs(ip));
 
   for (const mount of mounts) {
     if (mount.readonly) {
@@ -324,39 +292,6 @@ export function buildContainerArgs(
   args.push(CONTAINER_IMAGE);
 
   return args;
-}
-
-/**
- * Wait for a container to reach Running state, then read its bridge IP.
- * Docker transitions Created → Running before the entrypoint starts;
- * if it exits or is never found, returns null instead of looping forever.
- *
- * @internal Exported for e2e test reuse and static-IP integration.
- */
-export async function waitForContainerIP(
-  containerName: string,
-): Promise<string | null> {
-  return new Promise<string | null>((resolve) => {
-    let attempts = 0;
-    let seenContainer = false;
-    const retry = () => {
-      const status = getContainerStatus(containerName);
-      if (status) seenContainer = true;
-      // If we previously saw the container but now it's gone/exited, stop retrying
-      if (
-        seenContainer &&
-        (!status || status === 'exited' || status === 'dead')
-      )
-        return resolve(null);
-      if (status === 'running') {
-        const ip = getContainerIP(containerName);
-        if (ip) return resolve(ip);
-      }
-      if (++attempts >= 20) return resolve(null);
-      setTimeout(retry, 500);
-    };
-    setTimeout(retry, 500);
-  });
 }
 
 export async function runContainerAgent(
@@ -374,17 +309,28 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
+  // Allocate a static IP and register it in the proxy before spawning.
+  // The IP is passed to Docker via --network/--ip — no post-spawn inspection needed.
+  const { ip: containerIP, release: releaseIP } = allocateContainerIP(
+    scopeOf(group),
+  );
+
+  const logsDir = path.join(groupDir, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,
     group,
     tokenEngine,
+    containerIP,
   );
 
   logger.debug(
     {
       group: group.name,
       containerName,
+      containerIP,
       mounts: mounts.map(
         (m) =>
           `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
@@ -398,52 +344,24 @@ export async function runContainerAgent(
     {
       group: group.name,
       containerName,
+      containerIP,
       mountCount: mounts.length,
       isMain: input.isMain,
     },
     'Spawning container agent',
   );
 
-  const logsDir = path.join(groupDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
-
-  const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  onProcess(container, containerName);
-
-  // Capture early stderr from Docker (e.g. mount errors, image not found)
-  // before entering the IP-wait loop, so failures are not silently lost.
-  let earlyStderr = '';
-  const earlyStderrHandler = (data: Buffer) => {
-    earlyStderr += data.toString();
-  };
-  container.stderr.on('data', earlyStderrHandler);
-
-  // Wait for the container to reach Running state and read its bridge IP.
-  const containerIP = await waitForContainerIP(containerName);
-  container.stderr.off('data', earlyStderrHandler);
-  if (!containerIP) {
-    const status = getContainerStatus(containerName);
-    logger.error(
-      {
-        group: group.name,
-        containerName,
-        status,
-        earlyStderr: earlyStderr.trim(),
-      },
-      'Could not determine container IP — killing container',
-    );
-    container.kill();
-    return {
-      status: 'error',
-      result: null,
-      error: `Could not determine container IP (status: ${status}): ${earlyStderr.trim()}`,
-      fatal: true,
-    };
+  let container: ChildProcess;
+  try {
+    container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    onProcess(container, containerName);
+  } catch (err) {
+    // Release the pre-allocated IP if spawn fails before event handlers take over.
+    releaseIP();
+    throw err;
   }
-  const unregisterIP = registerContainerWithProxy(containerIP, group);
 
   return new Promise((resolve) => {
     let stdout = '';
@@ -451,15 +369,15 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
+    container.stdin!.write(JSON.stringify(input));
+    container.stdin!.end();
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
 
-    container.stdout.on('data', (data) => {
+    container.stdout!.on('data', (data) => {
       const chunk = data.toString();
 
       // Always accumulate for logging
@@ -511,7 +429,7 @@ export async function runContainerAgent(
       }
     });
 
-    container.stderr.on('data', (data) => {
+    container.stderr!.on('data', (data) => {
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
@@ -567,7 +485,7 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
-      unregisterIP();
+      releaseIP();
       const duration = Date.now() - startTime;
 
       if (timedOut) {
@@ -763,7 +681,7 @@ export async function runContainerAgent(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
-      unregisterIP();
+      releaseIP();
       logger.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',
