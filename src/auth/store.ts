@@ -23,6 +23,10 @@ const CONFIG_DIR = path.join(
   'nanoclaw',
 );
 export const CREDENTIALS_DIR = path.join(CONFIG_DIR, 'credentials');
+export const DISCOVERY_CACHE_DIR = path.join(
+  CREDENTIALS_DIR,
+  'oauth-discovery',
+);
 const KEY_PATH = path.join(CONFIG_DIR, 'encryption-key');
 
 let encryptionKey: Buffer | null = null;

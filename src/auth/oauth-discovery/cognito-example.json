@@ -5,7 +5,7 @@
   "userinfo_endpoint": "https://{domain}.auth.{region}.amazoncognito.com/oauth2/userInfo",
   "revocation_endpoint": "https://{domain}.auth.{region}.amazoncognito.com/oauth2/revoke",
   "jwks_uri": "https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/jwks.json",
-  "well_known_openid_configuration": "https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/openid-configuration",
+  "_well_known_url": "https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/openid-configuration",
   "logout_endpoint": "https://{domain}.auth.{region}.amazoncognito.com/logout",
   "login_endpoint": "https://{domain}.auth.{region}.amazoncognito.com/login",
   "_source": "manually researched from official docs (docs.aws.amazon.com/cognito/latest/developerguide/)",

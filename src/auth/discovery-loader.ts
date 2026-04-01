@@ -181,6 +181,7 @@ export interface DiscoveryFile {
   };
   _refresh_strategy?: RefreshStrategy;
   _env_vars?: Record<string, string>;
+  _well_known_url?: string | false;
   _host_patterns?: string[];
   _token_field_capture?: {
     from_request?: string[];
@@ -334,31 +335,105 @@ export function parseDiscoveryFile(
 }
 
 // ---------------------------------------------------------------------------
-// Load all discovery files from a directory
+// Merge static + cached discovery data
 // ---------------------------------------------------------------------------
 
 /**
- * Load all discovery files from the given directory.
- * Returns a Map<providerId, OAuthProvider>.
+ * Merge a static discovery file with a cached (fetched) discovery file.
+ * Standard fields from the cached file override the static ones.
+ * Custom `_*` fields always come from the static file.
+ */
+export function mergeDiscoveryData(
+  staticData: DiscoveryFile,
+  cachedData: Record<string, unknown> | null,
+): DiscoveryFile {
+  if (!cachedData) return staticData;
+
+  const merged: Record<string, unknown> = {};
+
+  // Copy all fields from static (both standard and _* custom)
+  for (const [key, value] of Object.entries(staticData)) {
+    merged[key] = value;
+  }
+
+  // Override standard fields from cached (skip _* fields)
+  for (const [key, value] of Object.entries(cachedData)) {
+    if (!key.startsWith('_')) {
+      merged[key] = value;
+    }
+  }
+
+  return merged as DiscoveryFile;
+}
+
+// ---------------------------------------------------------------------------
+// Load all discovery files from a directory
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryLoadResult {
+  providers: Map<string, OAuthProvider>;
+  /** Merged raw data for each loaded provider (used by registry for auth endpoint registration). */
+  rawData: Map<string, DiscoveryFile>;
+}
+
+/**
+ * Read all *.json files from a directory into a map of id → parsed JSON.
+ */
+function readJsonDir(dir: string): Map<string, Record<string, unknown>> {
+  const result = new Map<string, Record<string, unknown>>();
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return result;
+  }
+  for (const file of files) {
+    try {
+      const content = fs.readFileSync(path.join(dir, file), 'utf-8');
+      result.set(file.replace(/\.json$/, ''), JSON.parse(content));
+    } catch {
+      /* skip unparseable files */
+    }
+  }
+  return result;
+}
+
+/**
+ * Load all discovery files from the given directory, optionally merging
+ * with cached files from a deployment cache directory.
  */
 export function loadDiscoveryProviders(
   discoveryDir: string,
-): Map<string, OAuthProvider> {
+  cacheDir?: string,
+): DiscoveryLoadResult {
   const providers = new Map<string, OAuthProvider>();
+  const rawData = new Map<string, DiscoveryFile>();
 
   let files: string[];
   try {
     files = fs.readdirSync(discoveryDir).filter((f) => f.endsWith('.json'));
   } catch (err) {
     logger.warn({ err, discoveryDir }, 'Discovery: could not read directory');
-    return providers;
+    return { providers, rawData };
+  }
+
+  // Load cached discovery files if cache dir exists
+  const cached = cacheDir ? readJsonDir(cacheDir) : new Map();
+  if (cached.size > 0) {
+    logger.info(
+      { count: cached.size, cacheDir },
+      'Discovery: loaded cached discovery files',
+    );
   }
 
   for (const file of files) {
     const id = file.replace(/\.json$/, '');
     try {
       const content = fs.readFileSync(path.join(discoveryDir, file), 'utf-8');
-      const data = JSON.parse(content) as DiscoveryFile;
+      const staticData = JSON.parse(content) as DiscoveryFile;
+      const data = mergeDiscoveryData(staticData, cached.get(id) ?? null);
+      rawData.set(id, data);
+
       const provider = parseDiscoveryFile(id, data);
       if (provider) {
         providers.set(id, provider);
@@ -368,10 +443,20 @@ export function loadDiscoveryProviders(
     }
   }
 
+  // Warn about cached files with no matching static
+  for (const cachedId of cached.keys()) {
+    if (!rawData.has(cachedId)) {
+      logger.warn(
+        { id: cachedId },
+        'Discovery: cached file has no matching static file, skipping',
+      );
+    }
+  }
+
   logger.info(
     { count: providers.size, total: files.length },
     'Discovery: loaded OAuth providers',
   );
 
-  return providers;
+  return { providers, rawData };
 }

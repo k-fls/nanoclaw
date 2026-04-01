@@ -12,10 +12,7 @@ import { fileURLToPath } from 'url';
 
 import type { CredentialProvider } from './types.js';
 import { getProxy } from '../credential-proxy.js';
-import {
-  loadDiscoveryProviders,
-  type DiscoveryFile,
-} from './discovery-loader.js';
+import { loadDiscoveryProviders } from './discovery-loader.js';
 import type { OAuthProvider } from './oauth-types.js';
 import {
   TokenSubstituteEngine,
@@ -171,7 +168,10 @@ function registerClaudeUniversalRules(provider: CredentialProvider): void {
  * Called once at startup, after registerBuiltinProviders() so built-in
  * rules take priority (matchHostRule uses first-match via find()).
  */
-export function registerDiscoveryProviders(discoveryDir?: string): void {
+export function registerDiscoveryProviders(
+  discoveryDir?: string,
+  cacheDir?: string,
+): void {
   const dir =
     discoveryDir ??
     path.resolve(
@@ -180,37 +180,20 @@ export function registerDiscoveryProviders(discoveryDir?: string): void {
     );
 
   _discoveryDir = dir;
-  const providers = loadDiscoveryProviders(dir);
+  const { providers, rawData } = loadDiscoveryProviders(dir, cacheDir);
   _discoveryProviders = providers;
   const tokenEngine = getTokenEngine();
   const proxy = getProxy();
 
   // Register authorization_endpoint patterns for browser-open detection
-  // by reading raw discovery files
-  try {
-    for (const file of fs
-      .readdirSync(dir)
-      .filter((f: string) => f.endsWith('.json'))) {
-      try {
-        const providerId = file.replace(/\.json$/, '');
-        const data = JSON.parse(
-          fs.readFileSync(path.join(dir, file), 'utf-8'),
-        ) as DiscoveryFile;
-        if (
-          data.authorization_endpoint &&
-          typeof data.authorization_endpoint === 'string'
-        ) {
-          registerAuthorizationEndpoint(
-            data.authorization_endpoint,
-            providerId,
-          );
-        }
-      } catch {
-        /* skip */
-      }
+  // using merged raw data (no second file read needed)
+  for (const [providerId, data] of rawData) {
+    if (
+      data.authorization_endpoint &&
+      typeof data.authorization_endpoint === 'string'
+    ) {
+      registerAuthorizationEndpoint(data.authorization_endpoint, providerId);
     }
-  } catch {
-    /* dir not readable */
   }
 
   let ruleCount = 0;

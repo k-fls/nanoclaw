@@ -107,7 +107,10 @@ describe('token engine singletons', () => {
       registerAuthorizationEndpoint: vi.fn(),
     }));
     vi.doMock('./discovery-loader.js', () => ({
-      loadDiscoveryProviders: vi.fn(() => new Map()),
+      loadDiscoveryProviders: vi.fn(() => ({
+        providers: new Map(),
+        rawData: new Map(),
+      })),
     }));
     // Mock fs so migrateAllScopes and loadAllPersistedRefs don't hit disk
     vi.doMock('fs', async (importOriginal) => {

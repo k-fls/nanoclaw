@@ -10,6 +10,9 @@ import {
   CREDENTIAL_PROXY_PORT,
   NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
 } from '../config.js';
+import { DISCOVERY_CACHE_DIR } from './store.js';
+import { getDiscoveryDir } from './registry.js';
+import { refreshDiscoveryCache } from './discovery-refresh.js';
 import {
   CredentialProxy,
   setProxyInstance,
@@ -61,7 +64,7 @@ export async function initAuthSystem(
   // Register built-in auth providers first (takes priority in first-match dispatch),
   // then discovery-file providers to fill gaps for other OAuth services.
   registerBuiltinProviders();
-  registerDiscoveryProviders();
+  registerDiscoveryProviders(undefined, DISCOVERY_CACHE_DIR);
 
   // Wire token engine with group resolver and access check.
   // Must happen after providers are registered and before any provision calls.
@@ -118,6 +121,11 @@ export async function initAuthSystem(
     { port: CREDENTIAL_PROXY_PORT, host: PROXY_BIND_HOST },
     'Auth system initialized',
   );
+
+  // Refresh discovery cache in the background (non-blocking, startup only).
+  refreshDiscoveryCache(getDiscoveryDir(), DISCOVERY_CACHE_DIR).catch((err) => {
+    logger.warn({ err }, 'Discovery refresh failed');
+  });
 
   return {
     tokenEngine,
