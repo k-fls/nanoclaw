@@ -38,6 +38,101 @@ export function clearActiveTap(): void {
   _activeTap = null;
 }
 
+// ---------------------------------------------------------------------------
+// Tap log reading (for /tap list command)
+// ---------------------------------------------------------------------------
+
+/**
+ * Redact long alphanumeric+separator tokens in a string.
+ * Any sequence of [a-zA-Z0-9_\-./+=] longer than 15 chars becomes
+ * first-5 + "…" + last-5.
+ */
+function redactLongTokens(s: string): string {
+  return s.replace(
+    /[a-zA-Z0-9_\-./+=]{16,}/g,
+    (m) => m.slice(0, 5) + '…' + m.slice(-5),
+  );
+}
+
+/** Format a single tap log entry for display. */
+function formatTapEntry(line: string): string | null {
+  let entry: Record<string, unknown>;
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    return null;
+  }
+
+  const ts = String(entry.ts ?? '')
+    .replace(/T/, ' ')
+    .replace(/\.\d+Z$/, 'Z');
+  const dir = entry.direction === 'outbound' ? '→' : '←';
+  const scope = entry.scope ? ` [${entry.scope}]` : '';
+
+  // Body entry
+  if (entry.type === 'body') {
+    let body = '';
+    if (typeof entry.body === 'string') {
+      try {
+        body = Buffer.from(entry.body, 'base64').toString('utf-8');
+      } catch {
+        body = entry.body;
+      }
+    }
+    body = redactLongTokens(body);
+    // Truncate long bodies for display
+    if (body.length > 300) body = body.slice(0, 300) + '…';
+    const label = entry.method
+      ? `${entry.method} ${entry.url ?? ''}`
+      : `${entry.statusCode ?? ''}`;
+    return `${ts} ${dir}${scope} BODY ${label}\n${body}`;
+  }
+
+  // Header entry
+  const method = entry.method ? `${entry.method} ` : '';
+  const url = entry.url ?? '';
+  const status = entry.statusCode != null ? `${entry.statusCode} ` : '';
+  const host = entry.host ?? '';
+
+  let headerStr = '';
+  if (entry.headers && typeof entry.headers === 'object') {
+    const hdrs = entry.headers as Record<string, string>;
+    headerStr = Object.entries(hdrs)
+      .map(([k, v]) => `  ${k}: ${redactLongTokens(v)}`)
+      .join('\n');
+  }
+
+  return `${ts} ${dir}${scope} ${method}${status}${url} (${host})${headerStr ? '\n' + headerStr : ''}`;
+}
+
+/**
+ * Read tap log entries.
+ * @param mode  'head' or 'tail' (default: 'tail')
+ * @param count Number of entries (default: 20)
+ */
+export function readTapLog(mode: 'head' | 'tail' = 'tail', count = 20): string {
+  if (!fs.existsSync(LOG_FILE)) return 'No tap log file.';
+
+  const content = fs.readFileSync(LOG_FILE, 'utf-8');
+  const lines = content.split('\n').filter((l) => l.trim());
+  if (lines.length === 0) return 'Tap log is empty.';
+
+  const selected =
+    mode === 'head' ? lines.slice(0, count) : lines.slice(-count);
+
+  const formatted = selected
+    .map(formatTapEntry)
+    .filter((e): e is string => e !== null);
+
+  if (formatted.length === 0) return 'No parseable entries.';
+
+  const label =
+    mode === 'head'
+      ? `First ${formatted.length} of ${lines.length}`
+      : `Last ${formatted.length} of ${lines.length}`;
+  return `${label} entries:\n\n${formatted.join('\n\n')}`;
+}
+
 // Simple incremental HTTP parser for extracting request/response lines + headers
 // from raw bytes. Accumulates chunks until headers are complete, emits once.
 

@@ -11,6 +11,7 @@ import {
   createTapFilter,
   getActiveTap,
   clearActiveTap,
+  readTapLog,
   LOG_FILE,
 } from './proxy-tap-logger.js';
 import {
@@ -231,6 +232,31 @@ const commands: Record<string, Command> = {
         getProxy().setTapFilter(null);
         clearActiveTap();
         return reply('Tap stopped.');
+      }
+
+      // /tap list [head|tail <N>] — show log entries
+      if (args === 'list' || args.startsWith('list ')) {
+        const listArgs = args.slice(4).trim().split(/\s+/).filter(Boolean);
+        let mode: 'head' | 'tail' = 'tail';
+        let count = 20;
+        if (listArgs[0] === 'head' || listArgs[0] === 'tail') {
+          mode = listArgs[0];
+          if (listArgs[1]) count = parseInt(listArgs[1], 10) || 20;
+        } else if (listArgs[0]) {
+          count = parseInt(listArgs[0], 10) || 20;
+        }
+        return reply(readTapLog(mode, count));
+      }
+
+      // /tap all — tap everything
+      if (args === 'all') {
+        const filter = createTapFilter(
+          new RegExp(''),
+          new RegExp(''),
+          LOG_FILE,
+        );
+        getProxy().setTapFilter(filter);
+        return reply(`Tap started — all traffic\nLog: ${LOG_FILE}`);
       }
 
       // /tap <domain> <path> — enable
