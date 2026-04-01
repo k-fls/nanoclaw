@@ -25,6 +25,12 @@ import {
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import type { NewMessage, RegisteredGroup } from './types.js';
 import { scopeOf } from './types.js';
+import {
+  getDiscoveryProvider,
+  getAllDiscoveryProviderIds,
+} from './auth/registry.js';
+import { handleSetKey, handleDeleteKeys } from './auth/key-management.js';
+import { isGpgAvailable, ensureGpgKey, exportPublicKey } from './auth/gpg.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,10 +39,14 @@ import { scopeOf } from './types.js';
 export interface CommandResult {
   /** If set, caller should stop the container before proceeding */
   stopContainer?: boolean;
-  /** If set, caller should run reauth after stopping */
-  runReauth?: boolean;
+  /** If set, caller should run reauth for the given provider ID */
+  runReauth?: string;
+  /** If set, caller should start interactive key setup for the given provider ID */
+  runKeySetup?: string;
   /** Async action — returned string (if any) is sent as a message */
   asyncAction?: () => Promise<string | undefined>;
+  /** Message to send without prefix/formatting (e.g. GPG keys) */
+  sendRawMessage?: string;
 }
 
 export interface ParsedCommand {
@@ -81,7 +91,7 @@ function reply(text: string): CommandResult {
 // Parsing
 // ---------------------------------------------------------------------------
 
-const COMMAND_RE = /^\/([a-zA-Z0-9-]+)(?:\s+(.*))?$/;
+const COMMAND_RE = /^\/([a-zA-Z0-9-]+)(?:\s+([\s\S]*))?$/;
 
 /**
  * Parse a command from text content. Returns null if not a command.
@@ -158,12 +168,47 @@ const commands: Record<string, Command> = {
   },
 
   auth: {
-    description: 'Stop agent and re-authenticate',
-    run(_args, { hasActiveContainer }) {
-      return {
-        stopContainer: hasActiveContainer,
-        runReauth: true,
-      };
+    description: 'Manage authentication — /auth [provider] [set-key|delete]',
+    run(args, ctx) {
+      // (a) No args or "claude" → existing reauth
+      if (!args || args === CLAUDE_PROVIDER_ID) {
+        return { stopContainer: true, runReauth: CLAUDE_PROVIDER_ID };
+      }
+
+      const firstLine = args.split('\n')[0];
+      const parts = firstLine.trim().split(/\s+/);
+      const providerId = parts[0];
+
+      // Validate provider exists in discovery registry
+      if (!getDiscoveryProvider(providerId)) {
+        const known = getAllDiscoveryProviderIds();
+        return reply(
+          `Unknown provider: ${providerId}\n` +
+            `Known providers: ${known.join(', ')}`,
+        );
+      }
+
+      const subcommand = parts[1]?.toLowerCase();
+
+      // (d) /auth <provider> delete
+      if (subcommand === 'delete') {
+        return {
+          asyncAction: async () =>
+            handleDeleteKeys(providerId, scopeOf(ctx.group), ctx.tokenEngine),
+        };
+      }
+
+      // (c) /auth <provider> set-key [role] [expiry=N] <pgp block>
+      if (subcommand === 'set-key') {
+        const rest = args.slice(args.indexOf('set-key') + 7).trim();
+        return {
+          asyncAction: async () =>
+            handleSetKey(providerId, rest, scopeOf(ctx.group), ctx.tokenEngine),
+        };
+      }
+
+      // (b) /auth <provider> → interactive key setup (needs ChatIO)
+      return { runKeySetup: providerId };
     },
   },
 
@@ -254,6 +299,17 @@ const commands: Record<string, Command> = {
     },
   },
 
+  'auth-gpg': {
+    description: 'Print GPG public key for this group',
+    run(_args, ctx) {
+      if (!isGpgAvailable())
+        return reply('GPG is not available. Install gnupg first.');
+      const scope = String(scopeOf(ctx.group));
+      ensureGpgKey(scope);
+      return { sendRawMessage: exportPublicKey(scope) };
+    },
+  },
+
   help: {
     description: 'Show available commands',
     run() {
@@ -304,7 +360,9 @@ export interface CommandContext {
   advanceCursor: (timestamp: string) => void;
   closeStdin: () => void;
   sendMessage: (text: string) => Promise<void>;
-  runReauth: () => Promise<void>;
+  sendRawMessage: (text: string) => Promise<void>;
+  runReauth: (providerId: string) => Promise<void>;
+  runKeySetup: (providerId: string) => Promise<void>;
 }
 
 /**
@@ -331,10 +389,12 @@ export async function executeCommand(
     sender: lastMsg.sender,
   });
   if (result.stopContainer) ctx.closeStdin();
+  if (result.sendRawMessage) await ctx.sendRawMessage(result.sendRawMessage);
   if (result.asyncAction) {
     const msg = await result.asyncAction();
     if (msg) await ctx.sendMessage(msg);
   }
-  if (result.runReauth) await ctx.runReauth();
+  if (result.runReauth) await ctx.runReauth(result.runReauth);
+  if (result.runKeySetup) await ctx.runKeySetup(result.runKeySetup);
   return true;
 }

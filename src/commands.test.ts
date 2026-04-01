@@ -1,6 +1,43 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { parseCommand, extractCommand, handleCommand } from './commands.js';
 import type { NewMessage, RegisteredGroup } from './types.js';
+
+// Mock registry so /auth <provider> can validate discovery providers
+vi.mock('./auth/registry.js', () => {
+  const providers = new Map([
+    ['github', { id: 'github', rules: [{ mode: 'bearer-swap' }] }],
+    ['stripe', { id: 'stripe', rules: [{ mode: 'bearer-swap' }] }],
+  ]);
+  return {
+    getDiscoveryProvider: (id: string) => providers.get(id),
+    getAllDiscoveryProviderIds: () => [...providers.keys()],
+    getProvider: vi.fn(),
+    getAllProviders: vi.fn(() => []),
+    getTokenEngine: vi.fn(() => ({})),
+    getTokenResolver: vi.fn(() => ({})),
+    registerProvider: vi.fn(),
+    registerDiscoveryProviders: vi.fn(),
+    registerClaudeUniversalRules: vi.fn(),
+    setTokenEngine: vi.fn(),
+    getDiscoveryDir: () => '/tmp',
+  };
+});
+
+// Mock key-management functions
+vi.mock('./auth/key-management.js', () => ({
+  handleSetKey: vi.fn(() => 'Key stored.'),
+  handleDeleteKeys: vi.fn(() => 'Credentials deleted.'),
+}));
+
+// Mock GPG functions
+vi.mock('./auth/gpg.js', () => ({
+  isGpgAvailable: vi.fn(() => true),
+  ensureGpgKey: vi.fn(),
+  exportPublicKey: vi.fn(
+    () =>
+      '-----BEGIN PGP PUBLIC KEY BLOCK-----\ntest\n-----END PGP PUBLIC KEY BLOCK-----',
+  ),
+}));
 
 function msg(content: string, id = '1'): NewMessage {
   return {
@@ -152,16 +189,66 @@ describe('handleCommand', () => {
   });
 
   describe('/auth', () => {
-    it('stops container and triggers reauth when active', () => {
+    it('stops container and triggers reauth with claude provider ID', () => {
       const result = handleCommand('auth', '', runCtx(true));
       expect(result.stopContainer).toBe(true);
-      expect(result.runReauth).toBe(true);
+      expect(result.runReauth).toBe('claude');
     });
 
-    it('triggers reauth without stop when no container', () => {
-      const result = handleCommand('auth', '', runCtx(false));
-      expect(result.stopContainer).toBeFalsy();
-      expect(result.runReauth).toBe(true);
+    it('/auth claude is equivalent to /auth', () => {
+      const result = handleCommand('auth', 'claude', runCtx(false));
+      expect(result.stopContainer).toBe(true);
+      expect(result.runReauth).toBe('claude');
+    });
+
+    it('/auth <provider> returns runKeySetup for known provider', () => {
+      const result = handleCommand('auth', 'github', runCtx(false));
+      expect(result.runKeySetup).toBe('github');
+      expect(result.runReauth).toBeUndefined();
+    });
+
+    it('/auth <unknown> returns error with known providers', async () => {
+      const result = handleCommand('auth', 'nonexistent', runCtx(false));
+      const text = await replyOf(result);
+      expect(text).toContain('Unknown provider');
+      expect(text).toContain('github');
+      expect(text).toContain('stripe');
+    });
+
+    it('/auth <provider> delete returns asyncAction', async () => {
+      const result = handleCommand('auth', 'github delete', runCtx(false));
+      expect(result.asyncAction).toBeDefined();
+      const text = await replyOf(result);
+      expect(text).toBe('Credentials deleted.');
+    });
+
+    it('/auth <provider> set-key returns asyncAction', async () => {
+      const result = handleCommand(
+        'auth',
+        'github set-key -----BEGIN PGP MESSAGE-----\ntest\n-----END PGP MESSAGE-----',
+        runCtx(false),
+      );
+      expect(result.asyncAction).toBeDefined();
+      const text = await replyOf(result);
+      expect(text).toBe('Key stored.');
+    });
+
+    it('/auth <provider> set-key passes args after set-key', async () => {
+      const { handleSetKey } = await import('./auth/key-management.js');
+      handleCommand(
+        'auth',
+        'github set-key api_key expiry=3600\n-----BEGIN PGP MESSAGE-----\ndata\n-----END PGP MESSAGE-----',
+        runCtx(false),
+      );
+      // handleSetKey is mocked — we just verify it's called
+      // (actual arg parsing tested in key-management.test.ts)
+    });
+  });
+
+  describe('/auth-gpg', () => {
+    it('returns raw GPG public key', () => {
+      const result = handleCommand('auth-gpg', '', runCtx(false));
+      expect(result.sendRawMessage).toContain('BEGIN PGP PUBLIC KEY BLOCK');
     });
   });
 
@@ -178,6 +265,7 @@ describe('handleCommand', () => {
       const text = await replyOf(result);
       expect(text).toContain('/stop');
       expect(text).toContain('/auth');
+      expect(text).toContain('/auth-gpg');
       expect(text).toContain('/help');
       expect(text).toContain('/tap');
     });

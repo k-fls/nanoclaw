@@ -16,6 +16,7 @@ import {
   loadDiscoveryProviders,
   type DiscoveryFile,
 } from './discovery-loader.js';
+import type { OAuthProvider } from './oauth-types.js';
 import {
   TokenSubstituteEngine,
   PersistentTokenResolver,
@@ -52,6 +53,25 @@ export function getProvider(service: string): CredentialProvider | undefined {
 
 export function getAllProviders(): CredentialProvider[] {
   return [...registry.values()];
+}
+
+// ---------------------------------------------------------------------------
+// Discovery provider map (retained at module level for key management)
+// ---------------------------------------------------------------------------
+
+let _discoveryProviders = new Map<string, OAuthProvider>();
+let _discoveryDir = '';
+
+export function getDiscoveryProvider(id: string): OAuthProvider | undefined {
+  return _discoveryProviders.get(id);
+}
+
+export function getDiscoveryDir(): string {
+  return _discoveryDir;
+}
+
+export function getAllDiscoveryProviderIds(): string[] {
+  return [..._discoveryProviders.keys()];
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +179,9 @@ export function registerDiscoveryProviders(discoveryDir?: string): void {
       '../../src/auth/oauth-discovery',
     );
 
+  _discoveryDir = dir;
   const providers = loadDiscoveryProviders(dir);
+  _discoveryProviders = providers;
   const tokenEngine = getTokenEngine();
   const proxy = getProxy();
 

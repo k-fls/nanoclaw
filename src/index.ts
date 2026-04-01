@@ -239,14 +239,26 @@ function commandContext(
     },
     closeStdin: () => queue.closeStdin(chatJid),
     sendMessage: (text) => channel.sendMessage(chatJid, text),
-    runReauth: async () => {
+    sendRawMessage: (text) => channel.sendMessage(chatJid, text),
+    runReauth: async (providerId: string) => {
       const chat = createChatIO(chatIODeps(channel, chatJid));
       await runReauth(
         scopeOf(group),
         chat,
         'User requested auth',
-        'claude',
+        providerId,
         getTokenEngine(),
+      );
+    },
+    runKeySetup: async (providerId: string) => {
+      const chat = createChatIO(chatIODeps(channel, chatJid));
+      const { runInteractiveKeySetup } =
+        await import('./auth/key-management.js');
+      await runInteractiveKeySetup(
+        providerId,
+        scopeOf(group),
+        getTokenEngine(),
+        chat,
       );
     },
   };
