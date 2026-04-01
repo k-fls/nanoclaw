@@ -53,6 +53,7 @@ vi.mock('../exec.js', () => ({
 // Import after mocks
 const {
   claudeProvider,
+  CLAUDE_SUBSTITUTE_CONFIG,
   migrateClaudeCredentials,
   isAuthError,
   classifyAuthError,
@@ -66,7 +67,7 @@ const {
 const { TokenSubstituteEngine, PersistentTokenResolver } =
   await import('../token-substitute.js');
 import type { RegisteredGroup } from '../../types.js';
-import { asCredentialScope, DEFAULT_CREDENTIAL_SCOPE } from '../oauth-types.js';
+import { asCredentialScope, asGroupScope, DEFAULT_CREDENTIAL_SCOPE } from '../oauth-types.js';
 
 const TEST_CRED_SCOPE = asCredentialScope('test-scope');
 const ENC_TEST_SCOPE = asCredentialScope('enc-test');
@@ -140,17 +141,42 @@ describe('claudeProvider', () => {
         'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
       const realRefresh =
         'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+      // Simulate proxy path: generate substitutes first (as the proxy would
+      // during token exchange), then pass them in .credentials.json.
+      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const groupScope = asGroupScope(TEST_CRED_SCOPE);
+      const subAccess = engine.generateSubstitute(
+        realAccess,
+        'claude',
+        {},
+        groupScope,
+        CLAUDE_SUBSTITUTE_CONFIG,
+        'access',
+      )!;
+      const subRefresh = engine.generateSubstitute(
+        realRefresh,
+        'claude',
+        {},
+        groupScope,
+        CLAUDE_SUBSTITUTE_CONFIG,
+        'refresh',
+      )!;
+
       const credsJson = JSON.stringify({
-        accessToken: realAccess,
-        refreshToken: realRefresh,
+        accessToken: subAccess,
+        refreshToken: subRefresh,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
       });
 
-      const result = storeAndProvision(TEST_CRED_SCOPE, {
+      claudeProvider.storeResult(TEST_CRED_SCOPE, {
         auth_type: 'auth_login',
         token: credsJson,
         expires_at: new Date(Date.now() + 3600_000).toISOString(),
-      });
+      }, engine);
+      migrateClaudeCredentials(TEST_CRED_SCOPE);
+      engine.loadAllPersistedRefs();
+      const result = claudeProvider.provision(makeGroup(TEST_CRED_SCOPE), engine);
 
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(
@@ -450,6 +476,7 @@ describe('detectCodeDelivery', () => {
       5000,
       handle,
       DUMMY_URL,
+      '127.0.0.1',
     );
 
     // Simulate paste prompt appearing (no trailing \n — it's a prompt)
@@ -480,6 +507,7 @@ describe('detectCodeDelivery', () => {
         10_000,
         handle,
         DUMMY_URL,
+        '127.0.0.1',
       );
 
       // Simulate shim writing the OAuth URL (with encoded redirect_uri containing the real port)
@@ -506,6 +534,7 @@ describe('detectCodeDelivery', () => {
       10_000,
       handle,
       DUMMY_URL,
+      '127.0.0.1',
     );
 
     // Simulate shim writing URL with a port that is NOT listening
@@ -536,6 +565,7 @@ describe('detectCodeDelivery', () => {
       5000,
       handle,
       DUMMY_URL,
+      '127.0.0.1',
     );
 
     // stdin check runs first in the interval, so set it immediately
@@ -559,6 +589,7 @@ describe('detectCodeDelivery', () => {
       1000,
       handle,
       DUMMY_URL,
+      '127.0.0.1',
       null,
     );
     expect(result).toBeNull();
@@ -576,6 +607,7 @@ describe('detectCodeDelivery', () => {
       500,
       handle,
       DUMMY_URL,
+      '127.0.0.1',
     );
     expect(result).toBeNull();
   });
@@ -592,6 +624,7 @@ describe('detectCodeDelivery', () => {
       30_000,
       handle,
       DUMMY_URL,
+      '127.0.0.1',
     );
 
     // Simulate container exit
@@ -626,6 +659,7 @@ describe('CodeDeliveryHandler.deliver', () => {
       5000,
       handle as any,
       'https://example.com/oauth',
+      '127.0.0.1',
     );
     output.value = 'Paste code here if prompted > ';
 
@@ -664,6 +698,7 @@ describe('CodeDeliveryHandler.deliver', () => {
       5000,
       handle as any,
       'https://example.com/oauth',
+      '127.0.0.1',
     );
     output.value = 'Paste code here if prompted > ';
 
@@ -703,6 +738,7 @@ describe('CodeDeliveryHandler.deliver', () => {
         10_000,
         handle as any,
         'https://example.com/oauth',
+        '127.0.0.1',
       );
       fs.writeFileSync(
         path.join(sessionDir, '.oauth-url'),
@@ -748,6 +784,7 @@ describe('CodeDeliveryHandler.deliver', () => {
         10_000,
         handle as any,
         'https://example.com/oauth',
+        '127.0.0.1',
       );
       fs.writeFileSync(
         path.join(sessionDir, '.oauth-url'),
@@ -810,7 +847,7 @@ describe('parseCallbackUrl', () => {
 describe('isPortOpen', () => {
   it('returns false for a port that is not listening', async () => {
     // Use a high port unlikely to be in use
-    const result = await isPortOpen(59999, 500);
+    const result = await isPortOpen(59999, 500, '127.0.0.1');
     expect(result).toBe(false);
   });
 });

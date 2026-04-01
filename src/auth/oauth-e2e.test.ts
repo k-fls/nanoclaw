@@ -507,4 +507,83 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
     h.proxy.setTapFilter(null);
     fs.unlinkSync(logFile);
   }, 45_000);
+
+  // ── 9. Auth container: token exchange captures authFields ─────────
+
+  it('token exchange captures authFields (client_id, scope) for refresh', async () => {
+    const { asGroupScope } = await import('./oauth-types.js');
+    const groupScope = asGroupScope(SCOPE);
+
+    // Real tokens the mock upstream returns
+    const REAL_ACCESS =
+      'sk-ant-oat01-authContainerE2eAccessToken1234567890abcdef';
+    const REAL_REFRESH =
+      'sk-ant-ort01-authContainerE2eRefreshToken1234567890abcdef';
+
+    // Mock upstream: token exchange returns real tokens + scope
+    h.mockUpstream.addRoute({
+      pathPattern: /^\/v1\/oauth\/token/,
+      respond: (req) => {
+        const body = JSON.parse(req.body);
+        expect(body.grant_type).toBe('authorization_code');
+        expect(body.client_id).toBe('test-client-id');
+        return {
+          status: 200,
+          body: JSON.stringify({
+            access_token: REAL_ACCESS,
+            refresh_token: REAL_REFRESH,
+            expires_in: 28800,
+            scope: 'user:inference user:profile',
+          }),
+        };
+      },
+    });
+
+    // Run a curl token exchange inside a container (same proxy path as auth containers)
+    const result = await h.runInContainer(
+      `curl -sf -X POST ` +
+        `-H "Content-Type: application/json" ` +
+        `-d '{"grant_type":"authorization_code","code":"test_code","client_id":"test-client-id"}' ` +
+        `https://platform.claude.com/v1/oauth/token`,
+      { scope: SCOPE },
+    );
+
+    expect(result.exitCode).toBe(0);
+
+    // Parse the response the container received — should be substitutes, not real tokens
+    const response = JSON.parse(result.stdout.trim());
+    expect(response.access_token).toBeDefined();
+    expect(response.refresh_token).toBeDefined();
+    // Substitutes preserve prefix but differ from real tokens
+    expect(response.access_token.startsWith('sk-ant-oat01-')).toBe(true);
+    expect(response.access_token).not.toBe(REAL_ACCESS);
+    expect(response.refresh_token.startsWith('sk-ant-ort01-')).toBe(true);
+    expect(response.refresh_token).not.toBe(REAL_REFRESH);
+
+    // Verify the proxy stored real tokens with authFields
+    const accessEntry = h.tokenEngine.getKeyEntry(
+      groupScope,
+      'test-claude',
+      'access',
+    );
+    expect(accessEntry).not.toBeNull();
+    expect(accessEntry!.authFields).toBeDefined();
+    expect(accessEntry!.authFields!.client_id).toBe('test-client-id');
+    expect(accessEntry!.authFields!.scope).toContain('user:inference');
+
+    // Verify substitutes resolve back to real tokens
+    const accessResolved = h.tokenEngine.resolveSubstitute(
+      response.access_token,
+      groupScope,
+    );
+    expect(accessResolved).not.toBeNull();
+    expect(accessResolved!.realToken).toBe(REAL_ACCESS);
+
+    const refreshResolved = h.tokenEngine.resolveSubstitute(
+      response.refresh_token,
+      groupScope,
+    );
+    expect(refreshResolved).not.toBeNull();
+    expect(refreshResolved!.realToken).toBe(REAL_REFRESH);
+  }, 45_000);
 });

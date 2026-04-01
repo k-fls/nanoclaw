@@ -15,7 +15,7 @@ import { readKeysFile, writeKeysFile } from '../token-substitute.js';
 import { asCredentialScope, asGroupScope } from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
 import type { CredentialScope, GroupScope } from '../oauth-types.js';
-import { authSessionDir, scopeClaudeDir, execInContainer } from '../exec.js';
+import { authSessionDir, scopeClaudeDir } from '../exec.js';
 import {
   ensureGpgKey,
   exportPublicKey,
@@ -42,6 +42,20 @@ import {
 export const PLACEHOLDER_API_KEY = 'sk-ant-api00-placeholder-nanoclaw';
 export const PLACEHOLDER_ACCESS_TOKEN = 'sk-ant-oat01-placeholder-nanoclaw';
 export const PLACEHOLDER_REFRESH_TOKEN = 'sk-ant-ort01-placeholder-nanoclaw';
+
+/**
+ * Default authFields for Claude OAuth tokens stored outside the proxy path
+ * (migration, env import). The refresh endpoint requires client_id; scope is
+ * included so proactive refresh builds a correct request body.
+ *
+ * Values sourced from Claude CLI OAuth packet capture (docs/claude-oauth-packet-capture.md).
+ * The scope matches what captureAuthFields + scopeInclude would produce.
+ */
+export const CLAUDE_DEFAULT_AUTH_FIELDS: Record<string, string> = {
+  client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+  scope:
+    'user:inference user:mcp_servers user:profile user:sessions:claude_code user:file_upload',
+};
 
 export interface AuthErrorInfo {
   /** HTTP status code (401, 403) extracted from the API error. */
@@ -173,29 +187,27 @@ function stripAnsi(text: string): string {
 }
 
 /**
- * Check if a TCP port is open on localhost (tries IPv4, then IPv6).
+ * Check if a TCP port is open on a given host.
  * Returns true if a connection is established within timeoutMs.
  */
-export function isPortOpen(port: number, timeoutMs = 3000): Promise<boolean> {
+export function isPortOpen(
+  port: number,
+  timeoutMs: number,
+  host: string,
+): Promise<boolean> {
   return new Promise((resolve) => {
-    const tryConnect = (host: string, cb: (ok: boolean) => void) => {
-      const sock = net.createConnection({ host, port, timeout: timeoutMs });
-      sock.once('connect', () => {
-        sock.destroy();
-        cb(true);
-      });
-      sock.once('error', () => {
-        sock.destroy();
-        cb(false);
-      });
-      sock.once('timeout', () => {
-        sock.destroy();
-        cb(false);
-      });
-    };
-    tryConnect('127.0.0.1', (ok) => {
-      if (ok) return resolve(true);
-      tryConnect('::1', resolve);
+    const sock = net.createConnection({ host, port, timeout: timeoutMs });
+    sock.once('connect', () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.once('error', () => {
+      sock.destroy();
+      resolve(false);
+    });
+    sock.once('timeout', () => {
+      sock.destroy();
+      resolve(false);
     });
   });
 }
@@ -281,6 +293,7 @@ export function detectCodeDelivery(
   timeoutMs: number,
   handle: ExecHandle,
   stdoutOauthUrl: string,
+  containerIP: string,
   pastePrompt: RegExp | null = DEFAULT_PASTE_PROMPT_RE,
 ): Promise<CodeDeliveryHandler | null> {
   const oauthUrlPath = path.join(authIpcDir, OAUTH_URL_FILE);
@@ -310,8 +323,8 @@ export function detectCodeDelivery(
           );
           if (portMatch) {
             const port = parseInt(portMatch[1], 10);
-            isPortOpen(port, 5000).then((open) => {
-              done(open ? callbackHandler(url, 'localhost', port) : null);
+            isPortOpen(port, 5000, containerIP).then((open) => {
+              done(open ? callbackHandler(url, containerIP, port) : null);
             });
           } else {
             done(null);
@@ -493,7 +506,7 @@ async function runOAuthFlow(
   } catch {
     /* ignore */
   }
-  const handle = ctx.exec(
+  const { handle, containerIP } = ctx.startExec(
     // Wide PTY so Ink doesn't wrap long URLs/tokens (\r overwrites corrupt them)
     ['script', '-qc', `stty columns 500 && ${cliCommand}`, '/dev/null'],
     claudeExecOpts(sessionDir),
@@ -526,6 +539,7 @@ async function runOAuthFlow(
     DELIVERY_DETECT_MS,
     handle,
     urlMatch[0],
+    containerIP,
     pastePrompt,
   );
   if (!delivery) {
@@ -608,7 +622,12 @@ export function migrateClaudeCredentials(scope: string): void {
       if (!parsed) return;
       const keys: Record<
         string,
-        { value: string; updated_ts: number; expires_ts: number }
+        {
+          value: string;
+          updated_ts: number;
+          expires_ts: number;
+          authFields?: Record<string, string>;
+        }
       > = {
         access: {
           value: encrypt(parsed.accessToken),
@@ -616,6 +635,7 @@ export function migrateClaudeCredentials(scope: string): void {
           expires_ts: parsed.expiresAt
             ? new Date(parsed.expiresAt).getTime()
             : 0,
+          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
         },
       };
       if (parsed.refreshToken) {
@@ -623,6 +643,7 @@ export function migrateClaudeCredentials(scope: string): void {
           value: encrypt(parsed.refreshToken),
           updated_ts: Date.now(),
           expires_ts: 0,
+          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
         };
       }
       writeKeysFile(credScope, PROVIDER_ID, keys);
@@ -759,6 +780,8 @@ export const claudeProvider: CredentialProvider = {
           PROVIDER_ID,
           credScope,
           'access',
+          0,
+          CLAUDE_DEFAULT_AUTH_FIELDS,
         );
       }
       // ANTHROPIC_AUTH_TOKEN is a fallback for access token
@@ -768,6 +791,8 @@ export const claudeProvider: CredentialProvider = {
           PROVIDER_ID,
           credScope,
           'access',
+          0,
+          CLAUDE_DEFAULT_AUTH_FIELDS,
         );
       }
     }
@@ -841,47 +866,57 @@ export const claudeProvider: CredentialProvider = {
   ): void {
     const credScope = scope;
     const resolver = tokenEngine.getResolver();
-
-    // Clear hot cache + keys file (refs stay for running containers)
-    tokenEngine.clearCredentials(asGroupScope(scope), PROVIDER_ID);
+    const groupScope = asGroupScope(scope);
 
     switch (result.auth_type) {
       case 'api_key':
+        tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
         resolver.store(result.token, PROVIDER_ID, credScope, 'api_key');
         break;
       case 'setup_token':
+        tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
         resolver.store(result.token, PROVIDER_ID, credScope, 'access');
         break;
       case 'auth_login': {
         const parsed = parseCredentialsJson(result.token);
         if (!parsed)
           throw new Error('Invalid .credentials.json in auth_login result');
-        const expiresTs = parsed.expiresAt
-          ? new Date(parsed.expiresAt).getTime()
-          : 0;
-        resolver.store(
+
+        // The auth container runs through the credential proxy, so the tokens
+        // in .credentials.json are substitutes (the proxy replaced real tokens
+        // in the exchange response). Verify they resolve — this confirms the
+        // proxy captured authFields alongside the real tokens.
+        const accessResolved = tokenEngine.resolveSubstitute(
           parsed.accessToken,
-          PROVIDER_ID,
-          credScope,
-          'access',
-          expiresTs,
+          groupScope,
         );
-        if (parsed.refreshToken) {
-          resolver.store(
-            parsed.refreshToken,
-            PROVIDER_ID,
-            credScope,
-            'refresh',
+        if (!accessResolved) {
+          throw new Error(
+            'Auth flow token exchange did not go through credential proxy — ' +
+              'access token is not a known substitute. authFields were not captured.',
           );
         }
+        if (parsed.refreshToken) {
+          const refreshResolved = tokenEngine.resolveSubstitute(
+            parsed.refreshToken,
+            groupScope,
+          );
+          if (!refreshResolved) {
+            throw new Error(
+              'Auth flow token exchange did not go through credential proxy — ' +
+                'refresh token is not a known substitute. authFields were not captured.',
+            );
+          }
+        }
+        // Proxy already stored real tokens with authFields via generateSubstitute.
+        // No clearCredentials — would destroy the proxy-stored tokens.
         break;
       }
       default:
         throw new Error(`Unknown auth_type: ${result.auth_type}`);
     }
 
-    // Remove orphaned refs for roles that no longer have keys
-    tokenEngine.pruneStaleRefs(asGroupScope(scope), PROVIDER_ID);
+    tokenEngine.pruneStaleRefs(groupScope, PROVIDER_ID);
   },
 
   authOptions(scope: CredentialScope): AuthOption[] {

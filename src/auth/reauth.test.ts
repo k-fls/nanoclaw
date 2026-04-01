@@ -38,7 +38,7 @@ vi.mock('./exec.js', () => ({
   authSessionDir: vi.fn((scope: string) =>
     path.join(tmpDir, 'sessions', scope),
   ),
-  execInContainer: vi.fn(),
+  startExecInContainer: vi.fn(),
 }));
 
 // Controllable provider for tests

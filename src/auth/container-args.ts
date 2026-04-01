@@ -87,44 +87,62 @@ function injectSubstituteCredentials(
   }
 }
 
+// ── Shared proxy plumbing ──────────────────────────────────────────
+
+/**
+ * Apply transparent proxy Docker args: iptables env vars, MITM CA cert,
+ * NET_ADMIN capability, and user mapping for privilege drop.
+ *
+ * Shared between agent containers (container-runner.ts) and auth containers
+ * (exec.ts). Does NOT inject substitute credentials — callers add those
+ * separately when needed.
+ */
+export function applyTransparentProxyArgs(args: string[]): void {
+  // NET_ADMIN for iptables in entrypoint (dropped by setpriv before app runs).
+  // no-new-privileges prevents re-escalation via setuid binaries after privilege drop.
+  args.push('--cap-add=NET_ADMIN');
+  args.push('--security-opt=no-new-privileges');
+  args.push('-e', `PROXY_HOST=${CONTAINER_HOST_GATEWAY}`);
+  args.push('-e', `PROXY_PORT=${CREDENTIAL_PROXY_PORT}`);
+
+  // Mount MITM CA cert so system CA store trusts our forged certs
+  const caCertPath = getMitmCaCertPath();
+  args.push(
+    '-v',
+    `${caCertPath}:/usr/local/share/ca-certificates/nanoclaw-mitm.crt:ro`,
+  );
+  // Also set NODE_EXTRA_CA_CERTS for Node.js apps that don't use system store
+  args.push(
+    '-e',
+    'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/nanoclaw-mitm.crt',
+  );
+
+  // Transparent proxy: entrypoint starts as root for iptables, then drops
+  // privileges via setpriv. Pass host uid/gid so it drops to the right user.
+  const hostUid = process.getuid?.();
+  const hostGid = process.getgid?.();
+  if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
+    args.push('-e', `HOST_UID=${hostUid}`);
+    args.push('-e', `HOST_GID=${hostGid}`);
+    args.push('-e', 'HOME=/home/node');
+  }
+}
+
 // ── Main entry point ───────────────────────────────────────────────
 
 /**
  * Apply all credential-proxy-related Docker args to a container args array.
  * Handles MITM cert mounts, proxy env vars, substitute token injection,
  * and user mapping for transparent proxy mode.
- *
- * @returns cleanup function to call when the container exits (deregisters IP),
- *   or null if no cleanup is needed.
  */
 export function applyCredentialProxyArgs(
   args: string[],
   group: RegisteredGroup,
   tokenEngine: TokenSubstituteEngine,
 ): void {
-  // Transparent proxy mode: iptables in entrypoint redirects :443 → credential proxy.
-  // The proxy TLS-terminates, injects credentials, and pipes to upstream.
-  // No ANTHROPIC_BASE_URL override needed — apps connect to real hostnames.
   const mitmCtx = getProxy().getMitmContext();
   if (mitmCtx) {
-    // NET_ADMIN for iptables in entrypoint (dropped by setpriv before agent runs).
-    // no-new-privileges prevents re-escalation via setuid binaries after privilege drop.
-    args.push('--cap-add=NET_ADMIN');
-    args.push('--security-opt=no-new-privileges');
-    args.push('-e', `PROXY_HOST=${CONTAINER_HOST_GATEWAY}`);
-    args.push('-e', `PROXY_PORT=${CREDENTIAL_PROXY_PORT}`);
-
-    // Mount MITM CA cert so system CA store trusts our forged certs
-    const caCertPath = getMitmCaCertPath();
-    args.push(
-      '-v',
-      `${caCertPath}:/usr/local/share/ca-certificates/nanoclaw-mitm.crt:ro`,
-    );
-    // Also set NODE_EXTRA_CA_CERTS for Node.js apps that don't use system store
-    args.push(
-      '-e',
-      'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/nanoclaw-mitm.crt',
-    );
+    applyTransparentProxyArgs(args);
   } else {
     // Non-transparent mode: containers use the proxy as a standard HTTPS proxy.
     // Set http_proxy/https_proxy so apps route traffic through the credential proxy,
@@ -132,29 +150,19 @@ export function applyCredentialProxyArgs(
     const proxyUrl = `http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`;
     args.push('-e', `http_proxy=${proxyUrl}`);
     args.push('-e', `https_proxy=${proxyUrl}`);
+
+    // Non-transparent: no entrypoint privilege drop, run as host user directly.
+    const hostUid = process.getuid?.();
+    const hostGid = process.getgid?.();
+    if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
+      args.push('--user', `${hostUid}:${hostGid}`);
+      args.push('-e', 'HOME=/home/node');
+    }
   }
 
   // Generate format-preserving substitute tokens for the container.
   // Real credentials stay on the host; containers only see substitutes.
   injectSubstituteCredentials(args, group, tokenEngine);
-
-  // Run as host user so bind-mounted files are accessible.
-  // Skip when running as root (uid 0), as the container's node user (uid 1000),
-  // when getuid is unavailable (native Windows without WSL), or when the
-  // transparent proxy is active (entrypoint must start as root for iptables).
-  const hostUid = process.getuid?.();
-  const hostGid = process.getgid?.();
-  if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-    if (mitmCtx) {
-      // Transparent proxy: entrypoint starts as root for iptables, then drops
-      // privileges via setpriv. Pass host uid/gid so it drops to the right user.
-      args.push('-e', `HOST_UID=${hostUid}`);
-      args.push('-e', `HOST_GID=${hostGid}`);
-    } else {
-      args.push('--user', `${hostUid}:${hostGid}`);
-    }
-    args.push('-e', 'HOME=/home/node');
-  }
 }
 
 // ── Dedicated Docker network for static container IPs ─────────────────

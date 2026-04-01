@@ -81,12 +81,19 @@ export interface AuthExecOpts {
   mounts?: Array<[string, string, string?]>;
 }
 
+/** Result of spawning an auth container. */
+export interface ExecContainerResult {
+  handle: ExecHandle;
+  /** Container's bridge IP for callback delivery to the CLI's OAuth server. */
+  containerIP: string;
+}
+
 /** Context passed to auth option run(). */
 export interface AuthContext {
   /** Where credentials are stored (group folder or 'default'). */
   scope: CredentialScope;
-  /** Spawn a command inside a container. Caller doesn't know it's Docker. */
-  exec(command: string[], opts?: AuthExecOpts): ExecHandle;
+  /** Spawn a command inside a container. Returns handle + bridge IP for callback delivery. */
+  startExec(command: string[], opts?: AuthExecOpts): ExecContainerResult;
   /** Send/receive messages to the user through normal routing. */
   chat: ChatIO;
 }

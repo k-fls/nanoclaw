@@ -5,7 +5,7 @@
  */
 import { logger } from '../logger.js';
 import { getAllProviders } from './registry.js';
-import { execInContainer, authSessionDir } from './exec.js';
+import { startExecInContainer, authSessionDir } from './exec.js';
 import type { CredentialScope, GroupScope } from './oauth-types.js';
 import { DEFAULT_CREDENTIAL_SCOPE } from './oauth-types.js';
 import type {
@@ -13,7 +13,7 @@ import type {
   AuthExecOpts,
   AuthOption,
   ChatIO,
-  ExecHandle,
+  ExecContainerResult,
 } from './types.js';
 import { RESELECT } from './types.js';
 
@@ -146,9 +146,10 @@ async function showMenuAndRun(
 
   const ctx: AuthContext = {
     scope: selected.credentialScope,
-    exec(command: string[], opts?: AuthExecOpts): ExecHandle {
-      return execInContainer(command, sessionDir, {
+    startExec(command: string[], opts?: AuthExecOpts): ExecContainerResult {
+      return startExecInContainer(command, sessionDir, {
         mounts: opts?.mounts,
+        credentialScope: selected.credentialScope,
       });
     },
     chat: prefixedChat(chat),
