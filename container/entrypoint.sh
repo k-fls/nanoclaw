@@ -1,20 +1,16 @@
 #!/bin/bash
 set -e
 
-# Transparent proxy: redirect all outbound HTTPS to host proxy.
+# Transparent proxy: redirect all outbound HTTPS to host credential proxy.
 # iptables requires CAP_NET_ADMIN — dropped by setpriv before agent runs.
 # Container is also started with --security-opt=no-new-privileges to prevent
 # any child process from re-escalating via setuid/execve after privilege drop.
-if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
-  PROXY_IP=$(getent hosts "$PROXY_HOST" | awk '{print $1}' || echo "$PROXY_HOST")
-  iptables -t nat -A OUTPUT -p tcp --dport 443 \
-    -j DNAT --to-destination "$PROXY_IP:$PROXY_PORT"
-fi
+PROXY_IP=$(getent hosts "$PROXY_HOST" | awk '{print $1}' || echo "$PROXY_HOST")
+iptables -t nat -A OUTPUT -p tcp --dport 443 \
+  -j DNAT --to-destination "$PROXY_IP:$PROXY_PORT"
 
 # Register MITM CA in system store (for curl, git, chromium)
-if [ -f /usr/local/share/ca-certificates/nanoclaw-mitm.crt ]; then
-  update-ca-certificates 2>/dev/null
-fi
+update-ca-certificates 2>/dev/null
 
 # Compile agent-runner
 cd /app && npx tsc --outDir /tmp/dist 2>&1 >&2

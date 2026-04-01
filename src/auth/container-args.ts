@@ -24,13 +24,16 @@ import { logger } from '../logger.js';
 // ── Host constants ─────────────────────────────────────────────────
 
 /** Hostname containers use to reach the host machine. */
-export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
+const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
 
 /**
  * Address the credential proxy binds to.
- * Docker Desktop (macOS): 127.0.0.1 — the VM routes host.docker.internal to loopback.
- * Docker (Linux): bind to the docker0 bridge IP so only containers can reach it,
- *   falling back to 127.0.0.1 if the interface isn't found.
+ * Must match what Docker's `host-gateway` resolves to, since containers use
+ * iptables DNAT to redirect :443 → host-gateway:PROXY_PORT.
+ *
+ * Docker Desktop (macOS/WSL): 127.0.0.1 — the VM routes host-gateway to loopback.
+ * Docker Engine (Linux): docker0 bridge IP — host-gateway resolves to this
+ *   regardless of which Docker network the container is on.
  */
 export const PROXY_BIND_HOST =
   process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
@@ -42,7 +45,7 @@ function detectProxyBindHost(): string {
   // Check /proc filesystem, not env vars — WSL_DISTRO_NAME isn't set under systemd.
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
 
-  // Bare-metal Linux: bind to the docker0 bridge IP.
+  // Bare-metal Linux: bind to the docker0 bridge IP (what host-gateway resolves to).
   // os.networkInterfaces() omits interfaces in DOWN state (docker0 when no
   // containers are running), so fall back to parsing `ip addr` directly.
   const ifaces = os.networkInterfaces();
@@ -132,33 +135,14 @@ export function applyTransparentProxyArgs(args: string[]): void {
 
 /**
  * Apply all credential-proxy-related Docker args to a container args array.
- * Handles MITM cert mounts, proxy env vars, substitute token injection,
- * and user mapping for transparent proxy mode.
+ * Transparent proxy plumbing + substitute token injection.
  */
 export function applyCredentialProxyArgs(
   args: string[],
   group: RegisteredGroup,
   tokenEngine: TokenSubstituteEngine,
 ): void {
-  const mitmCtx = getProxy().getMitmContext();
-  if (mitmCtx) {
-    applyTransparentProxyArgs(args);
-  } else {
-    // Non-transparent mode: containers use the proxy as a standard HTTPS proxy.
-    // Set http_proxy/https_proxy so apps route traffic through the credential proxy,
-    // which will CONNECT-tunnel to upstream (with MITM for registered hosts).
-    const proxyUrl = `http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`;
-    args.push('-e', `http_proxy=${proxyUrl}`);
-    args.push('-e', `https_proxy=${proxyUrl}`);
-
-    // Non-transparent: no entrypoint privilege drop, run as host user directly.
-    const hostUid = process.getuid?.();
-    const hostGid = process.getgid?.();
-    if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-      args.push('--user', `${hostUid}:${hostGid}`);
-      args.push('-e', 'HOME=/home/node');
-    }
-  }
+  applyTransparentProxyArgs(args);
 
   // Generate format-preserving substitute tokens for the container.
   // Real credentials stay on the host; containers only see substitutes.

@@ -542,10 +542,6 @@ export class CredentialProxy {
     return rule?.handler ?? null;
   }
 
-  getMitmContext(): MitmContext | null {
-    return this._mitmCtx;
-  }
-
   // ── MITM dispatch ───────────────────────────────────────────────
 
   /**

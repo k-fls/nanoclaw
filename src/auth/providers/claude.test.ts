@@ -67,7 +67,11 @@ const {
 const { TokenSubstituteEngine, PersistentTokenResolver } =
   await import('../token-substitute.js');
 import type { RegisteredGroup } from '../../types.js';
-import { asCredentialScope, asGroupScope, DEFAULT_CREDENTIAL_SCOPE } from '../oauth-types.js';
+import {
+  asCredentialScope,
+  asGroupScope,
+  DEFAULT_CREDENTIAL_SCOPE,
+} from '../oauth-types.js';
 
 const TEST_CRED_SCOPE = asCredentialScope('test-scope');
 const ENC_TEST_SCOPE = asCredentialScope('enc-test');
@@ -169,14 +173,21 @@ describe('claudeProvider', () => {
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
       });
 
-      claudeProvider.storeResult(TEST_CRED_SCOPE, {
-        auth_type: 'auth_login',
-        token: credsJson,
-        expires_at: new Date(Date.now() + 3600_000).toISOString(),
-      }, engine);
+      claudeProvider.storeResult(
+        TEST_CRED_SCOPE,
+        {
+          auth_type: 'auth_login',
+          token: credsJson,
+          expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        },
+        engine,
+      );
       migrateClaudeCredentials(TEST_CRED_SCOPE);
       engine.loadAllPersistedRefs();
-      const result = claudeProvider.provision(makeGroup(TEST_CRED_SCOPE), engine);
+      const result = claudeProvider.provision(
+        makeGroup(TEST_CRED_SCOPE),
+        engine,
+      );
 
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(

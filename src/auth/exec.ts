@@ -136,7 +136,9 @@ export function startExecInContainer(
     args.push(...readonlyMountArgs(ENTRYPOINT_PATH, '/app/entrypoint.sh'));
   }
   if (fs.existsSync(AGENT_RUNNER_TSCONFIG)) {
-    args.push(...readonlyMountArgs(AGENT_RUNNER_TSCONFIG, '/app/tsconfig.json'));
+    args.push(
+      ...readonlyMountArgs(AGENT_RUNNER_TSCONFIG, '/app/tsconfig.json'),
+    );
   }
 
   // Infrastructure mounts

@@ -73,7 +73,6 @@ function mockProxy() {
     registerSessionContext: vi.fn(),
     deregisterSessionContext: vi.fn(),
     getSessionContext: vi.fn(),
-    getMitmContext: vi.fn(),
   } as any;
 }
 
