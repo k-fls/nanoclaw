@@ -43,6 +43,13 @@ export interface RegisteredGroup {
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
 }
 
+/** Group's folder as a typed GroupScope for engine use. */
+export function scopeOf(
+  group: RegisteredGroup,
+): import('./auth/oauth-types.js').GroupScope {
+  return group.folder as unknown as import('./auth/oauth-types.js').GroupScope;
+}
+
 export interface NewMessage {
   id: string;
   chat_jid: string;
@@ -73,6 +80,7 @@ export interface ScheduledTask {
   group_folder: string;
   chat_jid: string;
   prompt: string;
+  script?: string | null;
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
@@ -106,7 +114,11 @@ export interface Channel {
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
   // Optional: media support
-  sendMedia?(jid: string, filePath: string, options?: MediaSendOptions): Promise<void>;
+  sendMedia?(
+    jid: string,
+    filePath: string,
+    options?: MediaSendOptions,
+  ): Promise<void>;
   downloadMedia?(ref: unknown): Promise<Buffer>;
 }
 

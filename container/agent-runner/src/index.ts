@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFile } from 'child_process';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
@@ -27,6 +28,7 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  script?: string;
 }
 
 interface ContainerOutput {
@@ -336,13 +338,14 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; errorEmitted: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
+  let errorEmitted = false;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -449,19 +452,81 @@ async function runQuery(
 
     if (message.type === 'result') {
       resultCount++;
+      const subtype = message.subtype;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
+      const stopReason = 'stop_reason' in message ? (message as { stop_reason?: string }).stop_reason : null;
+      log(`Result #${resultCount}: subtype=${subtype}${stopReason ? ` stop_reason=${stopReason}` : ''}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      if (subtype === 'success') {
+        writeOutput({
+          status: 'success',
+          result: textResult || null,
+          newSessionId
+        });
+      } else {
+        // error_during_execution, error_max_turns, etc.
+        errorEmitted = true;
+        writeOutput({
+          status: 'error',
+          result: null,
+          newSessionId,
+          error: textResult || `Agent failed: ${subtype}${stopReason ? ` (${stopReason})` : ''}`
+        });
+      }
     }
   }
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  return { newSessionId, lastAssistantUuid, closedDuringQuery, errorEmitted };
+}
+
+interface ScriptResult {
+  wakeAgent: boolean;
+  data?: unknown;
+}
+
+const SCRIPT_TIMEOUT_MS = 30_000;
+
+async function runScript(script: string): Promise<ScriptResult | null> {
+  const scriptPath = '/tmp/task-script.sh';
+  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+
+  return new Promise((resolve) => {
+    execFile('bash', [scriptPath], {
+      timeout: SCRIPT_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+      env: process.env,
+    }, (error, stdout, stderr) => {
+      if (stderr) {
+        log(`Script stderr: ${stderr.slice(0, 500)}`);
+      }
+
+      if (error) {
+        log(`Script error: ${error.message}`);
+        return resolve(null);
+      }
+
+      // Parse last non-empty line of stdout as JSON
+      const lines = stdout.trim().split('\n');
+      const lastLine = lines[lines.length - 1];
+      if (!lastLine) {
+        log('Script produced no output');
+        return resolve(null);
+      }
+
+      try {
+        const result = JSON.parse(lastLine);
+        if (typeof result.wakeAgent !== 'boolean') {
+          log(`Script output missing wakeAgent boolean: ${lastLine.slice(0, 200)}`);
+          return resolve(null);
+        }
+        resolve(result as ScriptResult);
+      } catch {
+        log(`Script output is not valid JSON: ${lastLine.slice(0, 200)}`);
+        resolve(null);
+      }
+    });
+  });
 }
 
 async function main(): Promise<void> {
@@ -505,13 +570,36 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
+  // Script phase: run script before waking agent
+  if (containerInput.script && containerInput.isScheduledTask) {
+    log('Running task script...');
+    const scriptResult = await runScript(containerInput.script);
+
+    if (!scriptResult || !scriptResult.wakeAgent) {
+      const reason = scriptResult ? 'wakeAgent=false' : 'script error/no output';
+      log(`Script decided not to wake agent: ${reason}`);
+      writeOutput({
+        status: 'success',
+        result: null,
+      });
+      return;
+    }
+
+    // Script says wake agent — enrich prompt with script data
+    log(`Script wakeAgent=true, enriching prompt with data`);
+    prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
+  }
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
+  let lastErrorEmitted = false;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
+      lastErrorEmitted = false;
       const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      lastErrorEmitted = queryResult.errorEmitted;
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -545,12 +633,16 @@ async function main(): Promise<void> {
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    writeOutput({
-      status: 'error',
-      result: null,
-      newSessionId: sessionId,
-      error: errorMessage
-    });
+    // Only emit error if runQuery didn't already (the SDK throws after
+    // emitting an error result, so the error output was already written).
+    if (!lastErrorEmitted) {
+      writeOutput({
+        status: 'error',
+        result: null,
+        newSessionId: sessionId,
+        error: errorMessage
+      });
+    }
     process.exit(1);
   }
 }

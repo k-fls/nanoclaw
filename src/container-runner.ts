@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -10,7 +10,6 @@ import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
-  CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -20,15 +19,19 @@ import {
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
-  CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
-import { detectAuthMode } from './credential-proxy.js';
+import {
+  allocateContainerIP,
+  applyCredentialProxyArgs,
+  networkArgs,
+} from './auth/container-args.js';
+import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { RegisteredGroup } from './types.js';
+import { RegisteredGroup, scopeOf } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -42,6 +45,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  script?: string;
 }
 
 export interface ContainerOutput {
@@ -49,6 +53,8 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  /** True for infrastructure failures where retrying the message won't help. */
+  fatal?: boolean;
 }
 
 interface VolumeMount {
@@ -57,7 +63,8 @@ interface VolumeMount {
   readonly: boolean;
 }
 
-function buildVolumeMounts(
+/** @internal Exported for e2e test reuse. */
+export function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
 ): VolumeMount[] {
@@ -147,6 +154,26 @@ function buildVolumeMounts(
     );
   }
 
+  // Per-group persistent home directory.
+  // Subdirectories (app config like .config/gh/, .aws/, .npm/) survive across
+  // runs. Flat files in ~/ are cleaned on each launch to prevent dotfile
+  // injection (.bashrc, .profile) between sessions.
+  const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder, 'home');
+  fs.mkdirSync(groupHomeDir, { recursive: true });
+  for (const entry of fs.readdirSync(groupHomeDir)) {
+    const full = path.join(groupHomeDir, entry);
+    try {
+      if (fs.statSync(full).isFile()) fs.unlinkSync(full);
+    } catch {
+      /* race with container shutdown, ignore */
+    }
+  }
+  mounts.push({
+    hostPath: groupHomeDir,
+    containerPath: '/home/node',
+    readonly: false,
+  });
+
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
@@ -200,14 +227,66 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  if (fs.existsSync(agentRunnerSrc)) {
+    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
+    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
+    const needsCopy =
+      !fs.existsSync(groupAgentRunnerDir) ||
+      !fs.existsSync(cachedIndex) ||
+      (fs.existsSync(srcIndex) &&
+        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
+    if (needsCopy) {
+      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+    }
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
     containerPath: '/app/src',
     readonly: false,
   });
+
+  // Mount tsconfig.json so the entrypoint can compile from /app (image root).
+  // Only package*.json are COPY'd into the image; tsconfig.json is not.
+  const agentRunnerTsconfig = path.join(
+    projectRoot,
+    'container',
+    'agent-runner',
+    'tsconfig.json',
+  );
+  if (fs.existsSync(agentRunnerTsconfig)) {
+    mounts.push({
+      hostPath: agentRunnerTsconfig,
+      containerPath: '/app/tsconfig.json',
+      readonly: true,
+    });
+  }
+
+  // Mount xdg-open shim so any tool (GitHub CLI, gcloud, etc.) that triggers
+  // OAuth has its browser-open intercepted by the credential proxy.
+  const xdgOpenShim = path.join(projectRoot, 'container', 'shims', 'xdg-open');
+  if (fs.existsSync(xdgOpenShim)) {
+    mounts.push({
+      hostPath: xdgOpenShim,
+      containerPath: '/usr/local/bin/xdg-open',
+      readonly: true,
+    });
+    mounts.push({
+      hostPath: xdgOpenShim,
+      containerPath: '/usr/bin/xdg-open',
+      readonly: true,
+    });
+  }
+
+  // Mount entrypoint read-only so changes don't require image rebuild.
+  // Runs as root before setpriv — read-only prevents agent tampering.
+  const entrypointPath = path.join(projectRoot, 'container', 'entrypoint.sh');
+  if (fs.existsSync(entrypointPath)) {
+    mounts.push({
+      hostPath: entrypointPath,
+      containerPath: '/app/entrypoint.sh',
+      readonly: true,
+    });
+  }
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
@@ -222,47 +301,25 @@ function buildVolumeMounts(
   return mounts;
 }
 
-function buildContainerArgs(
+/** @internal Exported for e2e test reuse. */
+export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
-  groupFolder: string,
+  group: RegisteredGroup,
+  tokenEngine: TokenSubstituteEngine,
+  ip: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Route API traffic through the credential proxy (containers never see real secrets).
-  // The /scope/<folder>/ prefix tells the proxy which group's credentials to inject.
-  const scopePath = `/scope/${encodeURIComponent(groupFolder)}`;
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}${scopePath}`,
-  );
+  // Credential proxy args: MITM certs, iptables env vars, substitute tokens, user mapping
+  applyCredentialProxyArgs(args, group, tokenEngine);
 
-  // Mirror the group's auth method with a placeholder value.
-  // API key mode: SDK sends x-api-key, proxy replaces with real key.
-  // OAuth mode:   SDK exchanges placeholder token for temp API key,
-  //               proxy injects real OAuth token on that exchange request.
-  const authMode = detectAuthMode(groupFolder);
-  if (authMode === 'api-key') {
-    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
-  } else {
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
-  }
-
-  // Runtime-specific args for host gateway resolution
+  // Runtime-specific args for host gateway resolution and network placement
   args.push(...hostGatewayArgs());
-
-  // Run as host user so bind-mounted files are accessible.
-  // Skip when running as root (uid 0), as the container's node user (uid 1000),
-  // or when getuid is unavailable (native Windows without WSL).
-  const hostUid = process.getuid?.();
-  const hostGid = process.getgid?.();
-  if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-    args.push('--user', `${hostUid}:${hostGid}`);
-    args.push('-e', 'HOME=/home/node');
-  }
+  args.push(...networkArgs(ip));
 
   for (const mount of mounts) {
     if (mount.readonly) {
@@ -281,6 +338,7 @@ export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
+  tokenEngine: TokenSubstituteEngine,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
@@ -291,12 +349,28 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group.folder);
+  // Allocate a static IP and register it in the proxy before spawning.
+  // The IP is passed to Docker via --network/--ip — no post-spawn inspection needed.
+  const { ip: containerIP, release: releaseIP } = allocateContainerIP(
+    scopeOf(group),
+  );
+
+  const logsDir = path.join(groupDir, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    group,
+    tokenEngine,
+    containerIP,
+  );
 
   logger.debug(
     {
       group: group.name,
       containerName,
+      containerIP,
       mounts: mounts.map(
         (m) =>
           `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
@@ -310,36 +384,40 @@ export async function runContainerAgent(
     {
       group: group.name,
       containerName,
+      containerIP,
       mountCount: mounts.length,
       isMain: input.isMain,
     },
     'Spawning container agent',
   );
 
-  const logsDir = path.join(groupDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
-
-  return new Promise((resolve) => {
-    const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+  let container: ChildProcess;
+  try {
+    container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-
     onProcess(container, containerName);
+  } catch (err) {
+    // Release the pre-allocated IP if spawn fails before event handlers take over.
+    releaseIP();
+    throw err;
+  }
 
+  return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
+    container.stdin!.write(JSON.stringify(input));
+    container.stdin!.end();
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
 
-    container.stdout.on('data', (data) => {
+    container.stdout!.on('data', (data) => {
       const chunk = data.toString();
 
       // Always accumulate for logging
@@ -391,7 +469,7 @@ export async function runContainerAgent(
       }
     });
 
-    container.stderr.on('data', (data) => {
+    container.stderr!.on('data', (data) => {
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
@@ -426,15 +504,15 @@ export async function runContainerAgent(
         { group: group.name, containerName },
         'Container timeout, stopping gracefully',
       );
-      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
-        if (err) {
-          logger.warn(
-            { group: group.name, containerName, err },
-            'Graceful stop failed, force killing',
-          );
-          container.kill('SIGKILL');
-        }
-      });
+      try {
+        stopContainer(containerName);
+      } catch (err) {
+        logger.warn(
+          { group: group.name, containerName, err },
+          'Graceful stop failed, force killing',
+        );
+        container.kill('SIGKILL');
+      }
     };
 
     let timeout = setTimeout(killOnTimeout, timeoutMs);
@@ -447,6 +525,7 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
+      releaseIP();
       const duration = Date.now() - startTime;
 
       if (timedOut) {
@@ -516,10 +595,20 @@ export async function runContainerAgent(
       const isError = code !== 0;
 
       if (isVerbose || isError) {
+        // On error, log input metadata only — not the full prompt.
+        // Full input is only included at verbose level to avoid
+        // persisting user conversation content on every non-zero exit.
+        if (isVerbose) {
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
+        } else {
+          logLines.push(
+            `=== Input Summary ===`,
+            `Prompt length: ${input.prompt.length} chars`,
+            `Session ID: ${input.sessionId || 'new'}`,
+            ``,
+          );
+        }
         logLines.push(
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
           `=== Container Args ===`,
           containerArgs.join(' '),
           ``,
@@ -642,6 +731,7 @@ export async function runContainerAgent(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
+      releaseIP();
       logger.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',
@@ -662,6 +752,7 @@ export function writeTasksSnapshot(
     id: string;
     groupFolder: string;
     prompt: string;
+    script?: string | null;
     schedule_type: string;
     schedule_value: string;
     status: string;
@@ -697,7 +788,7 @@ export function writeGroupsSnapshot(
   groupFolder: string,
   isMain: boolean,
   groups: AvailableGroup[],
-  registeredJids: Set<string>,
+  _registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });

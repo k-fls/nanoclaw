@@ -35,11 +35,19 @@ const {
 
 describe('isPgpMessage', () => {
   it('detects PGP message header', () => {
-    expect(isPgpMessage('-----BEGIN PGP MESSAGE-----\nabc\n-----END PGP MESSAGE-----')).toBe(true);
+    expect(
+      isPgpMessage(
+        '-----BEGIN PGP MESSAGE-----\nabc\n-----END PGP MESSAGE-----',
+      ),
+    ).toBe(true);
   });
 
   it('detects PGP header with surrounding text', () => {
-    expect(isPgpMessage('here is the encrypted key:\n-----BEGIN PGP MESSAGE-----\nabc')).toBe(true);
+    expect(
+      isPgpMessage(
+        'here is the encrypted key:\n-----BEGIN PGP MESSAGE-----\nabc',
+      ),
+    ).toBe(true);
   });
 
   it('returns false for plain text', () => {
@@ -66,7 +74,14 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
   it('ensureGpgKey creates a keypair', () => {
     ensureGpgKey('gpg-test-scope');
 
-    const gnupgDir = path.join(tmpDir, '.config', 'nanoclaw', 'credentials', 'gpg-test-scope', '.gnupg');
+    const gnupgDir = path.join(
+      tmpDir,
+      '.config',
+      'nanoclaw',
+      'credentials',
+      'gpg-test-scope',
+      '.gnupg',
+    );
     expect(fs.existsSync(gnupgDir)).toBe(true);
   });
 
@@ -92,22 +107,28 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
     const userGpgHome = path.join(tmpDir, 'user-gpg');
     fs.mkdirSync(userGpgHome, { mode: 0o700, recursive: true });
 
-    execFileSync('gpg', [
-      '--homedir', userGpgHome,
-      '--batch',
-      '--import',
-    ], { input: pubKey, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync('gpg', ['--homedir', userGpgHome, '--batch', '--import'], {
+      input: pubKey,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
 
     // Encrypt as the user would
     const plaintext = 'sk-ant-api03-my-secret-key';
-    const encrypted = execFileSync('gpg', [
-      '--homedir', userGpgHome,
-      '--batch',
-      '--trust-model', 'always',
-      '--encrypt',
-      '--armor',
-      '--recipient', 'nanoclaw',
-    ], { input: plaintext, stdio: ['pipe', 'pipe', 'pipe'] }).toString('utf-8');
+    const encrypted = execFileSync(
+      'gpg',
+      [
+        '--homedir',
+        userGpgHome,
+        '--batch',
+        '--trust-model',
+        'always',
+        '--encrypt',
+        '--armor',
+        '--recipient',
+        'nanoclaw',
+      ],
+      { input: plaintext, stdio: ['pipe', 'pipe', 'pipe'] },
+    ).toString('utf-8');
 
     expect(encrypted).toContain('-----BEGIN PGP MESSAGE-----');
 
@@ -120,8 +141,12 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
     const scope = 'gpg-bad-decrypt';
     ensureGpgKey(scope);
 
-    expect(() => gpgDecrypt(scope, '-----BEGIN PGP MESSAGE-----\ninvalid\n-----END PGP MESSAGE-----'))
-      .toThrow();
+    expect(() =>
+      gpgDecrypt(
+        scope,
+        '-----BEGIN PGP MESSAGE-----\ninvalid\n-----END PGP MESSAGE-----',
+      ),
+    ).toThrow();
   });
 
   it('different scopes have independent keys', () => {

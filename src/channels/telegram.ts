@@ -99,8 +99,15 @@ export class TelegramChannel implements Channel {
       }
 
       // Store chat metadata for discovery
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, chatName, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        chatName,
+        'telegram',
+        isGroup,
+      );
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];
@@ -132,7 +139,13 @@ export class TelegramChannel implements Channel {
     // Handle media messages with processInboundMedia for lazy download
     const storeMedia = (
       ctx: any,
-      opts: { fileId: string; mimetype: string; filename?: string; size?: number; mediaType: string },
+      opts: {
+        fileId: string;
+        mimetype: string;
+        filename?: string;
+        size?: number;
+        mediaType: string;
+      },
     ) => {
       const chatJid = `tg:${ctx.chat.id}`;
       const group = this.opts.registeredGroups()[chatJid];
@@ -145,8 +158,15 @@ export class TelegramChannel implements Channel {
         ctx.from?.id?.toString() ||
         'Unknown';
 
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
 
       const result = processInboundMedia(group.folder, {
         channel: 'telegram',
@@ -238,8 +258,18 @@ export class TelegramChannel implements Channel {
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
-      const senderName = ctx.from?.first_name || ctx.from?.username || ctx.from?.id?.toString() || 'Unknown';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', ctx.chat.type !== 'private');
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        ctx.chat.type !== 'private',
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -255,8 +285,18 @@ export class TelegramChannel implements Channel {
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
-      const senderName = ctx.from?.first_name || ctx.from?.username || ctx.from?.id?.toString() || 'Unknown';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', ctx.chat.type !== 'private');
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        ctx.chat.type !== 'private',
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -318,7 +358,11 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  async sendMedia(jid: string, filePath: string, options?: MediaSendOptions): Promise<void> {
+  async sendMedia(
+    jid: string,
+    filePath: string,
+    options?: MediaSendOptions,
+  ): Promise<void> {
     if (!this.bot) {
       logger.warn('Telegram bot not initialized');
       return;
@@ -326,7 +370,10 @@ export class TelegramChannel implements Channel {
 
     try {
       const numericId = jid.replace(/^tg:/, '');
-      const file = new InputFile(fs.createReadStream(filePath), options?.filename || path.basename(filePath));
+      const file = new InputFile(
+        fs.createReadStream(filePath),
+        options?.filename || path.basename(filePath),
+      );
       const mime = options?.mimetype || '';
       const caption = options?.caption;
 
@@ -351,7 +398,8 @@ export class TelegramChannel implements Channel {
     const file = await this.bot.api.getFile(fileId);
     const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
+    if (!response.ok)
+      throw new Error(`Telegram file download failed: ${response.status}`);
     return Buffer.from(await response.arrayBuffer());
   }
 

@@ -1,0 +1,462 @@
+/**
+ * Discovery file loader for the universal OAuth provider system.
+ *
+ * Reads src/auth/oauth-discovery/*.json at startup and converts each into
+ * an OAuthProvider with InterceptRules. Adding a provider = dropping a JSON file.
+ *
+ * Handles:
+ *   - Fixed hosts (api.anthropic.com → exact anchor)
+ *   - Templated hosts ({tenant}.auth0.com → suffix anchor + hostPattern regex)
+ *   - Split-host providers (Google: accounts.google.com + oauth2.googleapis.com)
+ *   - Additional API hosts via _api_hosts field
+ *   - Custom token format via _token_format field
+ *
+ * Skips files that lack token_endpoint AND authorization_endpoint (e.g. aws-iam.json).
+ * Skips fully-templated hosts that produce no extractable anchor.
+ */
+import fs from 'fs';
+import path from 'path';
+
+import type {
+  InterceptRule,
+  OAuthProvider,
+  RefreshStrategy,
+  SubstituteConfig,
+} from './oauth-types.js';
+import { DEFAULT_SUBSTITUTE_CONFIG } from './oauth-types.js';
+import { logger } from '../logger.js';
+
+// ---------------------------------------------------------------------------
+// Endpoint fields we extract rules from
+// ---------------------------------------------------------------------------
+
+interface EndpointDef {
+  /** JSON field name in the discovery file. */
+  field: string;
+  /** Intercept mode for URLs from this field. */
+  mode: InterceptRule['mode'];
+  /** If true, pathPattern is a prefix match (api_base_url covers all sub-paths). */
+  prefixMatch?: boolean;
+}
+
+/** Primary endpoints — justify loading the provider. */
+const PRIMARY_FIELDS: EndpointDef[] = [
+  { field: 'token_endpoint', mode: 'token-exchange' },
+  { field: 'authorization_endpoint', mode: 'authorize-stub' },
+  { field: 'device_authorization_endpoint', mode: 'device-code' },
+  { field: 'api_base_url', mode: 'bearer-swap', prefixMatch: true },
+];
+
+/** Secondary endpoints — only added if the provider has primary rules. */
+const SECONDARY_FIELDS: EndpointDef[] = [
+  { field: 'revocation_endpoint', mode: 'bearer-swap' },
+  { field: 'userinfo_endpoint', mode: 'bearer-swap' },
+];
+
+// ---------------------------------------------------------------------------
+// URL parsing helpers
+// ---------------------------------------------------------------------------
+
+/** Placeholder pattern in URLs: {name} */
+const PLACEHOLDER_RE = /\{(\w+)\}/g;
+
+/**
+ * Parse a URL that may contain {placeholder} segments.
+ * Returns the hostname and path, with placeholders intact.
+ */
+function parseEndpointUrl(url: string): { host: string; path: string } | null {
+  // Simple regex parse to handle placeholders without URL constructor mangling them
+  const m = url.match(/^https?:\/\/([^/]+)(\/.*)?$/);
+  if (!m) return null;
+  const host = m[1].replace(/:\d+$/, ''); // strip port if present
+  const pathStr = m[2] || '/';
+  return { host, path: pathStr };
+}
+
+/**
+ * Build anchor and optional hostPattern from a hostname.
+ *
+ * Fixed host: anchor = exact host, no hostPattern.
+ * Templated host: anchor = fixed suffix, hostPattern = regex with named groups.
+ *
+ * Returns null if the host is fully templated (no fixed suffix for anchor).
+ */
+export function buildHostMatch(host: string): {
+  anchor: string;
+  hostPattern?: RegExp;
+  scopeKeys: string[];
+} | null {
+  PLACEHOLDER_RE.lastIndex = 0;
+  if (!PLACEHOLDER_RE.test(host)) {
+    // Fixed host — exact anchor, no regex needed
+    return { anchor: host, scopeKeys: [] };
+  }
+
+  // Extract the fixed suffix for the anchor.
+  // e.g. "{tenant}.auth0.com" → "auth0.com"
+  // e.g. "{domain}.auth.{region}.amazoncognito.com" → "amazoncognito.com"
+  const parts = host.split('.');
+  const fixedSuffix: string[] = [];
+  for (let i = parts.length - 1; i >= 0; i--) {
+    PLACEHOLDER_RE.lastIndex = 0;
+    if (PLACEHOLDER_RE.test(parts[i])) break;
+    fixedSuffix.unshift(parts[i]);
+  }
+
+  if (fixedSuffix.length === 0) {
+    // Fully templated (e.g. {custom_domain}) — no usable anchor
+    return null;
+  }
+
+  const anchor = fixedSuffix.join('.');
+
+  // Build regex: replace {name} with (?<name>[^.]+), escape the rest
+  // Reset lastIndex since we reuse the global regex
+  const regexSource = parts
+    .map((part) => {
+      PLACEHOLDER_RE.lastIndex = 0;
+      if (PLACEHOLDER_RE.test(part)) {
+        PLACEHOLDER_RE.lastIndex = 0;
+        return part.replace(PLACEHOLDER_RE, '(?<$1>[^.]+)');
+      }
+      return escapeRegex(part);
+    })
+    .join('\\.');
+
+  const hostPattern = new RegExp(`^${regexSource}$`);
+
+  // Extract scope keys (named groups)
+  const scopeKeys: string[] = [];
+  PLACEHOLDER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PLACEHOLDER_RE.exec(host)) !== null) {
+    scopeKeys.push(m[1]);
+  }
+
+  return { anchor, hostPattern, scopeKeys };
+}
+
+/** Build a path regex from a URL path string. */
+export function buildPathPattern(
+  urlPath: string,
+  prefixMatch: boolean,
+): RegExp {
+  // Replace placeholders with [^/]+ for matching
+  PLACEHOLDER_RE.lastIndex = 0;
+  const regexSource = urlPath
+    .split('/')
+    .map((seg) => {
+      PLACEHOLDER_RE.lastIndex = 0;
+      if (PLACEHOLDER_RE.test(seg)) return '[^/]+';
+      return escapeRegex(seg);
+    })
+    .join('/');
+
+  if (prefixMatch) {
+    return new RegExp(`^${regexSource}`);
+  }
+  return new RegExp(`^${regexSource}$`);
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ---------------------------------------------------------------------------
+// Discovery file → OAuthProvider
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryFile {
+  [key: string]: unknown;
+  token_endpoint?: string;
+  authorization_endpoint?: string;
+  revocation_endpoint?: string;
+  userinfo_endpoint?: string;
+  api_base_url?: string;
+  _api_hosts?: string[];
+  _token_format?: {
+    prefixLen?: number;
+    suffixLen?: number;
+    delimiters?: string;
+  };
+  _refresh_strategy?: RefreshStrategy;
+  _env_vars?: Record<string, string>;
+  _well_known_url?: string | false;
+  _host_patterns?: string[];
+  _token_field_capture?: {
+    from_request?: string[];
+    from_response?: string[];
+    scope_exclude?: string[];
+    scope_include?: string[];
+  };
+}
+
+/**
+ * Parse a single discovery file into an OAuthProvider.
+ * Returns null if the file should be skipped (no usable endpoints).
+ */
+export function parseDiscoveryFile(
+  id: string,
+  data: DiscoveryFile,
+): OAuthProvider | null {
+  // No early filter — the "no usable rules" check below handles files
+  // that produce zero rules (e.g. aws-iam.json with only static credentials).
+
+  const rules: InterceptRule[] = [];
+  const allScopeKeys = new Set<string>();
+
+  // Track which hosts we've seen to generate catch-all bearer-swap rules
+  const hostsWithEndpoints = new Set<string>();
+  const hostsWithBearerSwap = new Set<string>();
+
+  /** Process a list of endpoint definitions into rules. */
+  function processFields(defs: EndpointDef[]) {
+    for (const def of defs) {
+      const url = data[def.field] as string | undefined;
+      if (!url || typeof url !== 'string') continue;
+
+      const parsed = parseEndpointUrl(url);
+      if (!parsed) {
+        logger.debug(
+          { id, field: def.field, url },
+          'Discovery: could not parse URL',
+        );
+        continue;
+      }
+
+      const hostMatch = buildHostMatch(parsed.host);
+      if (!hostMatch) {
+        logger.debug(
+          { id, host: parsed.host },
+          'Discovery: skipping fully-templated host',
+        );
+        continue;
+      }
+
+      hostsWithEndpoints.add(parsed.host);
+      if (def.mode === 'bearer-swap') {
+        hostsWithBearerSwap.add(parsed.host);
+      }
+
+      for (const key of hostMatch.scopeKeys) {
+        allScopeKeys.add(key);
+      }
+
+      rules.push({
+        anchor: hostMatch.anchor,
+        hostPattern: hostMatch.hostPattern,
+        pathPattern: buildPathPattern(parsed.path, def.prefixMatch ?? false),
+        mode: def.mode,
+      });
+    }
+  }
+
+  // Primary endpoints first — these justify loading the provider
+  processFields(PRIMARY_FIELDS);
+
+  // _api_hosts: additional bearer-swap hosts (also primary)
+  if (data._api_hosts) {
+    for (const apiHost of data._api_hosts) {
+      const hostMatch = buildHostMatch(apiHost);
+      if (!hostMatch) continue;
+      for (const key of hostMatch.scopeKeys) {
+        allScopeKeys.add(key);
+      }
+      rules.push({
+        anchor: hostMatch.anchor,
+        hostPattern: hostMatch.hostPattern,
+        pathPattern: /^\//,
+        mode: 'bearer-swap',
+      });
+      hostsWithBearerSwap.add(apiHost);
+    }
+  }
+
+  // Generate catch-all bearer-swap for endpoint hosts that don't have
+  // an explicit bearer-swap rule and no api_base_url was provided.
+  // This handles the case where e.g. userinfo_endpoint's host also serves API requests.
+  if (!data.api_base_url && !data._api_hosts) {
+    for (const host of hostsWithEndpoints) {
+      if (hostsWithBearerSwap.has(host)) continue;
+      const hostMatch = buildHostMatch(host);
+      if (!hostMatch) continue;
+      rules.push({
+        anchor: hostMatch.anchor,
+        hostPattern: hostMatch.hostPattern,
+        pathPattern: /^\//,
+        mode: 'bearer-swap',
+      });
+    }
+  }
+
+  if (rules.length === 0) {
+    logger.debug({ id }, 'Discovery: no usable rules produced');
+    return null;
+  }
+
+  // Secondary endpoints — only added when primary rules exist
+  processFields(SECONDARY_FIELDS);
+
+  // Build substitute config from _token_format or use defaults
+  let substituteConfig: SubstituteConfig = DEFAULT_SUBSTITUTE_CONFIG;
+  if (data._token_format) {
+    substituteConfig = {
+      prefixLen:
+        data._token_format.prefixLen ?? DEFAULT_SUBSTITUTE_CONFIG.prefixLen,
+      suffixLen:
+        data._token_format.suffixLen ?? DEFAULT_SUBSTITUTE_CONFIG.suffixLen,
+      delimiters:
+        data._token_format.delimiters ?? DEFAULT_SUBSTITUTE_CONFIG.delimiters,
+    };
+  }
+
+  let tokenFieldCapture: OAuthProvider['tokenFieldCapture'];
+  if (data._token_field_capture) {
+    const c = data._token_field_capture;
+    tokenFieldCapture = {
+      ...(c.from_request && { fromRequest: c.from_request }),
+      ...(c.from_response && { fromResponse: c.from_response }),
+      ...(c.scope_exclude && { scopeExclude: c.scope_exclude }),
+      ...(c.scope_include && { scopeInclude: c.scope_include }),
+    };
+  }
+
+  const refreshStrategy: RefreshStrategy = data._refresh_strategy ?? 'redirect';
+
+  return {
+    id,
+    rules,
+    scopeKeys: [...allScopeKeys],
+    substituteConfig,
+    refreshStrategy,
+    ...(data._env_vars && { envVars: data._env_vars }),
+    ...(tokenFieldCapture && { tokenFieldCapture }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Merge static + cached discovery data
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge a static discovery file with a cached (fetched) discovery file.
+ * Standard fields from the cached file override the static ones.
+ * Custom `_*` fields always come from the static file.
+ */
+export function mergeDiscoveryData(
+  staticData: DiscoveryFile,
+  cachedData: Record<string, unknown> | null,
+): DiscoveryFile {
+  if (!cachedData) return staticData;
+
+  const merged: Record<string, unknown> = {};
+
+  // Copy all fields from static (both standard and _* custom)
+  for (const [key, value] of Object.entries(staticData)) {
+    merged[key] = value;
+  }
+
+  // Override standard fields from cached (skip _* fields)
+  for (const [key, value] of Object.entries(cachedData)) {
+    if (!key.startsWith('_')) {
+      merged[key] = value;
+    }
+  }
+
+  return merged as DiscoveryFile;
+}
+
+// ---------------------------------------------------------------------------
+// Load all discovery files from a directory
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryLoadResult {
+  providers: Map<string, OAuthProvider>;
+  /** Merged raw data for each loaded provider (used by registry for auth endpoint registration). */
+  rawData: Map<string, DiscoveryFile>;
+}
+
+/**
+ * Read all *.json files from a directory into a map of id → parsed JSON.
+ */
+function readJsonDir(dir: string): Map<string, Record<string, unknown>> {
+  const result = new Map<string, Record<string, unknown>>();
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return result;
+  }
+  for (const file of files) {
+    try {
+      const content = fs.readFileSync(path.join(dir, file), 'utf-8');
+      result.set(file.replace(/\.json$/, ''), JSON.parse(content));
+    } catch {
+      /* skip unparseable files */
+    }
+  }
+  return result;
+}
+
+/**
+ * Load all discovery files from the given directory, optionally merging
+ * with cached files from a deployment cache directory.
+ */
+export function loadDiscoveryProviders(
+  discoveryDir: string,
+  cacheDir?: string,
+): DiscoveryLoadResult {
+  const providers = new Map<string, OAuthProvider>();
+  const rawData = new Map<string, DiscoveryFile>();
+
+  let files: string[];
+  try {
+    files = fs.readdirSync(discoveryDir).filter((f) => f.endsWith('.json'));
+  } catch (err) {
+    logger.warn({ err, discoveryDir }, 'Discovery: could not read directory');
+    return { providers, rawData };
+  }
+
+  // Load cached discovery files if cache dir exists
+  const cached = cacheDir ? readJsonDir(cacheDir) : new Map();
+  if (cached.size > 0) {
+    logger.info(
+      { count: cached.size, cacheDir },
+      'Discovery: loaded cached discovery files',
+    );
+  }
+
+  for (const file of files) {
+    const id = file.replace(/\.json$/, '');
+    try {
+      const content = fs.readFileSync(path.join(discoveryDir, file), 'utf-8');
+      const staticData = JSON.parse(content) as DiscoveryFile;
+      const data = mergeDiscoveryData(staticData, cached.get(id) ?? null);
+      rawData.set(id, data);
+
+      const provider = parseDiscoveryFile(id, data);
+      if (provider) {
+        providers.set(id, provider);
+      }
+    } catch (err) {
+      logger.warn({ err, file }, 'Discovery: could not parse file');
+    }
+  }
+
+  // Warn about cached files with no matching static
+  for (const cachedId of cached.keys()) {
+    if (!rawData.has(cachedId)) {
+      logger.warn(
+        { id: cachedId },
+        'Discovery: cached file has no matching static file, skipping',
+      );
+    }
+  }
+
+  logger.info(
+    { count: providers.size, total: files.length },
+    'Discovery: loaded OAuth providers',
+  );
+
+  return { providers, rawData };
+}

@@ -5,9 +5,16 @@
  */
 import { logger } from '../logger.js';
 import { getAllProviders } from './registry.js';
-import { execInContainer, authSessionDir } from './exec.js';
-import { deleteCredential } from './store.js';
-import type { AuthContext, AuthExecOpts, AuthOption, ChatIO, ExecHandle } from './types.js';
+import { startExecInContainer, authSessionDir } from './exec.js';
+import type { CredentialScope, GroupScope } from './oauth-types.js';
+import { DEFAULT_CREDENTIAL_SCOPE } from './oauth-types.js';
+import type {
+  AuthContext,
+  AuthExecOpts,
+  AuthOption,
+  ChatIO,
+  ExecContainerResult,
+} from './types.js';
 import { RESELECT } from './types.js';
 
 /** Prefix for all scripted reauth messages. */
@@ -18,16 +25,18 @@ const REAUTH_PREFIX = '🔑🤖';
  * Returns true if credentials were successfully obtained.
  */
 export async function runReauth(
-  scope: string,
+  groupScope: GroupScope,
   chat: ChatIO,
   reason: string,
   providerHint: string,
+  engine: import('./token-substitute.js').TokenSubstituteEngine,
 ): Promise<boolean> {
   const providers = getAllProviders();
   const allOptions: AuthOption[] = [];
 
   for (const provider of providers) {
-    allOptions.push(...provider.authOptions(scope));
+    const credScope = engine.resolveCredentialScope(groupScope, provider.id);
+    allOptions.push(...provider.authOptions(credScope));
   }
 
   if (allOptions.length === 0) {
@@ -39,7 +48,14 @@ export async function runReauth(
   // (e.g. missing prerequisite). The menu has Cancel + timeout to exit.
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const result = await showMenuAndRun(scope, chat, reason, allOptions, providerHint);
+    const result = await showMenuAndRun(
+      groupScope,
+      chat,
+      reason,
+      allOptions,
+      providerHint,
+      engine,
+    );
     if (result === 'reselect') continue;
     return result;
   }
@@ -47,11 +63,12 @@ export async function runReauth(
 
 /** Show the menu, run the selected option. Returns true/false or 'reselect' to restart. */
 async function showMenuAndRun(
-  scope: string,
+  groupScope: GroupScope,
   chat: ChatIO,
   reason: string,
   allOptions: AuthOption[],
   providerHint: string,
+  engine: import('./token-substitute.js').TokenSubstituteEngine,
 ): Promise<boolean | 'reselect'> {
   // Build numbered menu — each option separated by blank line
   const optionBlocks: string[] = [];
@@ -69,9 +86,13 @@ async function showMenuAndRun(
   const DELETE_CHOICE = 99;
   const CANCEL_CHOICE = allOptions.length + 1;
 
-  const scopeNote = scope === 'default'
-    ? '⚠️ This will change the *default* credentials used by all groups that don\'t have their own.'
-    : `Group: *${scope}*`;
+  // Check if any option targets the default scope — means we're modifying shared credentials
+  const targetsDefault = allOptions.some(
+    (opt) => opt.credentialScope === DEFAULT_CREDENTIAL_SCOPE,
+  );
+  const scopeNote = targetsDefault
+    ? "⚠️ This will change the *default* credentials used by all groups that don't have their own."
+    : `Group: *${groupScope}*`;
 
   await chat.send(
     [
@@ -82,9 +103,7 @@ async function showMenuAndRun(
       ``,
       `Choose an authentication method:`,
       ``,
-      ...optionBlocks.flatMap((block, i) =>
-        i === 0 ? [block] : ['', block],
-      ),
+      ...optionBlocks.flatMap((block, i) => (i === 0 ? [block] : ['', block])),
       ``,
       `_Scripted dialog — reply with a number only._`,
     ].join('\n'),
@@ -95,6 +114,7 @@ async function showMenuAndRun(
     await chat.send(`${REAUTH_PREFIX} Timed out. Skipping authentication.`);
     return false;
   }
+  chat.hideMessage();
   chat.advanceCursor();
 
   const choice = parseInt(reply.trim(), 10);
@@ -102,26 +122,34 @@ async function showMenuAndRun(
   if (choice === DELETE_CHOICE) {
     const providers = getAllProviders();
     for (const provider of providers) {
-      deleteCredential(scope, provider.service);
+      engine.revokeByScope(groupScope, provider.id);
     }
-    await chat.send(`${REAUTH_PREFIX} Credentials deleted for scope *${scope}*.`);
-    logger.info({ scope }, 'Credentials deleted via reauth menu');
+    await chat.send(
+      `${REAUTH_PREFIX} Credentials deleted for scope *${groupScope}*.`,
+    );
+    logger.info({ groupScope }, 'Credentials deleted via reauth menu');
     return false;
   }
 
-  if (isNaN(choice) || choice < 1 || choice > allOptions.length || choice === CANCEL_CHOICE) {
+  if (
+    isNaN(choice) ||
+    choice < 1 ||
+    choice > allOptions.length ||
+    choice === CANCEL_CHOICE
+  ) {
     await chat.send(`${REAUTH_PREFIX} Cancelled.`);
     return false;
   }
 
   const selected = allOptions[choice - 1];
-  const sessionDir = authSessionDir(scope);
+  const sessionDir = authSessionDir(selected.credentialScope as string);
 
   const ctx: AuthContext = {
-    scope,
-    exec(command: string[], opts?: AuthExecOpts): ExecHandle {
-      return execInContainer(command, sessionDir, {
+    scope: selected.credentialScope,
+    startExec(command: string[], opts?: AuthExecOpts): ExecContainerResult {
+      return startExecInContainer(command, sessionDir, {
         mounts: opts?.mounts,
+        credentialScope: selected.credentialScope,
       });
     },
     chat: prefixedChat(chat),
@@ -138,10 +166,12 @@ async function showMenuAndRun(
       return false;
     }
 
-    selected.provider.storeResult(scope, result);
-    await chat.send(`${REAUTH_PREFIX} Credentials stored for ${selected.provider.displayName}.`);
+    selected.provider.storeResult(selected.credentialScope, result, engine);
+    await chat.send(
+      `${REAUTH_PREFIX} Credentials stored for ${selected.provider.displayName}.`,
+    );
     logger.info(
-      { scope, provider: selected.provider.service },
+      { groupScope, provider: selected.provider.id },
       'Reauth completed',
     );
     return true;
@@ -149,10 +179,12 @@ async function showMenuAndRun(
     // Advance cursor even on error to prevent message leakage
     chat.advanceCursor();
     logger.error(
-      { scope, provider: selected.provider.service, err },
+      { groupScope, provider: selected.provider.id, err },
       'Reauth flow error',
     );
-    await chat.send(`${REAUTH_PREFIX} Auth flow error: ${err instanceof Error ? err.message : String(err)}`);
+    await chat.send(
+      `${REAUTH_PREFIX} Auth flow error: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return false;
   }
 }
@@ -163,6 +195,7 @@ function prefixedChat(chat: ChatIO): ChatIO {
     send: (text: string) => chat.send(`${REAUTH_PREFIX} ${text}`),
     sendRaw: (text: string) => chat.send(text),
     receive: (timeoutMs?: number) => chat.receive(timeoutMs),
+    hideMessage: () => chat.hideMessage(),
     advanceCursor: () => chat.advanceCursor(),
   };
 }

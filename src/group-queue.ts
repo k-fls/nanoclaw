@@ -153,6 +153,11 @@ export class GroupQueue {
     }
   }
 
+  /** Whether a container is currently running for this group. */
+  isActive(groupJid: string): boolean {
+    return this.getGroup(groupJid).active;
+  }
+
   /**
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
@@ -344,22 +349,45 @@ export class GroupQueue {
     }
   }
 
-  async shutdown(_gracePeriodMs: number): Promise<void> {
+  async shutdown(gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Count active containers but don't kill them — they'll finish on their own
-    // via idle timeout or container timeout. The --rm flag cleans them up on exit.
-    // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];
-    for (const [jid, state] of this.groups) {
+    for (const [_jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
         activeContainers.push(state.containerName);
       }
     }
 
+    if (activeContainers.length === 0) {
+      logger.info('GroupQueue shutting down (no active containers)');
+      return;
+    }
+
     logger.info(
-      { activeCount: this.activeCount, detachedContainers: activeContainers },
-      'GroupQueue shutting down (containers detached, not killed)',
+      { activeCount: this.activeCount, containers: activeContainers },
+      'GroupQueue shutting down, stopping containers',
+    );
+
+    // Stop containers in parallel with a timeout
+    const { execFile } = await import('child_process');
+    const { stopContainerArgs } = await import('./container-runtime.js');
+    await Promise.allSettled(
+      activeContainers.map(
+        (name) =>
+          new Promise<void>((resolve) => {
+            const [bin, args] = stopContainerArgs(name);
+            execFile(bin, args, { timeout: gracePeriodMs }, (err) => {
+              if (err) {
+                logger.warn(
+                  { container: name, err },
+                  'Failed to stop container on shutdown',
+                );
+              }
+              resolve();
+            });
+          }),
+      ),
     );
   }
 }

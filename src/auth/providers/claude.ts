@@ -10,14 +10,12 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 
-import {
-  decrypt,
-  encrypt,
-  hasCredential,
-  loadCredential,
-  saveCredential,
-} from '../store.js';
-import { authSessionDir, CLAUDE_CONFIG_STUB, ensureClaudeConfigStub, execInContainer } from '../exec.js';
+import { decrypt, encrypt, loadCredential } from '../store.js';
+import { readKeysFile, writeKeysFile } from '../token-substitute.js';
+import { asCredentialScope, asGroupScope } from '../oauth-types.js';
+import { scopeOf } from '../../types.js';
+import type { CredentialScope, GroupScope } from '../oauth-types.js';
+import { authSessionDir, scopeClaudeDir } from '../exec.js';
 import {
   ensureGpgKey,
   exportPublicKey,
@@ -28,6 +26,7 @@ import {
 import { IDLE_TIMEOUT } from '../../config.js';
 import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
+import { proxyPipe, getProxy } from '../../credential-proxy.js';
 import {
   RESELECT,
   type AuthContext,
@@ -39,7 +38,24 @@ import {
   type FlowResult,
 } from '../types.js';
 
-const SERVICE = 'claude_auth';
+/** Substitute tokens injected into containers — never real credentials. */
+export const PLACEHOLDER_API_KEY = 'sk-ant-api00-placeholder-nanoclaw';
+export const PLACEHOLDER_ACCESS_TOKEN = 'sk-ant-oat01-placeholder-nanoclaw';
+export const PLACEHOLDER_REFRESH_TOKEN = 'sk-ant-ort01-placeholder-nanoclaw';
+
+/**
+ * Default authFields for Claude OAuth tokens stored outside the proxy path
+ * (migration, env import). The refresh endpoint requires client_id; scope is
+ * included so proactive refresh builds a correct request body.
+ *
+ * Values sourced from Claude CLI OAuth packet capture (docs/claude-oauth-packet-capture.md).
+ * The scope matches what captureAuthFields + scopeInclude would produce.
+ */
+export const CLAUDE_DEFAULT_AUTH_FIELDS: Record<string, string> = {
+  client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+  scope:
+    'user:inference user:mcp_servers user:profile user:sessions:claude_code user:file_upload',
+};
 
 export interface AuthErrorInfo {
   /** HTTP status code (401, 403) extracted from the API error. */
@@ -52,7 +68,8 @@ export interface AuthErrorInfo {
  * Expected format:
  *   Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token"},"request_id":"req_..."}
  */
-const API_ERROR_RE = /^Failed to authenticate\. API Error:\s*(\d{3})\s*(\{.*\})$/;
+const API_ERROR_RE =
+  /^Failed to authenticate\. API Error:\s*(\d{3})\s*(\{.*\})$/;
 
 /** HTTP status codes that mean credentials should be replaced. */
 const AUTH_STATUS_CODES = new Set([401, 403]);
@@ -85,6 +102,34 @@ export function classifyAuthError(error?: string): AuthErrorInfo | null {
 /** Check if a container error indicates credentials should be replaced. */
 export function isAuthError(error?: string): boolean {
   return classifyAuthError(error) !== null;
+}
+
+/**
+ * Extract request_id from a Claude API error in streaming output.
+ * The error format is: Failed to authenticate. API Error: 401 {"...","request_id":"req_..."}
+ */
+export function extractStreamRequestId(error: string): string | null {
+  const m = API_ERROR_RE.exec(error.trim());
+  if (!m) return null;
+  try {
+    const body = JSON.parse(m[2]);
+    return typeof body.request_id === 'string' ? body.request_id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract request_id from an upstream Anthropic API error response body.
+ * The body is raw JSON: {"type":"error","error":{...},"request_id":"req_..."}
+ */
+export function extractUpstreamRequestId(responseBody: string): string | null {
+  try {
+    const body = JSON.parse(responseBody);
+    return typeof body.request_id === 'string' ? body.request_id : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Check if a user reply is a cancel/decline. */
@@ -124,13 +169,13 @@ const URL_WAIT_MS = 60_000;
 /** How long to wait for the code delivery mechanism to become available. */
 const DELIVERY_DETECT_MS = 30_000;
 
-interface CodeDeliveryHandler {
+export interface CodeDeliveryHandler {
   /** OAuth URL to show the user. */
   oauthUrl: string;
   /** User-facing instructions for completing the auth flow. */
   instructions: string;
   /** Deliver the user's response (code or redirect URL) to the CLI. */
-  deliver(userInput: string): Promise<{ ok: boolean; error?: string }>;
+  deliver(userInput: string): Promise<{ done: boolean; response?: string }>;
 }
 
 /** ANSI escape sequence pattern. */
@@ -142,20 +187,27 @@ function stripAnsi(text: string): string {
 }
 
 /**
- * Check if a TCP port is open on localhost (tries IPv4, then IPv6).
+ * Check if a TCP port is open on a given host.
  * Returns true if a connection is established within timeoutMs.
  */
-export function isPortOpen(port: number, timeoutMs = 3000): Promise<boolean> {
+export function isPortOpen(
+  port: number,
+  timeoutMs: number,
+  host: string,
+): Promise<boolean> {
   return new Promise((resolve) => {
-    const tryConnect = (host: string, cb: (ok: boolean) => void) => {
-      const sock = net.createConnection({ host, port, timeout: timeoutMs });
-      sock.once('connect', () => { sock.destroy(); cb(true); });
-      sock.once('error', () => { sock.destroy(); cb(false); });
-      sock.once('timeout', () => { sock.destroy(); cb(false); });
-    };
-    tryConnect('127.0.0.1', (ok) => {
-      if (ok) return resolve(true);
-      tryConnect('::1', resolve);
+    const sock = net.createConnection({ host, port, timeout: timeoutMs });
+    sock.once('connect', () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.once('error', () => {
+      sock.destroy();
+      resolve(false);
+    });
+    sock.once('timeout', () => {
+      sock.destroy();
+      resolve(false);
     });
   });
 }
@@ -175,7 +227,9 @@ export function parseCallbackUrl(
     const state = url.searchParams.get('state');
     const port = url.port ? parseInt(url.port, 10) : null;
     if (code && state && port) return { code, state, port };
-  } catch { /* not a valid URL */ }
+  } catch {
+    /* not a valid URL */
+  }
   return null;
 }
 
@@ -219,7 +273,8 @@ function waitForPatternOrExit(
 }
 
 /** OAuth URL pattern for Anthropic/Claude domains. */
-const OAUTH_URL_RE = /https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com)\S+/;
+const OAUTH_URL_RE =
+  /https:\/\/(?:console\.anthropic\.com|claude\.ai|platform\.claude\.com|claude\.com\/cai\/oauth)\S+/;
 
 /**
  * Detect how the CLI is ready to receive the auth code and return a handler.
@@ -238,6 +293,7 @@ export function detectCodeDelivery(
   timeoutMs: number,
   handle: ExecHandle,
   stdoutOauthUrl: string,
+  containerIP: string,
   pastePrompt: RegExp | null = DEFAULT_PASTE_PROMPT_RE,
 ): Promise<CodeDeliveryHandler | null> {
   const oauthUrlPath = path.join(authIpcDir, OAUTH_URL_FILE);
@@ -262,18 +318,22 @@ export function detectCodeDelivery(
       try {
         const url = fs.readFileSync(oauthUrlPath, 'utf-8').trim();
         if (url) {
-          const portMatch = url.match(/redirect_uri=http%3A%2F%2Flocalhost%3A(\d+)/);
+          const portMatch = url.match(
+            /redirect_uri=http%3A%2F%2Flocalhost%3A(\d+)/,
+          );
           if (portMatch) {
             const port = parseInt(portMatch[1], 10);
-            isPortOpen(port, 5000).then((open) => {
-              done(open ? callbackHandler(url, port) : null);
+            isPortOpen(port, 5000, containerIP).then((open) => {
+              done(open ? callbackHandler(url, containerIP, port) : null);
             });
           } else {
             done(null);
           }
           return;
         }
-      } catch { /* not yet */ }
+      } catch {
+        /* not yet */
+      }
     }, 500);
 
     const timer = setTimeout(() => done(null), timeoutMs);
@@ -281,7 +341,10 @@ export function detectCodeDelivery(
   });
 }
 
-function stdinHandler(oauthUrl: string, handle: ExecHandle): CodeDeliveryHandler {
+function stdinHandler(
+  oauthUrl: string,
+  handle: ExecHandle,
+): CodeDeliveryHandler {
   return {
     oauthUrl,
     instructions:
@@ -291,66 +354,100 @@ function stdinHandler(oauthUrl: string, handle: ExecHandle): CodeDeliveryHandler
       // If the user pasted a callback URL instead of a raw code, extract
       // code#state from it so it still works.
       const fromUrl = parseCallbackUrl(userInput);
-      const code = fromUrl ? `${fromUrl.code}#${fromUrl.state}` : userInput.trim();
+      const code = fromUrl
+        ? `${fromUrl.code}#${fromUrl.state}`
+        : userInput.trim();
 
       // Ink processes keystrokes asynchronously. Write the code first,
       // wait for Ink to process it, then send \r (Enter) separately.
       handle.stdin.write(code);
       await new Promise((r) => setTimeout(r, 200));
       handle.stdin.write('\r');
-      return { ok: true };
+      return { done: true };
     },
   };
 }
 
-function callbackHandler(oauthUrl: string, port: number): CodeDeliveryHandler {
+/**
+ * Build a CodeDeliveryHandler that validates user input as a callback URL
+ * and delivers the code+state to a localhost callback port.
+ *
+ * @param host  Target host for the callback (localhost for reauth, container bridge IP for flow queue).
+ * @param port  Expected callback port — mismatches are rejected so the user can retry.
+ * @param cbPath  Callback path (default: /callback).
+ */
+export function callbackHandler(
+  oauthUrl: string,
+  host: string,
+  port: number,
+  cbPath = '/callback',
+): CodeDeliveryHandler {
   return {
     oauthUrl,
     instructions:
       'After authorizing, your browser will redirect to a localhost URL.\n\n' +
       '‼️ *The page will show an error* ("connection refused", "unable to connect", or similar) — ' +
       'this is expected! Do NOT close the tab.\n\n' +
-      'Copy the full URL from your browser\'s *address bar* (it will look like ' +
-      `\`http://localhost:${port}/callback?code=...\`) ` +
+      "Copy the full URL from your browser's *address bar* (it will look like " +
+      `\`http://localhost:${port}${cbPath}?code=...\`) ` +
       'and paste it here (or reply "cancel" to abort):',
     async deliver(userInput: string) {
       const parsed = parseCallbackUrl(userInput);
       if (!parsed) {
         return {
-          ok: false,
-          error: 'Could not parse the URL. Expected a URL like http://localhost:PORT/callback?code=...&state=...',
+          done: false,
+          response:
+            'Could not parse the URL. Expected a URL like http://localhost:PORT/callback?code=...&state=...',
         };
       }
       if (parsed.port !== port) {
         return {
-          ok: false,
-          error: `Port mismatch: URL has port ${parsed.port} but expected ${port}. Make sure you copied the correct URL.`,
+          done: false,
+          response: `Port mismatch: URL has port ${parsed.port} but expected ${port}. Make sure you copied the correct URL.`,
         };
       }
-      const callbackUrl = `http://localhost:${port}/callback?code=${encodeURIComponent(parsed.code)}&state=${encodeURIComponent(parsed.state)}`;
+      const callbackUrl = `http://${host}:${port}${cbPath}?code=${encodeURIComponent(parsed.code)}&state=${encodeURIComponent(parsed.state)}`;
       try {
-        await fetch(callbackUrl);
-        return { ok: true };
+        const res = await fetch(callbackUrl, {
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (res.ok) {
+          return { done: true };
+        }
+        return { done: false, response: `Callback returned ${res.status}` };
       } catch (err) {
         logger.warn({ callbackUrl, err }, 'Callback delivery failed');
-        return { ok: false, error: 'Failed to deliver code to the CLI callback server.' };
+        return {
+          done: true,
+          response: err instanceof Error ? err.message : String(err),
+        };
       }
     },
   };
 }
 
-/** Parse .credentials.json content to extract accessToken and expiry. */
-function parseCredentialsJson(
-  json: string,
-): { accessToken: string; expiresAt: string | null } | null {
+/** Parse .credentials.json content to extract tokens and expiry. */
+function parseCredentialsJson(json: string): {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: string | null;
+} | null {
   try {
     const data = JSON.parse(json);
     // credentials.json may have token at top level or nested under claudeAiOauth
     const creds = data.claudeAiOauth ?? data;
     if (creds.accessToken) {
+      // CLI stores expiresAt as epoch ms (number); normalize to ISO string
+      let expiresAt: string | null = null;
+      if (typeof creds.expiresAt === 'number') {
+        expiresAt = new Date(creds.expiresAt).toISOString();
+      } else if (typeof creds.expiresAt === 'string') {
+        expiresAt = creds.expiresAt;
+      }
       return {
         accessToken: creds.accessToken,
-        expiresAt: creds.expiresAt ?? null,
+        refreshToken: creds.refreshToken,
+        expiresAt,
       };
     }
     return null;
@@ -392,14 +489,24 @@ async function runOAuthFlow(
   flowName: string,
   cliCommand: string,
   pastePrompt: RegExp | null = DEFAULT_PASTE_PROMPT_RE,
-): Promise<{ handle: ExecHandle; output: { value: string }; sessionDir: string } | null> {
-  await ctx.chat.send(`Starting Claude ${flowName} flow. Spawning container...`);
+): Promise<{
+  handle: ExecHandle;
+  output: { value: string };
+  sessionDir: string;
+} | null> {
+  await ctx.chat.send(
+    `Starting Claude ${flowName} flow. Spawning container...`,
+  );
 
   const sessionDir = authSessionDir(ctx.scope);
   const authIpcDir = path.join(sessionDir, 'auth-ipc');
   // Remove stale .oauth-url from previous attempts before container starts
-  try { fs.unlinkSync(path.join(authIpcDir, OAUTH_URL_FILE)); } catch { /* ignore */ }
-  const handle = ctx.exec(
+  try {
+    fs.unlinkSync(path.join(authIpcDir, OAUTH_URL_FILE));
+  } catch {
+    /* ignore */
+  }
+  const { handle, containerIP } = ctx.startExec(
     // Wide PTY so Ink doesn't wrap long URLs/tokens (\r overwrites corrupt them)
     ['script', '-qc', `stty columns 500 && ${cliCommand}`, '/dev/null'],
     claudeExecOpts(sessionDir),
@@ -412,36 +519,55 @@ async function runOAuthFlow(
 
   // Wait for the OAuth URL in stdout
   const urlMatch = await waitForPatternOrExit(
-    output, OAUTH_URL_RE, URL_WAIT_MS, handle,
+    output,
+    OAUTH_URL_RE,
+    URL_WAIT_MS,
+    handle,
   );
   if (!urlMatch) {
-    await ctx.chat.send('Container exited or timed out before providing OAuth URL.');
+    await ctx.chat.send(
+      'Container exited or timed out before providing OAuth URL.',
+    );
     handle.kill();
     return null;
   }
 
   // Detect how the CLI will accept the code
   const delivery = await detectCodeDelivery(
-    output, authIpcDir, DELIVERY_DETECT_MS, handle, urlMatch[0], pastePrompt,
+    output,
+    authIpcDir,
+    DELIVERY_DETECT_MS,
+    handle,
+    urlMatch[0],
+    containerIP,
+    pastePrompt,
   );
   if (!delivery) {
-    await ctx.chat.send('Could not detect auth input method. Container may have exited.');
+    await ctx.chat.send(
+      'Could not detect auth input method. Container may have exited.',
+    );
     handle.kill();
     return null;
   }
 
-  await ctx.chat.send(`Open this URL and authorize:\n${delivery.oauthUrl}\n\n${delivery.instructions}`);
+  await ctx.chat.send(
+    `Open this URL and authorize:\n${delivery.oauthUrl}\n\n${delivery.instructions}`,
+  );
 
   const userInput = await receiveOrContainerExit(ctx.chat, handle);
   if (!userInput || isCancelReply(userInput)) {
-    await ctx.chat.send(userInput ? 'Cancelled.' : 'Auth container exited or timed out.');
+    await ctx.chat.send(
+      userInput ? 'Cancelled.' : 'Auth container exited or timed out.',
+    );
     handle.kill();
     return null;
   }
 
   const delivered = await delivery.deliver(userInput);
-  if (!delivered.ok) {
-    await ctx.chat.send(`Failed to deliver auth code. ${delivered.error ?? ''}`);
+  if (!delivered.done) {
+    await ctx.chat.send(
+      `Failed to deliver auth code. ${delivered.response ?? ''}`,
+    );
     handle.kill();
     return null;
   }
@@ -449,26 +575,228 @@ async function runOAuthFlow(
   return { handle, output, sessionDir };
 }
 
+// ── Migration: claude_auth.json → claude.keys.json ──────────────────
+
+/** Provider ID used as the keys file name and engine key. */
+export const PROVIDER_ID = 'claude';
+
+/**
+ * If claude.keys.json doesn't exist for a scope but claude_auth.json does,
+ * extract the access/refresh tokens and write them to claude.keys.json.
+ * Called once at startup per scope.
+ */
+export function migrateClaudeCredentials(scope: string): void {
+  const credScope = asCredentialScope(scope);
+  // Already migrated?
+  const existing = readKeysFile(credScope, PROVIDER_ID);
+  if (Object.keys(existing).length > 0) return;
+
+  const cred = loadCredential(scope, 'claude_auth');
+  if (!cred) return;
+
+  const plaintext = decrypt(cred.token);
+
+  switch (cred.auth_type) {
+    case 'api_key':
+      writeKeysFile(credScope, PROVIDER_ID, {
+        api_key: {
+          value: encrypt(plaintext),
+          updated_ts: Date.now(),
+          expires_ts: 0,
+        },
+      });
+      break;
+
+    case 'setup_token':
+      writeKeysFile(credScope, PROVIDER_ID, {
+        access: {
+          value: encrypt(plaintext),
+          updated_ts: Date.now(),
+          expires_ts: 0,
+        },
+      });
+      break;
+
+    case 'auth_login': {
+      const parsed = parseCredentialsJson(plaintext);
+      if (!parsed) return;
+      const keys: Record<
+        string,
+        {
+          value: string;
+          updated_ts: number;
+          expires_ts: number;
+          authFields?: Record<string, string>;
+        }
+      > = {
+        access: {
+          value: encrypt(parsed.accessToken),
+          updated_ts: Date.now(),
+          expires_ts: parsed.expiresAt
+            ? new Date(parsed.expiresAt).getTime()
+            : 0,
+          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
+        },
+      };
+      if (parsed.refreshToken) {
+        keys.refresh = {
+          value: encrypt(parsed.refreshToken),
+          updated_ts: Date.now(),
+          expires_ts: 0,
+          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
+        };
+      }
+      writeKeysFile(credScope, PROVIDER_ID, keys);
+      break;
+    }
+  }
+
+  logger.info(
+    { scope, authType: cred.auth_type },
+    'Migrated claude_auth.json → claude.keys.json',
+  );
+}
+
+// ── Host handlers ────────────────────────────────────────────────────
+
+/**
+ * Claude's OAuthProvider definition for the universal handler system.
+ * Registered programmatically (not via discovery file) because Claude
+ * has provider-specific logic: x-api-key mode, credential store integration.
+ */
+
+export const CLAUDE_SUBSTITUTE_CONFIG = {
+  prefixLen: 14,
+  suffixLen: 0,
+  delimiters: '-_',
+};
+
+export const CLAUDE_OAUTH_PROVIDER: import('../oauth-types.js').OAuthProvider =
+  {
+    id: PROVIDER_ID,
+    rules: [
+      // Token exchange at platform.claude.com
+      {
+        anchor: 'platform.claude.com',
+        pathPattern: /^\/v1\/oauth\/token$/,
+        mode: 'token-exchange' as const,
+      },
+      // Bearer-swap for API calls at api.anthropic.com
+      {
+        anchor: 'api.anthropic.com',
+        pathPattern: /^\//,
+        mode: 'bearer-swap' as const,
+      },
+      // Bearer-swap for platform.claude.com (non-token paths)
+      {
+        anchor: 'platform.claude.com',
+        pathPattern: /^\//,
+        mode: 'bearer-swap' as const,
+      },
+    ],
+    scopeKeys: [],
+    substituteConfig: CLAUDE_SUBSTITUTE_CONFIG,
+    refreshStrategy: 'proactive',
+    tokenFieldCapture: {
+      scopeInclude: ['user:file_upload'],
+    },
+  };
+
+/**
+ * Register an additional API host for Claude from a base URL string.
+ * Parses the URL, skips if it's the default host, and registers the
+ * universal handler + x-api-key wrapper. Safe to call with invalid URLs.
+ */
+export function registerClaudeBaseUrl(
+  baseUrl: string,
+  tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
+  createUniversalHandler: typeof import('../universal-oauth-handler.js').createHandler,
+): void {
+  try {
+    const hostname = new URL(baseUrl).hostname;
+    if (!hostname || hostname === 'api.anthropic.com') return;
+
+    const proxy = getProxy();
+    const rule = {
+      anchor: hostname,
+      pathPattern: /^\//,
+      mode: 'bearer-swap' as const,
+    };
+    const handler = createUniversalHandler(
+      CLAUDE_OAUTH_PROVIDER,
+      rule,
+      tokenEngine,
+    );
+    const hostPattern = new RegExp(`^${hostname.replace(/\./g, '\\.')}$`);
+    proxy.registerAnchoredRule(
+      hostname,
+      hostPattern,
+      rule.pathPattern,
+      handler,
+      CLAUDE_OAUTH_PROVIDER.id,
+    );
+  } catch {
+    /* invalid URL, ignore */
+  }
+}
+
+// ── Container credential provisioning ─────────────────────────────────
+
+/**
+ * True if the given credential scope has a Claude OAuth subscription token
+ * (role = 'access'). Remote control requires a subscription — API keys won't work.
+ */
+export function hasSubscriptionCredential(scope: CredentialScope): boolean {
+  const keys = readKeysFile(scope, PROVIDER_ID);
+  return !!keys.access;
+}
+
+// ── Provider ────────────────────────────────────────────────────────
+
 export const claudeProvider: CredentialProvider = {
-  service: SERVICE,
+  id: PROVIDER_ID,
   displayName: 'Claude',
 
-  hasAuth(scope: string): boolean {
-    return hasCredential(scope, SERVICE);
-  },
-
-  importEnv(scope: string): void {
-    if (hasCredential(scope, SERVICE)) return;
-
+  importEnv(
+    scope: CredentialScope,
+    resolver: import('../oauth-types.js').TokenResolver,
+  ): void {
     const envVars = readEnvFile(ENV_FALLBACK_KEYS);
     if (Object.keys(envVars).length === 0) return;
 
-    saveCredential(scope, SERVICE, {
-      auth_type: 'env_fallback',
-      token: encrypt(JSON.stringify(envVars)),
-      expires_at: null,
-      updated_at: new Date().toISOString(),
-    });
+    const credScope = scope;
+
+    // API key takes priority over OAuth tokens (mode exclusivity)
+    if (envVars.ANTHROPIC_API_KEY) {
+      resolver.store(
+        envVars.ANTHROPIC_API_KEY,
+        PROVIDER_ID,
+        credScope,
+        'api_key',
+      );
+    } else {
+      if (envVars.CLAUDE_CODE_OAUTH_TOKEN) {
+        resolver.store(
+          envVars.CLAUDE_CODE_OAUTH_TOKEN,
+          PROVIDER_ID,
+          credScope,
+          'access',
+          0,
+          CLAUDE_DEFAULT_AUTH_FIELDS,
+        );
+      }
+      // ANTHROPIC_AUTH_TOKEN is a fallback for access token
+      if (!envVars.CLAUDE_CODE_OAUTH_TOKEN && envVars.ANTHROPIC_AUTH_TOKEN) {
+        resolver.store(
+          envVars.ANTHROPIC_AUTH_TOKEN,
+          PROVIDER_ID,
+          credScope,
+          'access',
+          0,
+          CLAUDE_DEFAULT_AUTH_FIELDS,
+        );
+      }
+    }
 
     logger.info(
       { scope, keys: Object.keys(envVars) },
@@ -476,197 +804,137 @@ export const claudeProvider: CredentialProvider = {
     );
   },
 
-  provision(scope: string): { env: Record<string, string> } {
-    const cred = loadCredential(scope, SERVICE);
-    if (!cred) return { env: {} };
-
-    const plaintext = decrypt(cred.token);
+  provision(
+    group: import('../../types.js').RegisteredGroup,
+    tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
+  ): { env: Record<string, string> } {
+    const scope = scopeOf(group);
     const env: Record<string, string> = {};
 
-    switch (cred.auth_type) {
-      case 'api_key':
-        env.ANTHROPIC_API_KEY = plaintext;
-        break;
-
-      case 'setup_token':
-        env.CLAUDE_CODE_OAUTH_TOKEN = plaintext;
-        break;
-
-      case 'auth_login': {
-        const parsed = parseCredentialsJson(plaintext);
-        if (!parsed) {
-          logger.warn({ scope }, 'Failed to parse stored .credentials.json');
-          return { env: {} };
-        }
-        if (isExpired(parsed.expiresAt)) {
-          logger.debug({ scope }, 'Claude access token expired');
-          return { env: {} };
-        }
-        env.CLAUDE_CODE_OAUTH_TOKEN = parsed.accessToken;
-        break;
-      }
-
-      case 'env_fallback': {
-        // Stored from .env import — token is JSON { key: value, ... }
-        try {
-          const vars = JSON.parse(plaintext) as Record<string, string>;
-          Object.assign(env, vars);
-        } catch {
-          logger.warn({ scope }, 'Failed to parse env_fallback credential');
-        }
-        break;
-      }
-
-      default:
-        // Unknown auth_type — try as raw OAuth token
-        env.CLAUDE_CODE_OAUTH_TOKEN = plaintext;
+    // API key mode
+    const subApiKey = tokenEngine.getOrCreateSubstitute(
+      PROVIDER_ID,
+      {},
+      scope,
+      CLAUDE_SUBSTITUTE_CONFIG,
+      'api_key',
+    );
+    if (subApiKey) {
+      env.ANTHROPIC_API_KEY = subApiKey;
+      return { env };
     }
+
+    // OAuth mode
+    const subAccess = tokenEngine.getOrCreateSubstitute(
+      PROVIDER_ID,
+      {},
+      scope,
+      CLAUDE_SUBSTITUTE_CONFIG,
+      'access',
+    );
+    if (!subAccess) return { env };
+
+    env.CLAUDE_CODE_OAUTH_TOKEN = subAccess;
+    const subRefresh = tokenEngine.getOrCreateSubstitute(
+      PROVIDER_ID,
+      {},
+      scope,
+      CLAUDE_SUBSTITUTE_CONFIG,
+      'refresh',
+    );
+
+    // Write .credentials.json with substitute tokens + real expiresAt
+    // Engine resolves the source scope (own or borrowed from default)
+    const expiresAt = tokenEngine.getKeyExpiry(scope, PROVIDER_ID, 'access');
+    const credentialsJson = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: subAccess,
+        refreshToken: subRefresh ?? subAccess,
+        expiresAt,
+      },
+    });
+    const credsPath = scopeClaudeDir(scope, '.credentials.json');
+    fs.mkdirSync(path.dirname(credsPath), { recursive: true });
+    fs.writeFileSync(credsPath, credentialsJson);
 
     return { env };
   },
 
-  storeResult(scope: string, result: FlowResult): void {
-    saveCredential(scope, SERVICE, {
-      auth_type: result.auth_type,
-      token: encrypt(result.token),
-      expires_at: result.expires_at ?? null,
-      updated_at: new Date().toISOString(),
-    });
-  },
+  storeResult(
+    scope: CredentialScope,
+    result: FlowResult,
+    tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
+  ): void {
+    const credScope = scope;
+    const resolver = tokenEngine.getResolver();
+    const groupScope = asGroupScope(scope);
 
-  async refresh(scope: string, force?: boolean): Promise<boolean> {
-    const cred = loadCredential(scope, SERVICE);
-    if (!cred || cred.auth_type !== 'auth_login') return false;
+    switch (result.auth_type) {
+      case 'api_key':
+        tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
+        resolver.store(result.token, PROVIDER_ID, credScope, 'api_key');
+        break;
+      case 'setup_token':
+        tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
+        resolver.store(result.token, PROVIDER_ID, credScope, 'access');
+        break;
+      case 'auth_login': {
+        const parsed = parseCredentialsJson(result.token);
+        if (!parsed)
+          throw new Error('Invalid .credentials.json in auth_login result');
 
-    const plaintext = decrypt(cred.token);
-    const parsed = parseCredentialsJson(plaintext);
-    if (!parsed) return false;
-    if (!force && !isExpired(parsed.expiresAt)) return true; // still valid
-
-    logger.info({ scope }, 'Claude access token expired, attempting refresh');
-
-    const sessionDir = authSessionDir(scope);
-    const credsPath = path.join(sessionDir, '.credentials.json');
-
-    // Write stored credentials so the CLI can use the refresh token
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.writeFileSync(credsPath, plaintext, 'utf-8');
-
-    // The CLI expects .claude.json at /home/node/.claude.json (sibling to
-    // .claude/) and loops if missing. Use the shared stub.
-    ensureClaudeConfigStub();
-
-    // Run claude interactively to trigger OAuth token refresh.
-    // `claude -p` does NOT refresh tokens — it just fails with 401.
-    // Interactive mode triggers the refresh on startup, before any prompt.
-    const REFRESH_TIMEOUT_MS = 30_000;
-    const handle = execInContainer(
-      ['script', '-qc', 'stty columns 500 && claude', '/dev/null'],
-      sessionDir,
-      {
-        timeoutMs: REFRESH_TIMEOUT_MS,
-        mounts: [
-          [sessionDir, '/home/node/.claude'],
-          [CLAUDE_CONFIG_STUB, '/home/node/.claude.json', 'ro'],
-        ],
-      },
-    );
-
-    // Wait for the CLI to initialize and refresh the token, then exit.
-    const output = { value: '' };
-    handle.onStdout((chunk) => { output.value += chunk; });
-
-    // Wait for the input prompt (❯ or similar) indicating CLI is ready
-    const ready = await waitForPattern(output, /[❯>]\s/, REFRESH_TIMEOUT_MS);
-    if (!ready) {
-      logger.warn({ scope, output: output.value.slice(-500) }, 'Refresh: CLI did not become ready in time');
-      handle.kill();
-      return false;
-    }
-
-    // Send a prompt that triggers an LLM call — the token refresh
-    // happens when the CLI hits the API, not on startup.
-    handle.stdin.write('reply: hi');
-    await new Promise((r) => setTimeout(r, 200));
-    handle.stdin.write('\r');
-
-    // Wait for: (a) expected "hi" reply = success, (b) any other output = done
-    // (refresh already happened or errored), (c) timeout = give up.
-    const outputAtSend = output.value.length;
-    const anyOutputOrHi = await new Promise<'hi' | 'other' | 'timeout'>((resolve) => {
-      const check = setInterval(() => {
-        const newOutput = output.value.slice(outputAtSend);
-        if (/hi/i.test(newOutput)) {
-          clearInterval(check);
-          clearTimeout(timer);
-          resolve('hi');
-        } else if (newOutput.trim().length > 0) {
-          clearInterval(check);
-          clearTimeout(timer);
-          resolve('other');
+        // The auth container runs through the credential proxy, so the tokens
+        // in .credentials.json are substitutes (the proxy replaced real tokens
+        // in the exchange response). Verify they resolve — this confirms the
+        // proxy captured authFields alongside the real tokens.
+        const accessResolved = tokenEngine.resolveSubstitute(
+          parsed.accessToken,
+          groupScope,
+        );
+        if (!accessResolved) {
+          throw new Error(
+            'Auth flow token exchange did not go through credential proxy — ' +
+              'access token is not a known substitute. authFields were not captured.',
+          );
         }
-      }, 500);
-      const timer = setTimeout(() => {
-        clearInterval(check);
-        resolve('timeout');
-      }, REFRESH_TIMEOUT_MS);
-    });
-
-    if (anyOutputOrHi === 'hi') {
-      logger.info({ scope }, 'Refresh: got expected reply');
-    } else if (anyOutputOrHi === 'other') {
-      logger.warn({ scope, output: output.value.slice(-500) }, 'Refresh: got unexpected output');
-    } else {
-      logger.warn({ scope }, 'Refresh: timed out waiting for response');
+        if (parsed.refreshToken) {
+          const refreshResolved = tokenEngine.resolveSubstitute(
+            parsed.refreshToken,
+            groupScope,
+          );
+          if (!refreshResolved) {
+            throw new Error(
+              'Auth flow token exchange did not go through credential proxy — ' +
+                'refresh token is not a known substitute. authFields were not captured.',
+            );
+          }
+        }
+        // Proxy already stored real tokens with authFields via generateSubstitute.
+        // No clearCredentials — would destroy the proxy-stored tokens.
+        break;
+      }
+      default:
+        throw new Error(`Unknown auth_type: ${result.auth_type}`);
     }
 
-    handle.kill();
-    const result = await handle.wait();
-
-    // Read back potentially refreshed credentials and clean up plaintext
-    let updatedCreds: string | null = null;
-    try {
-      updatedCreds = fs.readFileSync(credsPath, 'utf-8');
-    } catch { /* not found */ }
-    try { fs.unlinkSync(credsPath); } catch { /* ignore */ }
-
-    if (!updatedCreds) {
-      logger.warn({ scope }, 'Refresh: .credentials.json missing after container run');
-      return false;
-    }
-
-    const updatedParsed = parseCredentialsJson(updatedCreds);
-    if (!updatedParsed) {
-      logger.warn({ scope }, 'Refresh: invalid .credentials.json after container run');
-      return false;
-    }
-
-    if (isExpired(updatedParsed.expiresAt)) {
-      logger.warn({ scope, exitCode: result.exitCode }, 'Refresh: token still expired after container run');
-      return false;
-    }
-
-    // Store the refreshed credentials
-    saveCredential(scope, SERVICE, {
-      auth_type: 'auth_login',
-      token: encrypt(updatedCreds),
-      expires_at: updatedParsed.expiresAt,
-      updated_at: new Date().toISOString(),
-    });
-
-    logger.info({ scope }, 'Claude access token refreshed successfully');
-    return true;
+    tokenEngine.pruneStaleRefs(groupScope, PROVIDER_ID);
   },
 
-  authOptions(_scope: string): AuthOption[] {
+  authOptions(scope: CredentialScope): AuthOption[] {
     return [
       // --- Setup token (long-lived, requires browser) ---
       {
         label: 'Setup token (requires Claude subscription)',
-        description: 'Generates a long-lived OAuth token via `claude setup-token`. Token is valid for ~1 year.',
+        description:
+          'Generates a long-lived OAuth token via `claude setup-token`. Token is valid for ~1 year.',
         provider: this,
+        credentialScope: scope,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
-          const handle = await runOAuthFlow(ctx, 'setup token', 'claude setup-token');
+          const handle = await runOAuthFlow(
+            ctx,
+            'setup token',
+            'claude setup-token',
+          );
           if (!handle) return null;
 
           const result = await handle.handle.wait();
@@ -685,19 +953,30 @@ export const claudeProvider: CredentialProvider = {
           }
 
           await ctx.chat.send('Setup token obtained successfully.');
-          return { auth_type: 'setup_token', token: tokenMatch[0], expires_at: null };
+          return {
+            auth_type: 'setup_token',
+            token: tokenMatch[0],
+            expires_at: null,
+          };
         },
       },
 
       // --- Auth login (auto-refreshes, requires browser) ---
       {
         label: 'Auth login (requires Claude subscription)',
-        description: 'Standard OAuth login via `claude auth login`. Does not expose long-term refresh key to agent. Access keys are refreshed automatically.',
+        description:
+          'Standard OAuth login via `claude auth login`. Does not expose long-term refresh key to agent. Access keys are refreshed automatically.',
         provider: this,
+        credentialScope: scope,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           // auth-login with xdg-open returning 0 won't show a paste prompt,
           // so disable stdin detection (null pastePrompt) — callback only.
-          const handle = await runOAuthFlow(ctx, 'auth login', 'claude auth login', null);
+          const handle = await runOAuthFlow(
+            ctx,
+            'auth login',
+            'claude auth login',
+            null,
+          );
           if (!handle) return null;
 
           await handle.handle.wait();
@@ -716,7 +995,10 @@ export const claudeProvider: CredentialProvider = {
             await ctx.chat.send(
               'Failed to read .credentials.json from container. Check logs.',
             );
-            logger.error({ credsPath }, 'Auth login: .credentials.json not found');
+            logger.error(
+              { credsPath },
+              'Auth login: .credentials.json not found',
+            );
             return null;
           }
 
@@ -738,14 +1020,16 @@ export const claudeProvider: CredentialProvider = {
       // --- API key (GPG-encrypted only) ---
       {
         label: 'API key (GPG-encryption required)',
-        description: 'Requires use of a GPG tool to pass the key in chat safely.',
+        description:
+          'Requires use of a GPG tool to pass the key in chat safely.',
         provider: this,
+        credentialScope: scope,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
           if (!isGpgAvailable()) {
             await ctx.chat.send(
               'GPG is not installed on the server. ' +
-              'Install it (`apt install gnupg` or `brew install gnupg`) and try again.\n\n' +
-              'Returning to auth method selection...',
+                'Install it (`apt install gnupg` or `brew install gnupg`) and try again.\n\n' +
+                'Returning to auth method selection...',
             );
             return RESELECT;
           }
@@ -758,8 +1042,8 @@ export const claudeProvider: CredentialProvider = {
             logger.warn({ err }, 'GPG key setup failed');
             await ctx.chat.send(
               'Failed to initialize GPG keypair: ' +
-              `${err instanceof Error ? err.message : String(err)}\n\n` +
-              'Returning to auth method selection...',
+                `${err instanceof Error ? err.message : String(err)}\n\n` +
+                'Returning to auth method selection...',
             );
             return RESELECT;
           }
@@ -769,23 +1053,23 @@ export const claudeProvider: CredentialProvider = {
 
           await ctx.chat.send(
             'Paste a GPG-encrypted Anthropic API key.\n\n' +
-            '*Step 1.* Import the public key above.\n\n' +
-            'With local GPG:\n' +
-            '```\n' +
-            'gpg --import <<\'EOF\'\n' +
-            '... (paste the key) ...\n' +
-            'EOF\n' +
-            '```\n\n' +
-            '*Step 2.* Encrypt your API key:\n' +
-            '```\n' +
-            'echo "sk-ant-api..." | gpg --encrypt --armor --recipient nanoclaw\n' +
-            '```\n\n' +
-            'If you don\'t have GPG installed locally, you can use an online PGP tool ' +
-            '(import the public key, encrypt your API key, copy the armored output):\n' +
-            '• https://www.devglan.com/online-tools/pgp-encryption-decryption\n' +
-            '• https://keychainpgp.github.io/\n' +
-            '⚠️ Online tools see your key in plaintext — use only if you trust the site.\n\n' +
-            '*Step 3.* Paste the encrypted output here. Reply "cancel" to abort.',
+              '*Step 1.* Import the public key above.\n\n' +
+              'With local GPG:\n' +
+              '```\n' +
+              "gpg --import <<'EOF'\n" +
+              '... (paste the key) ...\n' +
+              'EOF\n' +
+              '```\n\n' +
+              '*Step 2.* Encrypt your API key:\n' +
+              '```\n' +
+              'echo "sk-ant-api..." | gpg --encrypt --armor --recipient nanoclaw\n' +
+              '```\n\n' +
+              "If you don't have GPG installed locally, you can use an online PGP tool " +
+              '(import the public key, encrypt your API key, copy the armored output):\n' +
+              '• https://www.devglan.com/online-tools/pgp-encryption-decryption\n' +
+              '• https://keychainpgp.github.io/\n' +
+              '⚠️ Online tools see your key in plaintext — use only if you trust the site.\n\n' +
+              '*Step 3.* Paste the encrypted output here. Reply "cancel" to abort.',
           );
 
           const reply = await ctx.chat.receive(IDLE_TIMEOUT - 30_000);
@@ -794,8 +1078,8 @@ export const claudeProvider: CredentialProvider = {
           if (!isPgpMessage(reply)) {
             await ctx.chat.send(
               'Expected a GPG-encrypted message (-----BEGIN PGP MESSAGE-----).\n' +
-              'Plaintext keys are not accepted for security reasons.\n\n' +
-              'Returning to auth method selection...',
+                'Plaintext keys are not accepted for security reasons.\n\n' +
+                'Returning to auth method selection...',
             );
             return RESELECT;
           }

@@ -44,10 +44,11 @@ export function ensureGpgKey(scope: string): void {
 
   // Check if key already exists
   try {
-    const result = execFileSync(GPG_BIN, [
-      '--homedir', home,
-      '--list-keys', KEY_ID,
-    ], { stdio: 'pipe' });
+    const result = execFileSync(
+      GPG_BIN,
+      ['--homedir', home, '--list-keys', KEY_ID],
+      { stdio: 'pipe' },
+    );
     if (result.length > 0) return;
   } catch {
     // Key doesn't exist — generate it
@@ -65,11 +66,10 @@ export function ensureGpgKey(scope: string): void {
     '%commit',
   ].join('\n');
 
-  execFileSync(GPG_BIN, [
-    '--homedir', home,
-    '--batch',
-    '--gen-key',
-  ], { input: batchConfig, stdio: ['pipe', 'pipe', 'pipe'] });
+  execFileSync(GPG_BIN, ['--homedir', home, '--batch', '--gen-key'], {
+    input: batchConfig,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 
   logger.info({ scope }, 'Generated GPG keypair');
 }
@@ -77,23 +77,22 @@ export function ensureGpgKey(scope: string): void {
 /** Export the ASCII-armored public key for the given scope. */
 export function exportPublicKey(scope: string): string {
   const home = gpgHome(scope);
-  const result = execFileSync(GPG_BIN, [
-    '--homedir', home,
-    '--armor',
-    '--export', KEY_ID,
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const result = execFileSync(
+    GPG_BIN,
+    ['--homedir', home, '--armor', '--export', KEY_ID],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
   return result.toString('utf-8').trim();
 }
 
 /** Decrypt a PGP-encrypted message. Returns the plaintext. */
 export function gpgDecrypt(scope: string, ciphertext: string): string {
   const home = gpgHome(scope);
-  const result = execFileSync(GPG_BIN, [
-    '--homedir', home,
-    '--batch',
-    '--quiet',
-    '--decrypt',
-  ], { input: ciphertext, stdio: ['pipe', 'pipe', 'pipe'] });
+  const result = execFileSync(
+    GPG_BIN,
+    ['--homedir', home, '--batch', '--quiet', '--decrypt'],
+    { input: ciphertext, stdio: ['pipe', 'pipe', 'pipe'] },
+  );
   return result.toString('utf-8').trim();
 }
 

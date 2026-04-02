@@ -1,6 +1,7 @@
 /**
  * Per-group credential system — type definitions.
  */
+import type { CredentialScope, GroupScope } from './oauth-types.js';
 
 /** On-disk credential file format at ~/.config/nanoclaw/credentials/{scope}/{service}.json */
 export interface StoredCredential {
@@ -10,36 +11,57 @@ export interface StoredCredential {
   updated_at: string;
 }
 
+/** Re-export HostHandler so providers can reference it without importing credential-proxy directly. */
+export type { HostHandler } from '../credential-proxy.js';
+
 /** Pluggable per-service credential provider. */
 export interface CredentialProvider {
-  /** File basename: 'claude_oauth', 'anthropic_api_key' */
-  service: string;
+  /** Provider ID matching the keys file name: 'claude', etc. */
+  id: string;
   displayName: string;
 
-  /** Does this scope have usable credentials? */
-  hasAuth(scope: string): boolean;
-
-  /** Produce env vars for a container run. */
-  provision(scope: string): { env: Record<string, string> };
-
-  /** After flow completes, parse raw result and save to store. */
-  storeResult(scope: string, result: FlowResult): void;
+  /**
+   * Host rules for transparent proxy routing.
+   * @param host — matched against hostname at connection time (TLS termination).
+   * @param pattern — matched against "host/path" at request time (handler selection).
+   */
+  hostRules?: Array<{
+    hostPattern: RegExp;
+    pathPattern: RegExp;
+    handler: import('../credential-proxy.js').HostHandler;
+  }>;
 
   /**
-   * Refresh credentials if needed. Returns true if credentials are usable.
-   * @param force - skip expiry check and always attempt refresh (e.g. after auth error).
+   * Produce substitute env vars for a container run.
+   * Returns substitutes only — never real tokens. The engine resolves
+   * credential source scopes internally using the group's flags.
    */
-  refresh?(scope: string, force?: boolean): Promise<boolean>;
+  provision(
+    group: import('../types.js').RegisteredGroup,
+    tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
+  ): {
+    env: Record<string, string>;
+  };
+
+  /** After flow completes, parse raw result and save via token engine. */
+  storeResult(
+    scope: CredentialScope,
+    result: FlowResult,
+    tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
+  ): void;
 
   /** Auth options for the reauth menu. */
-  authOptions(scope: string): AuthOption[];
+  authOptions(scope: CredentialScope): AuthOption[];
 
   /**
    * Import credentials from .env into the given scope.
-   * Each provider reads its own keys from .env internally.
+   * Each provider reads its own keys from .env and writes to the resolver.
    * Called once at startup for the 'default' scope.
    */
-  importEnv?(scope: string): void;
+  importEnv?(
+    scope: CredentialScope,
+    resolver: import('./oauth-types.js').TokenResolver,
+  ): void;
 }
 
 /** A single auth method offered by a provider. */
@@ -48,6 +70,8 @@ export interface AuthOption {
   /** Extra explanatory text shown below the label in the menu. */
   description?: string;
   provider: CredentialProvider;
+  /** Where credentials will be stored. Set by the caller of authOptions(). */
+  credentialScope: CredentialScope;
   run(ctx: AuthContext): Promise<FlowResult | null>;
 }
 
@@ -57,12 +81,19 @@ export interface AuthExecOpts {
   mounts?: Array<[string, string, string?]>;
 }
 
+/** Result of spawning an auth container. */
+export interface ExecContainerResult {
+  handle: ExecHandle;
+  /** Container's bridge IP for callback delivery to the CLI's OAuth server. */
+  containerIP: string;
+}
+
 /** Context passed to auth option run(). */
 export interface AuthContext {
-  /** The credential scope (group folder or 'default'). */
-  scope: string;
-  /** Spawn a command inside a container. Caller doesn't know it's Docker. */
-  exec(command: string[], opts?: AuthExecOpts): ExecHandle;
+  /** Where credentials are stored (group folder or 'default'). */
+  scope: CredentialScope;
+  /** Spawn a command inside a container. Returns handle + bridge IP for callback delivery. */
+  startExec(command: string[], opts?: AuthExecOpts): ExecContainerResult;
   /** Send/receive messages to the user through normal routing. */
   chat: ChatIO;
 }
@@ -78,6 +109,8 @@ export interface ChatIO {
   sendRaw(text: string): Promise<void>;
   /** Polls main group messages. Returns null on timeout. */
   receive(timeoutMs?: number): Promise<string | null>;
+  /** Mark the last received message as hidden so the agent never sees it. */
+  hideMessage(): void;
   /** Advance the message cursor past all current messages so the agent won't re-see them. */
   advanceCursor(): void;
 }

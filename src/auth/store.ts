@@ -22,7 +22,11 @@ const CONFIG_DIR = path.join(
   '.config',
   'nanoclaw',
 );
-const CREDENTIALS_DIR = path.join(CONFIG_DIR, 'credentials');
+export const CREDENTIALS_DIR = path.join(CONFIG_DIR, 'credentials');
+export const DISCOVERY_CACHE_DIR = path.join(
+  CREDENTIALS_DIR,
+  'oauth-discovery',
+);
 const KEY_PATH = path.join(CONFIG_DIR, 'encryption-key');
 
 let encryptionKey: Buffer | null = null;
@@ -48,7 +52,9 @@ export function initCredentialStore(): void {
 
 function requireKey(): Buffer {
   if (!encryptionKey) {
-    throw new Error('CredentialStore not initialized — call initCredentialStore() first');
+    throw new Error(
+      'CredentialStore not initialized — call initCredentialStore() first',
+    );
   }
   return encryptionKey;
 }
@@ -129,7 +135,9 @@ export function decrypt(value: string): string {
   const key = requireKey();
   const storedHash = parts[2];
   if (storedHash && storedHash !== keyHash16()) {
-    throw new Error('Encryption key mismatch — credential was encrypted with a different key');
+    throw new Error(
+      'Encryption key mismatch — credential was encrypted with a different key',
+    );
   }
   const iv = Buffer.from(parts[3], 'base64');
   const tag = Buffer.from(parts[4], 'base64');

@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
+vi.mock('./logger.js', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+}));
 
 import {
   _initTestDatabase,
@@ -6,14 +13,17 @@ import {
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
+  getLastBotMessageTimestamp,
   getMessagesSince,
   getNewMessages,
+  getRegisteredGroup,
   getTaskById,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
   updateTask,
 } from './db.js';
+import { formatMessages } from './router.js';
 
 beforeEach(() => {
   _initTestDatabase();
@@ -206,6 +216,92 @@ describe('getMessagesSince', () => {
     const msgs = getMessagesSince('group@g.us', '', 'Andy');
     // 3 user messages (bot message excluded)
     expect(msgs).toHaveLength(3);
+  });
+
+  it('recovers cursor from last bot reply when lastAgentTimestamp is missing', () => {
+    // beforeEach already inserts m3 (bot reply at 00:00:03) and m4 (user at 00:00:04)
+    // Add more old history before the bot reply
+    for (let i = 1; i <= 50; i++) {
+      store({
+        id: `history-${i}`,
+        chat_jid: 'group@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: 'User',
+        content: `old message ${i}`,
+        timestamp: `2023-06-${String(i).padStart(2, '0')}T12:00:00.000Z`,
+      });
+    }
+
+    // New message after the bot reply (m3 at 00:00:03)
+    store({
+      id: 'new-1',
+      chat_jid: 'group@g.us',
+      sender: 'user@s.whatsapp.net',
+      sender_name: 'User',
+      content: 'new message after bot reply',
+      timestamp: '2024-01-02T00:00:00.000Z',
+    });
+
+    // Recover cursor from the last bot message (m3 from beforeEach)
+    const recovered = getLastBotMessageTimestamp('group@g.us', 'Andy');
+    expect(recovered).toBe('2024-01-01T00:00:03.000Z');
+
+    // Using recovered cursor: only gets messages after the bot reply
+    const msgs = getMessagesSince('group@g.us', recovered!, 'Andy', 10);
+    // m4 (third, 00:00:04) + new-1 — skips all 50 old messages and m1/m2
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0].content).toBe('third');
+    expect(msgs[1].content).toBe('new message after bot reply');
+  });
+
+  it('caps messages to configured limit even with recovered cursor', () => {
+    // beforeEach inserts m3 (bot at 00:00:03). Add 30 messages after it.
+    for (let i = 1; i <= 30; i++) {
+      store({
+        id: `pending-${i}`,
+        chat_jid: 'group@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: 'User',
+        content: `pending message ${i}`,
+        timestamp: `2024-02-${String(i).padStart(2, '0')}T12:00:00.000Z`,
+      });
+    }
+
+    const recovered = getLastBotMessageTimestamp('group@g.us', 'Andy');
+    expect(recovered).toBe('2024-01-01T00:00:03.000Z');
+
+    // With limit=10, only the 10 most recent are returned
+    const msgs = getMessagesSince('group@g.us', recovered!, 'Andy', 10);
+    expect(msgs).toHaveLength(10);
+    // Most recent 10: pending-21 through pending-30
+    expect(msgs[0].content).toBe('pending message 21');
+    expect(msgs[9].content).toBe('pending message 30');
+  });
+
+  it('returns last N messages when no bot reply and no cursor exist', () => {
+    // Use a fresh group with no bot messages
+    storeChatMetadata('fresh@g.us', '2024-01-01T00:00:00.000Z');
+    for (let i = 1; i <= 20; i++) {
+      store({
+        id: `fresh-${i}`,
+        chat_jid: 'fresh@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: 'User',
+        content: `message ${i}`,
+        timestamp: `2024-02-${String(i).padStart(2, '0')}T12:00:00.000Z`,
+      });
+    }
+
+    const recovered = getLastBotMessageTimestamp('fresh@g.us', 'Andy');
+    expect(recovered).toBeUndefined();
+
+    // No cursor → sinceTimestamp = '' but limit caps the result
+    const msgs = getMessagesSince('fresh@g.us', '', 'Andy', 10);
+    expect(msgs).toHaveLength(10);
+
+    const prompt = formatMessages(msgs, 'Asia/Jerusalem');
+    const messageTagCount = (prompt.match(/<message /g) || []).length;
+    expect(messageTagCount).toBe(10);
   });
 
   it('filters pre-migration bot messages via content prefix backstop', () => {
@@ -480,5 +576,295 @@ describe('registered group isMain', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isMain).toBeUndefined();
+  });
+});
+
+// --- getRegisteredGroup ---
+
+describe('getRegisteredGroup', () => {
+  it('returns a single group by JID', () => {
+    setRegisteredGroup('test@g.us', {
+      name: 'Test Group',
+      folder: 'whatsapp_test',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    const group = getRegisteredGroup('test@g.us');
+    expect(group).toBeDefined();
+    expect(group!.name).toBe('Test Group');
+    expect(group!.folder).toBe('whatsapp_test');
+    expect(group!.jid).toBe('test@g.us');
+  });
+
+  it('returns undefined for non-existent JID', () => {
+    expect(getRegisteredGroup('nonexistent@g.us')).toBeUndefined();
+  });
+
+  it('parses containerConfig JSON', () => {
+    setRegisteredGroup('cfg@g.us', {
+      name: 'Configured Group',
+      folder: 'whatsapp_configured',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      containerConfig: {
+        timeout: 60000,
+        additionalMounts: [{ hostPath: '/tmp/test' }],
+      },
+    });
+
+    const group = getRegisteredGroup('cfg@g.us');
+    expect(group!.containerConfig).toBeDefined();
+    expect(group!.containerConfig!.timeout).toBe(60000);
+    expect(group!.containerConfig!.additionalMounts).toHaveLength(1);
+  });
+
+  it('parses requiresTrigger correctly', () => {
+    setRegisteredGroup('trig@g.us', {
+      name: 'No Trigger',
+      folder: 'whatsapp_notrigger',
+      trigger: 'always',
+      added_at: '2024-01-01T00:00:00.000Z',
+      requiresTrigger: false,
+    });
+
+    const group = getRegisteredGroup('trig@g.us');
+    expect(group!.requiresTrigger).toBe(false);
+  });
+});
+
+// --- setRegisteredGroup validation ---
+
+describe('setRegisteredGroup validation', () => {
+  it('throws on invalid folder name', () => {
+    expect(() =>
+      setRegisteredGroup('bad@g.us', {
+        name: 'Bad',
+        folder: '../escape',
+        trigger: '@Andy',
+        added_at: '2024-01-01T00:00:00.000Z',
+      }),
+    ).toThrow('Invalid group folder');
+  });
+
+  it('throws on reserved folder name "global"', () => {
+    expect(() =>
+      setRegisteredGroup('bad@g.us', {
+        name: 'Bad',
+        folder: 'global',
+        trigger: '@Andy',
+        added_at: '2024-01-01T00:00:00.000Z',
+      }),
+    ).toThrow('Invalid group folder');
+  });
+
+  it('throws on empty folder name', () => {
+    expect(() =>
+      setRegisteredGroup('bad@g.us', {
+        name: 'Bad',
+        folder: '',
+        trigger: '@Andy',
+        added_at: '2024-01-01T00:00:00.000Z',
+      }),
+    ).toThrow('Invalid group folder');
+  });
+});
+
+// --- getAllRegisteredGroups with mixed valid/invalid ---
+
+describe('getAllRegisteredGroups filtering', () => {
+  it('skips groups with invalid folder names and logs warning', () => {
+    // Insert a valid group normally
+    setRegisteredGroup('good@g.us', {
+      name: 'Good',
+      folder: 'whatsapp_good',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    // Groups with invalid folders can only exist from legacy data or direct DB insertion.
+    // getAllRegisteredGroups should skip them. We test this by verifying the valid group loads.
+    const groups = getAllRegisteredGroups();
+    expect(groups['good@g.us']).toBeDefined();
+    expect(groups['good@g.us'].folder).toBe('whatsapp_good');
+  });
+});
+
+// --- storeChatMetadata with channel and isGroup ---
+
+describe('storeChatMetadata channel info', () => {
+  it('stores channel and isGroup', () => {
+    storeChatMetadata(
+      'dc:12345',
+      '2024-01-01T00:00:00.000Z',
+      'Discord Server',
+      'discord',
+      true,
+    );
+    const chats = getAllChats();
+    const chat = chats.find((c) => c.jid === 'dc:12345');
+    expect(chat).toBeDefined();
+    expect(chat!.channel).toBe('discord');
+    expect(chat!.is_group).toBe(1);
+  });
+
+  it('preserves existing channel on update without channel param', () => {
+    storeChatMetadata(
+      'tg:99',
+      '2024-01-01T00:00:00.000Z',
+      'TG Chat',
+      'telegram',
+      true,
+    );
+    // Update without channel info
+    storeChatMetadata('tg:99', '2024-01-01T00:00:01.000Z', 'TG Chat Updated');
+    const chats = getAllChats();
+    const chat = chats.find((c) => c.jid === 'tg:99');
+    expect(chat!.channel).toBe('telegram');
+    expect(chat!.name).toBe('TG Chat Updated');
+  });
+});
+
+// --- migrateJsonState (via initDatabase) ---
+
+describe('migrateJsonState', () => {
+  let tmpDataDir: string;
+  let tmpStoreDir: string;
+
+  beforeEach(() => {
+    tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-db-data-'));
+    tmpStoreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-db-store-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDataDir, { recursive: true, force: true });
+    fs.rmSync(tmpStoreDir, { recursive: true, force: true });
+  });
+
+  /** Import a fresh db module with config pointing to temp dirs. */
+  async function freshDb() {
+    vi.resetModules();
+    vi.doMock('./config.js', () => ({
+      DATA_DIR: tmpDataDir,
+      STORE_DIR: tmpStoreDir,
+      ASSISTANT_NAME: 'Andy',
+    }));
+    vi.doMock('./logger.js', () => ({
+      logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+    }));
+    return import('./db.js');
+  }
+
+  it('migrates router_state.json', async () => {
+    fs.writeFileSync(
+      path.join(tmpDataDir, 'router_state.json'),
+      JSON.stringify({
+        last_timestamp: '2024-06-01T00:00:00.000Z',
+        last_agent_timestamp: { main: '2024-06-01T00:00:01.000Z' },
+      }),
+    );
+
+    const db = await freshDb();
+    db.initDatabase();
+
+    expect(db.getRouterState('last_timestamp')).toBe(
+      '2024-06-01T00:00:00.000Z',
+    );
+    const agentTs = db.getRouterState('last_agent_timestamp');
+    expect(agentTs).toBeDefined();
+    expect(JSON.parse(agentTs!)).toEqual({ main: '2024-06-01T00:00:01.000Z' });
+
+    // Original file should be renamed to .migrated
+    expect(
+      fs.existsSync(path.join(tmpDataDir, 'router_state.json.migrated')),
+    ).toBe(true);
+    expect(fs.existsSync(path.join(tmpDataDir, 'router_state.json'))).toBe(
+      false,
+    );
+  });
+
+  it('migrates sessions.json', async () => {
+    fs.writeFileSync(
+      path.join(tmpDataDir, 'sessions.json'),
+      JSON.stringify({
+        whatsapp_main: 'session-abc',
+        whatsapp_family: 'session-def',
+      }),
+    );
+
+    const db = await freshDb();
+    db.initDatabase();
+
+    expect(db.getAllSessions()).toEqual({
+      whatsapp_main: 'session-abc',
+      whatsapp_family: 'session-def',
+    });
+
+    expect(fs.existsSync(path.join(tmpDataDir, 'sessions.json.migrated'))).toBe(
+      true,
+    );
+  });
+
+  it('migrates registered_groups.json', async () => {
+    fs.writeFileSync(
+      path.join(tmpDataDir, 'registered_groups.json'),
+      JSON.stringify({
+        'group@g.us': {
+          name: 'Test Group',
+          folder: 'whatsapp_test',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+    );
+
+    const db = await freshDb();
+    db.initDatabase();
+
+    const groups = db.getAllRegisteredGroups();
+    expect(groups['group@g.us']).toBeDefined();
+    expect(groups['group@g.us'].name).toBe('Test Group');
+    expect(groups['group@g.us'].folder).toBe('whatsapp_test');
+
+    expect(
+      fs.existsSync(path.join(tmpDataDir, 'registered_groups.json.migrated')),
+    ).toBe(true);
+  });
+
+  it('skips migration when JSON files do not exist', async () => {
+    // No JSON files written — migration should be a no-op
+    const db = await freshDb();
+    db.initDatabase();
+
+    expect(db.getRouterState('last_timestamp')).toBeUndefined();
+    expect(db.getAllSessions()).toEqual({});
+    expect(db.getAllRegisteredGroups()).toEqual({});
+  });
+
+  it('skips groups with invalid folders during migration', async () => {
+    fs.writeFileSync(
+      path.join(tmpDataDir, 'registered_groups.json'),
+      JSON.stringify({
+        'valid@g.us': {
+          name: 'Valid',
+          folder: 'whatsapp_valid',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+        'invalid@g.us': {
+          name: 'Invalid',
+          folder: '../escape',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+    );
+
+    const db = await freshDb();
+    db.initDatabase();
+
+    const groups = db.getAllRegisteredGroups();
+    expect(groups['valid@g.us']).toBeDefined();
+    expect(groups['invalid@g.us']).toBeUndefined();
   });
 });

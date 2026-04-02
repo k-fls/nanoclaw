@@ -11,7 +11,13 @@ This skill adds per-group encrypted credential management. Instead of a single s
 
 ### Check if already applied
 
-Read `.nanoclaw/state.yaml`. If `group-auth` is in `applied_skills`, skip to Phase 3 (Verify).
+Check if the skill branch has already been merged:
+
+```bash
+git log --merges --oneline | grep -i group-auth
+```
+
+If already merged, skip to Phase 3 (Verify).
 
 ### Check current auth method
 
@@ -25,34 +31,29 @@ Existing `.env` credentials will be automatically imported into the default scop
 
 ## Phase 2: Apply Code Changes
 
-### Initialize skills system (if needed)
-
-If `.nanoclaw/` directory doesn't exist yet:
+### Merge the skill branch
 
 ```bash
-npx tsx scripts/apply-skill.ts --init
+git fetch origin skill/group-auth
+git merge origin/skill/group-auth
 ```
 
-### Apply the skill
+If merge conflicts occur, resolve them. The skill adds/modifies:
+- `src/auth/` module (types, store, registry, exec, gpg, guard, provision, reauth, providers)
+- `container/shims/xdg-open` (blocks browser opening for console-friendly OAuth)
+- `src/config.ts` — reads `NEW_GROUPS_USE_DEFAULT_CREDENTIALS`
+- `src/credential-proxy.ts` — makes the proxy group-aware (container IP → group scope, `/claude/` service prefix, pluggable credential resolver)
+- `src/container-runner.ts` — registers container IP with proxy after spawn, sets `ANTHROPIC_BASE_URL` with `/claude` service prefix
+- `src/index.ts` — integrates auth checks, reauth, credential resolver wiring, and initialization
+- `src/types.ts` — adds `useDefaultCredentials` to `ContainerConfig`
+- `.env.example` — adds `NEW_GROUPS_USE_DEFAULT_CREDENTIALS`
+
+### Post-merge
 
 ```bash
-npx tsx scripts/apply-skill.ts .claude/skills/add-group-auth
+npm install
+chmod +x container/shims/xdg-open
 ```
-
-This deterministically:
-- Adds `src/auth/` module (types, store, registry, exec, provision, reauth, providers)
-- Adds `container/shims/xdg-open` (blocks browser opening for console-friendly OAuth)
-- Modifies `src/config.ts` to read `NEW_GROUPS_USE_DEFAULT_CREDENTIALS`
-- Modifies `src/container-runner.ts` to use the new credential store instead of `readSecrets()`
-- Modifies `src/index.ts` to integrate auth checks, reauth, and initialization
-- Modifies `src/types.ts` to add `useDefaultCredentials` to `ContainerConfig`
-- Adds `NEW_GROUPS_USE_DEFAULT_CREDENTIALS` to `.env.example`
-
-If merge conflicts occur, read the intent files:
-- `modify/src/config.ts.intent.md`
-- `modify/src/container-runner.ts.intent.md`
-- `modify/src/index.ts.intent.md`
-- `modify/src/types.ts.intent.md`
 
 ### Validate
 
@@ -112,11 +113,13 @@ NEW_GROUPS_USE_DEFAULT_CREDENTIALS=false
 
 ## How It Works
 
+**Credential proxy**: Containers route all API traffic through a host-side HTTP proxy. Two-axis identification: the URL path prefix identifies the service (`/claude/`, stripped before forwarding upstream), and the container's Docker bridge IP (`req.socket.remoteAddress`) identifies the group. The container-runner registers the IP → group mapping after spawn and unregisters on exit. The proxy looks up the group, resolves credentials from the encrypted store (falling back to `.env`-imported defaults), and injects them into the upstream request. Containers never see real credentials.
+
 **Credential scoping**: Each group's scope is its folder name (e.g., `whatsapp_main`). The `default` scope holds credentials imported from `.env`. Resolution: group-specific → default (if allowed).
 
 **Encryption**: AES-256-GCM with a machine-local key at `~/.config/nanoclaw/encryption-key`. Auto-generated on first run (256-bit, hex, mode 0600).
 
-**Reauth flow**: When credentials are missing or an auth error is detected, a numbered menu is sent to the user through the messaging channel. Options: API key (paste), Setup token (OAuth), Auth login (OAuth).
+**Reauth flow**: When credentials are missing or an auth error is detected, a numbered menu is sent to the user through the messaging channel. Options: API key (GPG-encrypted), Setup token (OAuth), Auth login (OAuth).
 
 ## Troubleshooting
 

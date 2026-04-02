@@ -30,15 +30,24 @@ vi.mock('../env.js', () => ({
   readEnvFile: vi.fn(() => ({})),
 }));
 
-const { initCredentialStore, encrypt, saveCredential } = await import(
-  './store.js'
-);
-const { registerProvider, getAllProviders } = await import('./registry.js');
-const { resolveSecrets, importEnvToDefault } = await import('./provision.js');
-const { readEnvFile } = await import('../env.js');
+const { initCredentialStore } = await import('./store.js');
+const { registerProvider } = await import('./registry.js');
+const { importEnvToDefault, createAccessCheck, provisionEnvVars } =
+  await import('./provision.js');
 
 import type { CredentialProvider } from './types.js';
 import type { RegisteredGroup } from '../types.js';
+import type { OAuthProvider } from './oauth-types.js';
+import {
+  asGroupScope,
+  asCredentialScope,
+  DEFAULT_CREDENTIAL_SCOPE,
+  DEFAULT_SUBSTITUTE_CONFIG,
+} from './oauth-types.js';
+import {
+  TokenSubstituteEngine,
+  PersistentTokenResolver,
+} from './token-substitute.js';
 
 function makeGroup(
   folder: string,
@@ -49,180 +58,78 @@ function makeGroup(
     folder,
     trigger: '@Andy',
     added_at: new Date().toISOString(),
-    containerConfig: opts?.useDefaultCredentials !== undefined
-      ? { useDefaultCredentials: opts.useDefaultCredentials }
-      : undefined,
+    containerConfig:
+      opts?.useDefaultCredentials !== undefined
+        ? { useDefaultCredentials: opts.useDefaultCredentials }
+        : undefined,
     isMain: opts?.isMain,
   };
 }
 
-describe('resolveSecrets', () => {
+describe('createAccessCheck', () => {
+  const groups = new Map<string, RegisteredGroup>();
+  const resolver = (folder: string) => groups.get(folder);
+  const check = createAccessCheck(resolver);
+
   beforeEach(() => {
-    initCredentialStore();
+    groups.clear();
   });
 
-  it('returns empty when no credentials exist and default not allowed', () => {
-    const group = makeGroup('no-creds');
-    const env = resolveSecrets(group);
-    expect(env).toEqual({});
+  it('allows default scope when useDefaultCredentials is true', () => {
+    groups.set(
+      'my-group',
+      makeGroup('my-group', { useDefaultCredentials: true }),
+    );
+    expect(check(asGroupScope('my-group'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
+      true,
+    );
   });
 
-  it('returns group-specific credentials', () => {
-    // Register a test provider
-    const provider: CredentialProvider = {
-      service: 'test-resolve',
-      displayName: 'Test',
-      hasAuth: (scope) => scope === 'my-group',
-      provision: (scope) => {
-        if (scope === 'my-group') return { env: { MY_KEY: 'group-value' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('my-group');
-    const env = resolveSecrets(group);
-    expect(env.MY_KEY).toBe('group-value');
+  it('allows default scope for main group (implicit useDefaultCredentials)', () => {
+    groups.set('main-group', makeGroup('main-group', { isMain: true }));
+    expect(check(asGroupScope('main-group'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
+      true,
+    );
   });
 
-  it('falls back to default scope when useDefaultCredentials is true', () => {
-    const provider: CredentialProvider = {
-      service: 'test-default',
-      displayName: 'Test',
-      hasAuth: (scope) => scope === 'default',
-      provision: (scope) => {
-        if (scope === 'default') return { env: { DEF_KEY: 'default-value' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('some-group', { useDefaultCredentials: true });
-    const env = resolveSecrets(group);
-    expect(env.DEF_KEY).toBe('default-value');
+  it('denies default scope when useDefaultCredentials is false', () => {
+    groups.set('locked', makeGroup('locked', { useDefaultCredentials: false }));
+    expect(check(asGroupScope('locked'), DEFAULT_CREDENTIAL_SCOPE)).toBe(false);
   });
 
-  it('defaults to useDefaultCredentials=true for main group', () => {
-    const provider: CredentialProvider = {
-      service: 'test-main-default',
-      displayName: 'Test',
-      hasAuth: (scope) => scope === 'default',
-      provision: (scope) => {
-        if (scope === 'default') return { env: { MAIN_KEY: 'from-default' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    // Main group with no containerConfig at all — should still get default creds
-    const group = makeGroup('main-group', { isMain: true });
-    const env = resolveSecrets(group);
-    expect(env.MAIN_KEY).toBe('from-default');
+  it('denies default scope when useDefaultCredentials is not set (non-main)', () => {
+    groups.set('regular', makeGroup('regular'));
+    expect(check(asGroupScope('regular'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
+      false,
+    );
   });
 
-  it('does NOT default to useDefaultCredentials=true for non-main group', () => {
-    const provider: CredentialProvider = {
-      service: 'test-nonmain-default',
-      displayName: 'Test',
-      hasAuth: () => false,
-      provision: (scope) => {
-        if (scope === 'default') return { env: { NONMAIN: 'blocked' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    // Non-main group with no containerConfig — should NOT get default creds
-    const group = makeGroup('other-group');
-    const env = resolveSecrets(group);
-    expect(env.NONMAIN).toBeUndefined();
+  it('denies default scope for main with explicit useDefaultCredentials=false', () => {
+    groups.set(
+      'main-locked',
+      makeGroup('main-locked', { isMain: true, useDefaultCredentials: false }),
+    );
+    expect(check(asGroupScope('main-locked'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
+      false,
+    );
   });
 
-  it('explicit useDefaultCredentials=false overrides isMain', () => {
-    const provider: CredentialProvider = {
-      service: 'test-main-override',
-      displayName: 'Test',
-      hasAuth: () => false,
-      provision: (scope) => {
-        if (scope === 'default') return { env: { OVERRIDE: 'blocked' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('main-locked', { isMain: true, useDefaultCredentials: false });
-    const env = resolveSecrets(group);
-    expect(env.OVERRIDE).toBeUndefined();
+  it('denies default scope for unknown group', () => {
+    expect(check(asGroupScope('nonexistent'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
+      false,
+    );
   });
 
-  it('does NOT fall back to default when useDefaultCredentials is not set', () => {
-    const provider: CredentialProvider = {
-      service: 'test-no-default',
-      displayName: 'Test',
-      hasAuth: () => false,
-      provision: (scope) => {
-        if (scope === 'default')
-          return { env: { BLOCKED_KEY: 'should-not-see' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('isolated-group');
-    const env = resolveSecrets(group);
-    expect(env.BLOCKED_KEY).toBeUndefined();
+  it('allows own scope', () => {
+    groups.set('self', makeGroup('self'));
+    expect(check(asGroupScope('self'), asCredentialScope('self'))).toBe(true);
   });
 
-  it('does NOT fall back to default when useDefaultCredentials is false', () => {
-    const provider: CredentialProvider = {
-      service: 'test-explicit-false',
-      displayName: 'Test',
-      hasAuth: () => false,
-      provision: (scope) => {
-        if (scope === 'default')
-          return { env: { NOPE: 'blocked' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('locked-group', { useDefaultCredentials: false });
-    const env = resolveSecrets(group);
-    expect(env.NOPE).toBeUndefined();
-  });
-
-  it('group scope takes precedence over default', () => {
-    const provider: CredentialProvider = {
-      service: 'test-precedence',
-      displayName: 'Test',
-      hasAuth: () => true,
-      provision: (scope) => {
-        if (scope === 'priority-group') return { env: { K: 'group' } };
-        if (scope === 'default') return { env: { K: 'default' } };
-        return { env: {} as Record<string, string> };
-      },
-      storeResult: () => {},
-      authOptions: () => [],
-    };
-    registerProvider(provider);
-
-    const group = makeGroup('priority-group', { useDefaultCredentials: true });
-    const env = resolveSecrets(group);
-    expect(env.K).toBe('group');
+  it('denies cross-group non-default scope', () => {
+    groups.set('group-a', makeGroup('group-a'));
+    expect(check(asGroupScope('group-a'), asCredentialScope('group-b'))).toBe(
+      false,
+    );
   });
 });
 
@@ -234,9 +141,8 @@ describe('importEnvToDefault', () => {
   it('calls importEnv on providers that have it', () => {
     const importEnvMock = vi.fn();
     const provider: CredentialProvider = {
-      service: 'test-import',
+      id: 'test-import',
       displayName: 'Test',
-      hasAuth: () => false,
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],
@@ -244,22 +150,144 @@ describe('importEnvToDefault', () => {
     };
     registerProvider(provider);
 
-    importEnvToDefault();
-    expect(importEnvMock).toHaveBeenCalledWith('default');
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    importEnvToDefault(engine);
+    expect(importEnvMock).toHaveBeenCalledWith('default', expect.anything());
   });
 
   it('skips providers without importEnv', () => {
     const provider: CredentialProvider = {
-      service: 'test-no-import',
+      id: 'test-no-import',
       displayName: 'Test',
-      hasAuth: () => false,
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],
     };
     registerProvider(provider);
 
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
     // Should not throw
-    importEnvToDefault();
+    importEnvToDefault(engine);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// provisionEnvVars
+// ---------------------------------------------------------------------------
+
+function makeOAuthProvider(envVars?: Record<string, string>): OAuthProvider {
+  return {
+    id: 'test-provider',
+    rules: [],
+    scopeKeys: [],
+    substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+    refreshStrategy: 'redirect',
+    envVars,
+  };
+}
+
+describe('provisionEnvVars', () => {
+  beforeEach(() => {
+    initCredentialStore();
+  });
+
+  it('provisions access token as env var', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({ GH_TOKEN: 'access' });
+    const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+
+    engine.generateSubstitute(
+      realToken,
+      'test-provider',
+      {},
+      asGroupScope('my-group'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      'access',
+    );
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    expect(env.GH_TOKEN).toBeDefined();
+    expect(env.GH_TOKEN).not.toBe(realToken);
+    expect(env.GH_TOKEN.length).toBe(realToken.length);
+  });
+
+  it('provisions multiple env vars for the same role', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({
+      GH_TOKEN: 'access',
+      GITHUB_TOKEN: 'access',
+    });
+    const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+
+    engine.generateSubstitute(
+      realToken,
+      'test-provider',
+      {},
+      asGroupScope('my-group'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      'access',
+    );
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    expect(env.GH_TOKEN).toBeDefined();
+    expect(env.GITHUB_TOKEN).toBeDefined();
+    // Both should resolve to the same substitute
+    expect(env.GH_TOKEN).toBe(env.GITHUB_TOKEN);
+  });
+
+  it('skips env var when no token exists for the role', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({ GH_TOKEN: 'access' });
+
+    // No tokens stored
+    const env = provisionEnvVars(provider, makeGroup('empty-group'), engine);
+    expect(env).toEqual({});
+  });
+
+  it('refuses to provision refresh tokens', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({ REFRESH: 'refresh' });
+    const realRefresh = 'refresh_abcdefghijklmnopqrstuvwxyz1234567890abcdefgh';
+
+    engine.generateSubstitute(
+      realRefresh,
+      'test-provider',
+      {},
+      asGroupScope('my-group'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      'refresh',
+    );
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    // refresh role is not in BEARER_SWAP_ROLES — must not appear
+    expect(env.REFRESH).toBeUndefined();
+    expect(env).toEqual({});
+  });
+
+  it('returns empty when provider has no envVars mapping', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider(); // no envVars
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    expect(env).toEqual({});
+  });
+
+  it('provisions api_key role', () => {
+    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const provider = makeOAuthProvider({ API_KEY: 'api_key' });
+    const realKey = 'key_xabcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+
+    engine.generateSubstitute(
+      realKey,
+      'test-provider',
+      {},
+      asGroupScope('my-group'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      'api_key',
+    );
+
+    const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
+    expect(env.API_KEY).toBeDefined();
+    expect(env.API_KEY).not.toBe(realKey);
   });
 });

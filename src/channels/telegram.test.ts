@@ -18,12 +18,18 @@ vi.mock('../config.js', () => ({
 }));
 
 // Mock media module
-const mockProcessInboundMedia = vi.fn<(groupFolder: string, opts: Record<string, unknown>) => any>(
-  () => ({
-    content: '[Image]',
-    attachments: [{ id: 'telegram:media:test-123', filename: 'photo.jpg', mimetype: 'image/jpeg' }],
-  }),
-);
+const mockProcessInboundMedia = vi.fn<
+  (groupFolder: string, opts: Record<string, unknown>) => any
+>(() => ({
+  content: '[Image]',
+  attachments: [
+    {
+      id: 'telegram:media:test-123',
+      filename: 'photo.jpg',
+      mimetype: 'image/jpeg',
+    },
+  ],
+}));
 vi.mock('../media.js', () => ({
   processInboundMedia: (groupFolder: string, opts: Record<string, unknown>) =>
     mockProcessInboundMedia(groupFolder, opts),
@@ -47,7 +53,10 @@ const botRef = vi.hoisted(() => ({ current: null as any }));
 
 vi.mock('grammy', () => ({
   InputFile: class MockInputFile {
-    constructor(public source: any, public filename?: string) {}
+    constructor(
+      public source: any,
+      public filename?: string,
+    ) {}
   },
   Bot: class MockBot {
     token: string;
@@ -177,12 +186,28 @@ function createMediaCtx(overrides: {
       message_id: overrides.messageId ?? 1,
       caption: overrides.caption,
       // Default media-type properties for handlers that access them
-      photo: [{ file_id: 'photo_123', file_size: 12345, width: 800, height: 600 }],
+      photo: [
+        { file_id: 'photo_123', file_size: 12345, width: 800, height: 600 },
+      ],
       video: { file_id: 'video_123', mime_type: 'video/mp4', file_size: 50000 },
       voice: { file_id: 'voice_123', mime_type: 'audio/ogg', file_size: 8000 },
-      audio: { file_id: 'audio_123', mime_type: 'audio/mpeg', file_size: 30000 },
-      document: { file_id: 'doc_123', mime_type: 'application/pdf', file_name: 'file', file_size: 20000 },
-      sticker: { file_id: 'sticker_123', is_animated: false, emoji: '😂', file_size: 5000 },
+      audio: {
+        file_id: 'audio_123',
+        mime_type: 'audio/mpeg',
+        file_size: 30000,
+      },
+      document: {
+        file_id: 'doc_123',
+        mime_type: 'application/pdf',
+        file_name: 'file',
+        file_size: 20000,
+      },
+      sticker: {
+        file_id: 'sticker_123',
+        is_animated: false,
+        emoji: '😂',
+        file_size: 5000,
+      },
       ...(overrides.extra || {}),
     },
     me: { username: 'andy_ai_bot' },
@@ -592,7 +617,9 @@ describe('TelegramChannel', () => {
         'tg:100200300',
         expect.objectContaining({
           content: '[Image]',
-          attachments: [expect.objectContaining({ id: 'telegram:media:test-123' })],
+          attachments: [
+            expect.objectContaining({ id: 'telegram:media:test-123' }),
+          ],
         }),
       );
     });
@@ -634,7 +661,9 @@ describe('TelegramChannel', () => {
         'tg:100200300',
         expect.objectContaining({
           content: '[Image]',
-          attachments: [expect.objectContaining({ id: 'telegram:media:test-123' })],
+          attachments: [
+            expect.objectContaining({ id: 'telegram:media:test-123' }),
+          ],
         }),
       );
     });
@@ -660,7 +689,9 @@ describe('TelegramChannel', () => {
         'tg:100200300',
         expect.objectContaining({
           content: '[Image]',
-          attachments: [expect.objectContaining({ id: 'telegram:media:test-123' })],
+          attachments: [
+            expect.objectContaining({ id: 'telegram:media:test-123' }),
+          ],
         }),
       );
     });
@@ -686,7 +717,9 @@ describe('TelegramChannel', () => {
         'tg:100200300',
         expect.objectContaining({
           content: '[Image]',
-          attachments: [expect.objectContaining({ id: 'telegram:media:test-123' })],
+          attachments: [
+            expect.objectContaining({ id: 'telegram:media:test-123' }),
+          ],
         }),
       );
     });
@@ -713,7 +746,9 @@ describe('TelegramChannel', () => {
         'tg:100200300',
         expect.objectContaining({
           content: '[Image]',
-          attachments: [expect.objectContaining({ id: 'telegram:media:test-123' })],
+          attachments: [
+            expect.objectContaining({ id: 'telegram:media:test-123' }),
+          ],
         }),
       );
     });
@@ -739,7 +774,9 @@ describe('TelegramChannel', () => {
         'tg:100200300',
         expect.objectContaining({
           content: '[Image]',
-          attachments: [expect.objectContaining({ id: 'telegram:media:test-123' })],
+          attachments: [
+            expect.objectContaining({ id: 'telegram:media:test-123' }),
+          ],
         }),
       );
     });
