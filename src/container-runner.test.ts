@@ -43,6 +43,7 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      cpSync: vi.fn(),
     },
   };
 });
@@ -114,6 +115,7 @@ vi.mock('child_process', async () => {
 import {
   runContainerAgent,
   buildVolumeMounts,
+  snapshotContainerFiles,
   ContainerOutput,
 } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
@@ -290,5 +292,22 @@ describe('buildVolumeMounts home persistence', () => {
     const homeMount = mounts.find((m) => m.containerPath === '/home/node');
     expect(homeMount).toBeDefined();
     expect(homeMount!.readonly).toBe(false);
+  });
+});
+
+describe('snapshotContainerFiles', () => {
+  beforeEach(() => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.cpSync).mockClear();
+  });
+
+  it('copies with preserveTimestamps so agent-runner mtime check works', () => {
+    snapshotContainerFiles();
+
+    expect(fs.cpSync).toHaveBeenCalledWith(
+      expect.stringContaining('container'),
+      expect.stringContaining('snapshot'),
+      { recursive: true, preserveTimestamps: true },
+    );
   });
 });
