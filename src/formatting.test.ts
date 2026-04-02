@@ -411,7 +411,29 @@ describe('decodeMessages fallback for slack channel without decodeInbound', () =
     expect(decoded.content).toBe('click here');
   });
 
-  it('decodes user mentions', () => {
+  it('strips duplicate mention after @trigger (old slack.ts compat)', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: `@${ASSISTANT_NAME} <@U0AKKG67T7X> /auth` })],
+      ch,
+    );
+    expect(decoded.content).toBe(`@${ASSISTANT_NAME} /auth`);
+  });
+
+  it('strips duplicate but decodes remaining standalone mentions', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [
+        makeMsg({
+          content: `@${ASSISTANT_NAME} <@U0AKKG67T7X> <@U0AKKG67T7X>`,
+        }),
+      ],
+      ch,
+    );
+    expect(decoded.content).toBe(`@${ASSISTANT_NAME} @U0AKKG67T7X`);
+  });
+
+  it('decodes standalone mention when no preceding @mention', () => {
     const ch = slackChannelWithoutDecode();
     const [decoded] = decodeMessages(
       [makeMsg({ content: '<@U0AKKG67T7X> hello' })],

@@ -65,14 +65,19 @@ export function findChannel(
  * mentions but cannot resolve bot mention → trigger (needs bot user ID).
  */
 function fallbackSlackDecode(text: string): string {
-  return text
-    .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, '$2')
-    .replace(/<(https?:\/\/[^>]+)>/g, '$1')
-    .replace(/<#C[A-Z0-9]+\|([^>]+)>/g, '#$1')
-    .replace(/<@(U[A-Z0-9]+)>/g, '@$1')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
+  return (
+    text
+      .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, '$2')
+      .replace(/<(https?:\/\/[^>]+)>/g, '$1')
+      .replace(/<#C[A-Z0-9]+\|([^>]+)>/g, '#$1')
+      // Strip duplicate: @mention <@UXXXX> → @mention (old slack.ts trigger prepend)
+      .replace(/(@\S+)\s+<@U[A-Z0-9]+>/g, '$1')
+      // Decode remaining standalone mentions: <@UXXXX> → @UXXXX
+      .replace(/<@(U[A-Z0-9]+)>/g, '@$1')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+  );
 }
 
 /** Decode channel-specific encoding from stored messages (e.g. Slack entities). */
