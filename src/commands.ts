@@ -152,8 +152,7 @@ interface CommandRunContext {
 
 interface Command {
   description: string;
-  mainOnly?: boolean;
-  /** Custom access check. Return a rejection message, or null to allow. */
+  /** Access check. Return a rejection message, or null to allow. */
   access?: (ctx: CommandRunContext) => string | null;
   run: (args: string, ctx: CommandRunContext) => CommandResult;
 }
@@ -217,7 +216,8 @@ const commands: Record<string, Command> = {
   tap: {
     description:
       'Manage proxy tap logger — /tap all [exclude=...] | /tap <domain> <path> | /tap stop | /tap',
-    mainOnly: true,
+    access: (ctx) =>
+      ctx.group.isMain ? null : '/tap is only available in the main group.',
     run(args) {
       // /tap (no args) — show current state
       if (!args) {
@@ -359,8 +359,9 @@ const commands: Record<string, Command> = {
 
   help: {
     description: 'Show available commands',
-    run() {
+    run(_args, ctx) {
       const lines = Object.entries(commands)
+        .filter(([, cmd]) => !cmd.access || cmd.access(ctx) === null)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, cmd]) => `/${name} — ${cmd.description}`);
       return reply(lines.join('\n\n'));
@@ -382,9 +383,6 @@ export function handleCommand(
     return reply(
       `Unknown command: /${name}\nType /help for available commands.`,
     );
-  }
-  if (cmd.mainOnly && !runCtx.group.isMain) {
-    return reply(`/${name} is only available in the main group.`);
   }
   if (cmd.access) {
     const rejection = cmd.access(runCtx);
