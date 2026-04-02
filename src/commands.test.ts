@@ -216,6 +216,15 @@ describe('extractCommand', () => {
     expect(result!.cmd.args).toBe('claude');
   });
 
+  it('extracts command when duplicate mention is stripped by fallback', () => {
+    // Old slack.ts stores: @NanoClaw <@UBOTID> /auth
+    // After fallback decode: @NanoClaw /auth
+    const messages = [msg(`@${ASSISTANT_NAME} /auth`)];
+    const result = extractCommand(messages, false);
+    expect(result).not.toBeNull();
+    expect(result!.cmd.name).toBe('auth');
+  });
+
   it('fails when raw Slack encoding is not decoded', () => {
     // Without decoding, <@UBOTID> doesn't match trigger pattern
     const messages = [msg('<@U0AKKG67T7X> /auth')];
