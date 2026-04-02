@@ -244,6 +244,7 @@ describe('MITM via CredentialProxy CONNECT', () => {
           asGroupScope('test-group'),
         );
       },
+      'test-provider',
     );
 
     proxyServer = await proxy.start({

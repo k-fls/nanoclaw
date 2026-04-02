@@ -23,6 +23,7 @@ import { createHandler } from './universal-oauth-handler.js';
 import { registerAuthorizationEndpoint } from './browser-open-handler.js';
 import {
   CLAUDE_OAUTH_PROVIDER,
+  PROVIDER_ID as CLAUDE_PROVIDER_ID,
   migrateClaudeCredentials,
 } from './providers/claude.js';
 import { logger } from '../logger.js';
@@ -39,6 +40,7 @@ export function registerProvider(provider: CredentialProvider): void {
         rule.hostPattern,
         rule.pathPattern,
         rule.handler,
+        provider.id,
       );
     }
   }
@@ -69,6 +71,37 @@ export function getDiscoveryDir(): string {
 
 export function getAllDiscoveryProviderIds(): string[] {
   return [..._discoveryProviders.keys()];
+}
+
+/** Check if a provider ID is registered (builtin or discovery). */
+export function isKnownProvider(id: string): boolean {
+  return registry.has(id) || _discoveryProviders.has(id);
+}
+
+/**
+ * Parse a tap exclude specification.
+ * @param raw  Comma-separated provider IDs, empty string for no exclusions,
+ *             or undefined to apply the default (claude).
+ * @returns { excluded, unknown } — validated set and any unrecognised IDs.
+ */
+export function parseTapExclude(raw: string | undefined): {
+  excluded: Set<string>;
+  unknown: string[];
+} {
+  if (raw === undefined) {
+    return { excluded: new Set([CLAUDE_PROVIDER_ID]), unknown: [] };
+  }
+  const ids = raw.split(',').filter(Boolean);
+  const excluded = new Set<string>();
+  const unknown: string[] = [];
+  for (const id of ids) {
+    if (isKnownProvider(id)) {
+      excluded.add(id);
+    } else {
+      unknown.push(id);
+    }
+  }
+  return { excluded, unknown };
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +186,7 @@ function registerClaudeUniversalRules(provider: CredentialProvider): void {
       hostPattern,
       rule.pathPattern,
       handler,
+      CLAUDE_OAUTH_PROVIDER.id,
     );
   }
 
@@ -209,6 +243,7 @@ export function registerDiscoveryProviders(
         hostPattern,
         rule.pathPattern,
         handler,
+        provider.id,
       );
       ruleCount++;
     }

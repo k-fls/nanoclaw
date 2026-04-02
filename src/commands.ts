@@ -14,6 +14,7 @@ import {
   readTapLog,
   LOG_FILE,
 } from './proxy-tap-logger.js';
+import { parseTapExclude } from './auth/registry.js';
 import {
   startRemoteControl,
   stopRemoteControl,
@@ -215,7 +216,7 @@ const commands: Record<string, Command> = {
 
   tap: {
     description:
-      'Manage proxy tap logger — /tap <domain> <path> | /tap stop | /tap',
+      'Manage proxy tap logger — /tap all [exclude=...] | /tap <domain> <path> | /tap stop | /tap',
     mainOnly: true,
     run(args) {
       // /tap (no args) — show current state
@@ -248,15 +249,35 @@ const commands: Record<string, Command> = {
         return reply(readTapLog(mode, count));
       }
 
-      // /tap all — tap everything
-      if (args === 'all') {
+      // /tap all [exclude=provider1,provider2] — tap everything
+      // Default: exclude=claude
+      if (args === 'all' || args.startsWith('all ')) {
+        const allArgs = args.slice(3).trim();
+        if (allArgs && !/^exclude=\S*$/.test(allArgs)) {
+          return reply('Usage: /tap all [exclude=provider1,provider2]');
+        }
+        const excludeMatch = allArgs.match(/^exclude=(\S*)$/);
+        const { excluded: excludeProviders, unknown } = parseTapExclude(
+          excludeMatch ? excludeMatch[1] : undefined,
+        );
+        if (unknown.length > 0) {
+          return reply(`Unknown provider(s): ${unknown.join(', ')}`);
+        }
+
         const filter = createTapFilter(
           new RegExp(''),
           new RegExp(''),
           LOG_FILE,
+          excludeProviders,
         );
         getProxy().setTapFilter(filter);
-        return reply(`Tap started — all traffic\nLog: ${LOG_FILE}`);
+        const excludeLabel =
+          excludeProviders.size > 0
+            ? `\nExcluding: ${[...excludeProviders].join(', ')}`
+            : '';
+        return reply(
+          `Tap started — all traffic${excludeLabel}\nLog: ${LOG_FILE}`,
+        );
       }
 
       // /tap <domain> <path> — enable

@@ -3,6 +3,7 @@ import { parseCommand, extractCommand, handleCommand } from './commands.js';
 import type { NewMessage, RegisteredGroup } from './types.js';
 
 // Mock registry so /auth <provider> can validate discovery providers
+const knownProviders = new Set(['claude', 'github', 'stripe']);
 vi.mock('./auth/registry.js', () => {
   const providers = new Map([
     ['github', { id: 'github', rules: [{ mode: 'bearer-swap' }] }],
@@ -20,8 +21,39 @@ vi.mock('./auth/registry.js', () => {
     registerClaudeUniversalRules: vi.fn(),
     setTokenEngine: vi.fn(),
     getDiscoveryDir: () => '/tmp',
+    parseTapExclude: (raw: string | undefined) => {
+      if (raw === undefined)
+        return { excluded: new Set(['claude']), unknown: [] };
+      const ids = raw.split(',').filter(Boolean);
+      const excluded = new Set<string>();
+      const unknown: string[] = [];
+      for (const id of ids) {
+        if (knownProviders.has(id)) excluded.add(id);
+        else unknown.push(id);
+      }
+      return { excluded, unknown };
+    },
   };
 });
+
+// Mock proxy + tap logger for /tap tests
+const mockSetTapFilter = vi.fn();
+vi.mock('./credential-proxy.js', () => ({
+  getProxy: () => ({ setTapFilter: mockSetTapFilter }),
+}));
+
+const mockCreateTapFilter = vi.fn(
+  (_a: RegExp, _b: RegExp, _c: string, _d?: ReadonlySet<string>) =>
+    'mock-filter',
+);
+vi.mock('./proxy-tap-logger.js', () => ({
+  createTapFilter: (a: RegExp, b: RegExp, c: string, d?: ReadonlySet<string>) =>
+    mockCreateTapFilter(a, b, c, d),
+  getActiveTap: () => null,
+  clearActiveTap: vi.fn(),
+  readTapLog: vi.fn(() => 'log output'),
+  LOG_FILE: '/tmp/tap.jsonl',
+}));
 
 // Mock key-management functions
 vi.mock('./auth/key-management.js', () => ({
@@ -253,9 +285,74 @@ describe('handleCommand', () => {
   });
 
   describe('/tap', () => {
+    beforeEach(() => {
+      mockSetTapFilter.mockClear();
+      mockCreateTapFilter.mockClear();
+    });
+
     it('rejects from non-main group', async () => {
       const result = handleCommand('tap', '', runCtx(false, otherGroup));
       expect(await replyOf(result)).toMatch(/main group/i);
+    });
+
+    it('/tap all uses claude as default exclude', async () => {
+      const result = handleCommand('tap', 'all', runCtx(false));
+      expect(mockCreateTapFilter).toHaveBeenCalledWith(
+        expect.any(RegExp),
+        expect.any(RegExp),
+        '/tmp/tap.jsonl',
+        new Set(['claude']),
+      );
+      expect(mockSetTapFilter).toHaveBeenCalledWith('mock-filter');
+      expect(await replyOf(result)).toContain('Excluding: claude');
+    });
+
+    it('/tap all exclude= disables exclusions', async () => {
+      const result = handleCommand('tap', 'all exclude=', runCtx(false));
+      expect(mockCreateTapFilter).toHaveBeenCalledWith(
+        expect.any(RegExp),
+        expect.any(RegExp),
+        '/tmp/tap.jsonl',
+        new Set(),
+      );
+      expect(await replyOf(result)).not.toContain('Excluding');
+    });
+
+    it('/tap all exclude=github,stripe passes validated set', async () => {
+      const result = handleCommand(
+        'tap',
+        'all exclude=github,stripe',
+        runCtx(false),
+      );
+      expect(mockCreateTapFilter).toHaveBeenCalledWith(
+        expect.any(RegExp),
+        expect.any(RegExp),
+        '/tmp/tap.jsonl',
+        new Set(['github', 'stripe']),
+      );
+      const text = await replyOf(result);
+      expect(text).toContain('github');
+      expect(text).toContain('stripe');
+    });
+
+    it('/tap all exclude=bogus rejects unknown provider', async () => {
+      const result = handleCommand('tap', 'all exclude=bogus', runCtx(false));
+      const text = await replyOf(result);
+      expect(text).toContain('Unknown provider');
+      expect(text).toContain('bogus');
+      expect(mockCreateTapFilter).not.toHaveBeenCalled();
+    });
+
+    it('/tap all exclude (no = sign) rejects', async () => {
+      const result = handleCommand('tap', 'all exclude', runCtx(false));
+      expect(await replyOf(result)).toContain('Usage');
+      expect(mockCreateTapFilter).not.toHaveBeenCalled();
+    });
+
+    it('/tap all exclude=a b rejects (spaces not allowed)', async () => {
+      const result = handleCommand('tap', 'all exclude=a b', runCtx(false));
+      expect(await replyOf(result)).toContain('Usage');
+      expect(mockCreateTapFilter).not.toHaveBeenCalled();
     });
   });
 

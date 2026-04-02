@@ -57,11 +57,13 @@ describe('CredentialProxy class', () => {
         /^api\.anthropic\.com$/,
         /^\//,
         async () => {},
+        'claude',
       );
       proxy.registerProviderHost(
         /^console\.anthropic\.com$/,
         /^\/api\/oauth\/token/,
         async () => {},
+        'claude',
       );
 
       expect(proxy.shouldIntercept('api.anthropic.com')).toBe(true);
@@ -73,6 +75,7 @@ describe('CredentialProxy class', () => {
         /^api\.anthropic\.com$/,
         /^\//,
         async () => {},
+        'claude',
       );
 
       expect(proxy.shouldIntercept('github.com')).toBe(false);
@@ -84,6 +87,7 @@ describe('CredentialProxy class', () => {
         /^api\.anthropic\.com$/,
         /^\//,
         async () => {},
+        'claude',
       );
 
       expect(proxy.shouldIntercept('evil-api.anthropic.com')).toBe(false);
@@ -97,11 +101,13 @@ describe('CredentialProxy class', () => {
         /^api\.anthropic\.com$/,
         /^\//,
         async () => {},
+        'claude',
       );
       proxy.registerProviderHost(
         /^console\.anthropic\.com$/,
         /^\/api\/oauth\/token/,
         async () => {},
+        'claude',
       );
 
       expect(
@@ -117,6 +123,7 @@ describe('CredentialProxy class', () => {
         /^console\.anthropic\.com$/,
         /^\/api\/oauth\/token/,
         async () => {},
+        'claude',
       );
 
       expect(
@@ -127,6 +134,89 @@ describe('CredentialProxy class', () => {
 
     it('returns null for unregistered hosts', () => {
       expect(proxy.matchHostRule('github.com', '/api/v3')).toBeNull();
+    });
+  });
+
+  describe('findMatchingRule anchor specificity', () => {
+    it('resolves most-specific anchor first', () => {
+      // Register broad anchor (2-part suffix)
+      proxy.registerAnchoredRule(
+        'auth0.com',
+        /^.*\.auth0\.com$/,
+        /^\//,
+        async () => {},
+        'auth0-generic',
+      );
+      // Register more specific anchor (exact host)
+      proxy.registerAnchoredRule(
+        'myco.auth0.com',
+        /^myco\.auth0\.com$/,
+        /^\//,
+        async () => {},
+        'auth0-myco',
+      );
+
+      // Most specific should win
+      const myco = proxy.findMatchingRule('myco.auth0.com', '/token');
+      expect(myco).not.toBeNull();
+      expect(myco!.providerId).toBe('auth0-myco');
+
+      // Broader anchor catches other subdomains
+      const other = proxy.findMatchingRule('other.auth0.com', '/token');
+      expect(other).not.toBeNull();
+      expect(other!.providerId).toBe('auth0-generic');
+    });
+
+    it('exact host takes priority over suffix', () => {
+      proxy.registerAnchoredRule(
+        'anthropic.com',
+        /^.*\.anthropic\.com$/,
+        /^\//,
+        async () => {},
+        'anthropic-broad',
+      );
+      proxy.registerAnchoredRule(
+        'api.anthropic.com',
+        /^api\.anthropic\.com$/,
+        /^\//,
+        async () => {},
+        'claude',
+      );
+
+      const api = proxy.findMatchingRule('api.anthropic.com', '/v1/messages');
+      expect(api).not.toBeNull();
+      expect(api!.providerId).toBe('claude');
+
+      const console = proxy.findMatchingRule('console.anthropic.com', '/');
+      expect(console).not.toBeNull();
+      expect(console!.providerId).toBe('anthropic-broad');
+    });
+
+    it('deeper subdomain matches more specific anchor', () => {
+      proxy.registerAnchoredRule(
+        'example.com',
+        /\.example\.com$/,
+        /^\//,
+        async () => {},
+        'example-broad',
+      );
+      proxy.registerAnchoredRule(
+        'api.example.com',
+        /\.api\.example\.com$/,
+        /^\//,
+        async () => {},
+        'example-api',
+      );
+
+      // "v2.api.example.com" should match "api.example.com" anchor (more specific)
+      const deep = proxy.findMatchingRule('v2.api.example.com', '/');
+      expect(deep).not.toBeNull();
+      expect(deep!.providerId).toBe('example-api');
+
+      // "cdn.example.com" only matches the broad anchor
+      const cdn = proxy.findMatchingRule('cdn.example.com', '/');
+      expect(cdn).not.toBeNull();
+      expect(cdn!.providerId).toBe('example-broad');
     });
   });
 

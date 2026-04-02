@@ -11,7 +11,12 @@ vi.mock('../credential-proxy.js', () => ({
   }),
 }));
 
-import { registerProvider, getProvider, getAllProviders } from './registry.js';
+import {
+  registerProvider,
+  getProvider,
+  getAllProviders,
+  parseTapExclude,
+} from './registry.js';
 import type { CredentialProvider, HostHandler } from './types.js';
 
 const makeStub = (id: string): CredentialProvider => ({
@@ -68,6 +73,7 @@ describe('auth provider registry', () => {
       /^api\.example\.com$/,
       /^\//,
       handler,
+      'host-rules-test',
     );
   });
 
@@ -75,6 +81,50 @@ describe('auth provider registry', () => {
     mockRegisterProviderHost.mockClear();
     registerProvider(makeStub('no-host-rules'));
     expect(mockRegisterProviderHost).not.toHaveBeenCalled();
+  });
+});
+
+// ── parseTapExclude ─────────────────────────────────────────────────
+
+describe('parseTapExclude', () => {
+  // 'reg-test', 'all-test', 'overwrite', 'host-rules-test', 'no-host-rules'
+  // are already registered above. Register a known 'github' for these tests.
+  registerProvider(makeStub('github'));
+
+  it('defaults to claude when raw is undefined', () => {
+    const { excluded, unknown } = parseTapExclude(undefined);
+    expect(excluded).toEqual(new Set(['claude']));
+    expect(unknown).toEqual([]);
+  });
+
+  it('empty string returns no exclusions', () => {
+    const { excluded, unknown } = parseTapExclude('');
+    expect(excluded.size).toBe(0);
+    expect(unknown).toEqual([]);
+  });
+
+  it('validates known provider IDs', () => {
+    const { excluded, unknown } = parseTapExclude('github');
+    expect(excluded).toEqual(new Set(['github']));
+    expect(unknown).toEqual([]);
+  });
+
+  it('reports unknown provider IDs', () => {
+    const { excluded, unknown } = parseTapExclude('github,bogus');
+    expect(excluded).toEqual(new Set(['github']));
+    expect(unknown).toEqual(['bogus']);
+  });
+
+  it('all unknown returns empty excluded', () => {
+    const { excluded, unknown } = parseTapExclude('fake1,fake2');
+    expect(excluded.size).toBe(0);
+    expect(unknown).toEqual(['fake1', 'fake2']);
+  });
+
+  it('rejects spaces within IDs', () => {
+    const { excluded, unknown } = parseTapExclude('git hub');
+    expect(excluded.size).toBe(0);
+    expect(unknown).toEqual(['git hub']);
   });
 });
 

@@ -14,11 +14,12 @@ import path from 'path';
 import { DATA_DIR } from './config.js';
 import type {
   ProxyTapFilter,
-  ProxyTapResolver,
+  ProxyTapResult,
   ProxyTapCallback,
   ProxyTapEvent,
 } from './credential-proxy.js';
 import { logger } from './logger.js';
+import { parseTapExclude } from './auth/registry.js';
 
 export const LOG_FILE = path.join(DATA_DIR, 'proxy-tap.jsonl');
 
@@ -197,15 +198,34 @@ function parseHead(raw: string): ParsedHead | null {
 /** Max body size to capture (prevent unbounded memory for large streaming responses). */
 const MAX_BODY_CAPTURE = 64 * 1024; // 64 KB
 
+/** Max bytes to accumulate before declaring non-HTTP. */
+const NON_HTTP_THRESHOLD = 8 * 1024; // 8 KB
+
+// ---------------------------------------------------------------------------
+// TapControl — communication channel between dispatcher and tap callback
+// ---------------------------------------------------------------------------
+
+/**
+ * Called by the mitmDispatcher after matching a request to a HostRule.
+ * The tap callback uses this to decide whether to emit or discard.
+ * @param providerId — matched provider, or null if no rule matched.
+ */
+export type TapExclusionCheck = (providerId: string | null) => void;
+
 /**
  * Create a ProxyTapCallback that parses HTTP heads + bodies and writes JSONL.
+ *
+ * Emission is deferred until the dispatcher resolves TapControl (sets the
+ * matched provider). If the provider is in excludeProviders, nothing is logged.
+ * Non-HTTP streams get a connection-only entry — no data capture.
  */
 function createTapCallback(
   fd: number,
   host: string,
   scope: string,
   pathRe: RegExp,
-): ProxyTapCallback {
+  excludeProviders: ReadonlySet<string>,
+): { callback: ProxyTapCallback; checkExclusion: TapExclusionCheck } {
   // Per-direction state
   const bufs: Record<string, Buffer[]> = { inbound: [], outbound: [] };
   const headParsed: Record<string, ParsedHead | null> = {
@@ -224,6 +244,13 @@ function createTapCallback(
     outbound: false,
   };
   let pathMatched = false;
+  let excluded = false;
+  let nonHttp = false;
+  let flushed = false;
+
+  function isExcluded(): boolean {
+    return excluded || nonHttp;
+  }
 
   function emitHead(direction: string, parsed: ParsedHead) {
     const entry = {
@@ -242,7 +269,6 @@ function createTapCallback(
   }
 
   function emitBody(direction: string, parsed: ParsedHead, rawBody: Buffer) {
-    let body: string;
     const isChunked = parsed.headers['transfer-encoding'] === 'chunked';
 
     // Strip chunked framing if present (hex-length\r\n...data...\r\n)
@@ -274,7 +300,7 @@ function createTapCallback(
       }
     }
 
-    body = bodyBuf.toString('base64');
+    const body = bodyBuf.toString('base64');
 
     const entry = {
       ts: new Date().toISOString(),
@@ -292,17 +318,72 @@ function createTapCallback(
     } catch {}
   }
 
-  return (event: ProxyTapEvent) => {
+  function emitConnectionOnly() {
+    const entry = {
+      ts: new Date().toISOString(),
+      scope,
+      host,
+      type: 'connection' as const,
+    };
+    try {
+      fs.writeSync(fd, JSON.stringify(entry) + '\n');
+    } catch {}
+  }
+
+  /** Called by the dispatcher with the matched provider ID. Idempotent. */
+  function checkExclusion(providerId: string | null): void {
+    if (flushed) return;
+    flushed = true;
+    if (providerId && excludeProviders.has(providerId)) {
+      excluded = true;
+      return;
+    }
+    // Emit any buffered heads + bodies
+    for (const dir of ['inbound', 'outbound']) {
+      if (headParsed[dir] && pathMatched && !headEmitted[dir]) {
+        headEmitted[dir] = true;
+        emitHead(dir, headParsed[dir]!);
+      }
+      if (
+        headParsed[dir] &&
+        pathMatched &&
+        !bodyEmitted[dir] &&
+        bodyLen[dir] > 0 &&
+        expectedLen[dir] >= 0 &&
+        bodyLen[dir] >= expectedLen[dir]
+      ) {
+        bodyEmitted[dir] = true;
+        emitBody(dir, headParsed[dir]!, Buffer.concat(bodyBufs[dir]));
+      }
+    }
+  }
+
+  const callback = (event: ProxyTapEvent) => {
     const { direction, chunk } = event;
 
     if (direction === 'close') {
-      // On close, flush any partially accumulated body
+      // Non-HTTP stream that never parsed — emit connection-only
+      if (!headParsed.inbound && !headParsed.outbound) {
+        if (!isExcluded()) emitConnectionOnly();
+        return;
+      }
+      // Dispatcher never resolved (e.g. non-HTTP after MITM) — default to capture
+      if (!flushed && !isExcluded()) {
+        for (const dir of ['inbound', 'outbound']) {
+          if (headParsed[dir] && !headEmitted[dir] && pathMatched) {
+            headEmitted[dir] = true;
+            emitHead(dir, headParsed[dir]!);
+          }
+        }
+      }
+      // Flush remaining body
       for (const dir of ['inbound', 'outbound']) {
         if (
           headParsed[dir] &&
           !bodyEmitted[dir] &&
           bodyLen[dir] > 0 &&
-          pathMatched
+          pathMatched &&
+          !isExcluded()
         ) {
           bodyEmitted[dir] = true;
           emitBody(dir, headParsed[dir]!, Buffer.concat(bodyBufs[dir]));
@@ -311,6 +392,8 @@ function createTapCallback(
       return;
     }
 
+    if (isExcluded()) return;
+
     // Phase 1: accumulate until headers are complete
     if (!headParsed[direction]) {
       // Ensure we have a real Buffer (not a string masquerading as one)
@@ -318,6 +401,16 @@ function createTapCallback(
         ? chunk
         : Buffer.from(chunk as unknown as string, 'latin1');
       bufs[direction].push(safeChunk);
+      const totalBufLen = bufs[direction].reduce((a, b) => a + b.length, 0);
+
+      // Non-HTTP detection: too many bytes without finding headers
+      if (totalBufLen > NON_HTTP_THRESHOLD) {
+        nonHttp = true;
+        bufs[direction] = []; // free buffers
+        emitConnectionOnly();
+        return;
+      }
+
       const fullBuf = Buffer.concat(bufs[direction]);
       const raw = fullBuf.toString('latin1');
       const parsed = parseHead(raw);
@@ -342,10 +435,14 @@ function createTapCallback(
         pathMatched = !parsed.url || pathRe.test(parsed.url);
       }
 
-      if (pathMatched && !headEmitted[direction]) {
-        headEmitted[direction] = true;
-        emitHead(direction, parsed);
+      // If dispatcher already resolved, emit immediately; otherwise defer
+      if (flushed) {
+        if (pathMatched && !headEmitted[direction]) {
+          headEmitted[direction] = true;
+          emitHead(direction, parsed);
+        }
       }
+      // else: flush() will emit when the dispatcher calls it
 
       // Determine expected body length from content-length header
       const cl = parsed.headers['content-length'];
@@ -357,7 +454,8 @@ function createTapCallback(
       if (
         expectedLen[direction] >= 0 &&
         bodyLen[direction] >= expectedLen[direction] &&
-        pathMatched
+        pathMatched &&
+        flushed
       ) {
         bodyEmitted[direction] = true;
         emitBody(direction, parsed, Buffer.concat(bodyBufs[direction]));
@@ -368,7 +466,7 @@ function createTapCallback(
     // Phase 2: accumulate body chunks
     if (bodyEmitted[direction]) return;
     if (bodyLen[direction] >= MAX_BODY_CAPTURE) {
-      if (pathMatched) {
+      if (pathMatched && flushed) {
         bodyEmitted[direction] = true;
         emitBody(
           direction,
@@ -389,7 +487,8 @@ function createTapCallback(
     if (
       expectedLen[direction] >= 0 &&
       bodyLen[direction] >= expectedLen[direction] &&
-      pathMatched
+      pathMatched &&
+      flushed
     ) {
       bodyEmitted[direction] = true;
       emitBody(
@@ -399,18 +498,22 @@ function createTapCallback(
       );
     }
   };
+
+  return { callback, checkExclusion };
 }
 
 /**
  * Build a ProxyTapFilter that logs to a JSONL file.
- * @param domainPattern  Regex matching target hostnames
- * @param pathPattern    Regex matching request paths
- * @param logFile        Output file path (appended)
+ * @param domainPattern     Regex matching target hostnames
+ * @param pathPattern       Regex matching request paths
+ * @param logFile           Output file path (appended)
+ * @param excludeProviders  Provider IDs to exclude from logging (default: empty)
  */
 export function createTapFilter(
   domainPattern: RegExp,
   pathPattern: RegExp,
   logFile: string,
+  excludeProviders: ReadonlySet<string> = new Set(),
 ): ProxyTapFilter {
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const fd = fs.openSync(logFile, 'a');
@@ -418,14 +521,26 @@ export function createTapFilter(
   _activeTap = { domain: domainPattern.source, path: pathPattern.source };
 
   logger.info(
-    { domain: domainPattern.source, path: pathPattern.source, logFile },
+    {
+      domain: domainPattern.source,
+      path: pathPattern.source,
+      logFile,
+      excludeProviders: [...excludeProviders],
+    },
     'Proxy tap logger activated',
   );
 
-  return (hostname: string, _scope: string): ProxyTapResolver | null => {
+  return (hostname: string, _scope: string) => {
     if (!domainPattern.test(hostname)) return null;
-    return (targetHost: string, connScope: string): ProxyTapCallback | null => {
-      return createTapCallback(fd, targetHost, connScope, pathPattern);
+    return (targetHost: string, connScope: string) => {
+      const { callback, checkExclusion } = createTapCallback(
+        fd,
+        targetHost,
+        connScope,
+        pathPattern,
+        excludeProviders,
+      );
+      return { callback, checkExclusion };
     };
   };
 }
@@ -434,13 +549,26 @@ export function createTapFilter(
  * Build a ProxyTapFilter from env vars. Returns null if not configured.
  *
  * Env vars:
- *   PROXY_TAP_DOMAIN — hostname regex (e.g. "anthropic\\.com")
- *   PROXY_TAP_PATH   — request path regex (e.g. "/v1/messages")
+ *   PROXY_TAP_DOMAIN  — hostname regex (e.g. "anthropic\\.com")
+ *   PROXY_TAP_PATH    — request path regex (e.g. "/v1/messages")
+ *   PROXY_TAP_EXCLUDE — comma-separated provider IDs to exclude
  */
 export function createTapFilterFromEnv(): ProxyTapFilter | null {
   const domain = process.env.PROXY_TAP_DOMAIN;
   const pathPattern = process.env.PROXY_TAP_PATH;
   if (!domain || !pathPattern) return null;
 
-  return createTapFilter(new RegExp(domain), new RegExp(pathPattern), LOG_FILE);
+  const { excluded: excludeProviders, unknown } = parseTapExclude(
+    process.env.PROXY_TAP_EXCLUDE,
+  );
+  if (unknown.length > 0) {
+    logger.warn({ unknown }, 'PROXY_TAP_EXCLUDE contains unknown provider IDs');
+  }
+
+  return createTapFilter(
+    new RegExp(domain),
+    new RegExp(pathPattern),
+    LOG_FILE,
+    excludeProviders,
+  );
 }

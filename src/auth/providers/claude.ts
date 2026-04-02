@@ -733,6 +733,7 @@ export function registerClaudeBaseUrl(
       hostPattern,
       rule.pathPattern,
       handler,
+      CLAUDE_OAUTH_PROVIDER.id,
     );
   } catch {
     /* invalid URL, ignore */

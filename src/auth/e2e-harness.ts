@@ -381,6 +381,7 @@ export class OAuthE2EHarness {
           new RegExp(`^${rule.anchor.replace(/\./g, '\\.')}$`),
         rule.pathPattern,
         wrappedHandler,
+        provider.id,
       );
     }
   }

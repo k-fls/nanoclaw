@@ -69,6 +69,7 @@ interface HostRule {
   hostPattern: RegExp;
   pathPattern: RegExp;
   handler: HostHandler;
+  providerId: string;
 }
 
 interface MitmMeta {
@@ -77,6 +78,8 @@ interface MitmMeta {
   scope: GroupScope;
   /** Original container bridge IP (resolved at connection time). */
   sourceIP: string;
+  /** Tap exclusion check — set when connection is tapped. */
+  checkExclusion?: import('./proxy-tap-logger.js').TapExclusionCheck;
 }
 
 /** Options for the credential proxy. */
@@ -316,18 +319,22 @@ export interface ProxyTapEvent {
  *   1. Filter `(hostname) => TapResolver | null` — called on hostname before
  *      the MITM/tunnel decision. If non-null, forces the MITM path so the tap
  *      sees decrypted HTTP bytes (even for hosts with no handler rules).
- *   2. Resolver `(targetHost, scope) => TapCallback | null` — called per-connection
- *      after MITM setup. Returns the callback that receives raw chunks, or null
- *      to skip tapping this specific connection.
+ *   2. Resolver `(targetHost, scope) => TapResult | null` — called per-connection
+ *      after MITM setup. Returns the callback + control for deferred emission,
+ *      or null to skip tapping this specific connection.
  */
 export type ProxyTapFilter = (
   hostname: string,
   scope: GroupScope,
 ) => ProxyTapResolver | null;
+export interface ProxyTapResult {
+  callback: ProxyTapCallback;
+  checkExclusion: import('./proxy-tap-logger.js').TapExclusionCheck;
+}
 export type ProxyTapResolver = (
   targetHost: string,
   scope: GroupScope,
-) => ProxyTapCallback | null;
+) => ProxyTapResult | null;
 export type ProxyTapCallback = (event: ProxyTapEvent) => void;
 
 export class CredentialProxy {
@@ -366,22 +373,28 @@ export class CredentialProxy {
         res.end('Internal error');
         return;
       }
-      const handler = this.matchHostRule(meta.targetHost, req.url || '/');
-      if (handler) {
-        handler(
-          req,
-          res,
-          meta.targetHost,
-          meta.targetPort,
-          meta.scope,
-          meta.sourceIP,
-        ).catch((err) => {
-          logger.error({ err, host: meta.targetHost }, 'MITM handler error');
-          if (!res.headersSent) {
-            res.writeHead(502);
-            res.end('Bad Gateway');
-          }
-        });
+      const rule = this.findMatchingRule(meta.targetHost, req.url || '/');
+
+      // Resolve tap exclusion: tell the tap callback which provider matched
+      meta.checkExclusion?.(rule?.providerId ?? null);
+
+      if (rule) {
+        rule
+          .handler(
+            req,
+            res,
+            meta.targetHost,
+            meta.targetPort,
+            meta.scope,
+            meta.sourceIP,
+          )
+          .catch((err) => {
+            logger.error({ err, host: meta.targetHost }, 'MITM handler error');
+            if (!res.headersSent) {
+              res.writeHead(502);
+              res.end('Bad Gateway');
+            }
+          });
       } else {
         // Intercepted host but no path-specific handler — pipe unmodified
         proxyPipe(
@@ -447,13 +460,20 @@ export class CredentialProxy {
     hostPattern: RegExp,
     pathPattern: RegExp,
     handler: HostHandler,
+    providerId: string,
   ): void {
     // Derive anchor from regex source: strip ^, $, unescape dots
     const anchor = hostPattern.source
       .replace(/^\^/, '')
       .replace(/\$$/, '')
       .replace(/\\\./g, '.');
-    this.registerAnchoredRule(anchor, hostPattern, pathPattern, handler);
+    this.registerAnchoredRule(
+      anchor,
+      hostPattern,
+      pathPattern,
+      handler,
+      providerId,
+    );
   }
 
   /**
@@ -466,16 +486,19 @@ export class CredentialProxy {
     hostPattern: RegExp,
     pathPattern: RegExp,
     handler: HostHandler,
+    providerId: string,
   ): void {
+    anchor = anchor.toLowerCase();
     let rules = this.anchorRules.get(anchor);
     if (!rules) {
       rules = [];
       this.anchorRules.set(anchor, rules);
     }
-    rules.push({ hostPattern, pathPattern, handler });
+    rules.push({ hostPattern, pathPattern, handler, providerId });
     logger.debug(
       {
         anchor,
+        providerId,
         hostPattern: hostPattern.source,
         pathPattern: pathPattern.source,
       },
@@ -491,19 +514,15 @@ export class CredentialProxy {
    * Returns the rules array if found, null otherwise.
    */
   private findAnchorRules(targetHost: string): HostRule[] | null {
-    // Exact match first
-    const exact = this.anchorRules.get(targetHost);
-    if (exact) return exact;
+    targetHost = targetHost.toLowerCase();
 
-    // Walk domain parts from 2-part suffix upward
-    const parts = targetHost.split('.');
-    for (let i = parts.length - 2; i >= 1; i--) {
-      const suffix = parts.slice(i).join('.');
-      const rules = this.anchorRules.get(suffix);
+    let pos = 0;
+    while (true) {
+      const rules = this.anchorRules.get(targetHost.slice(pos));
       if (rules) return rules;
+      pos = targetHost.indexOf('.', pos) + 1;
+      if (pos <= 0) return null;
     }
-
-    return null;
   }
 
   /** Should this hostname be TLS-terminated? O(parts) domain walk. */
@@ -529,17 +548,22 @@ export class CredentialProxy {
   }
 
   /**
-   * Find the handler for a request by matching host + path against rules.
+   * Find the matching rule for a request by host + path.
    * Uses anchor lookup (O(1) domain-part walk) then regex match within the bucket.
-   * Returns null if no rule matches.
    */
-  matchHostRule(targetHost: string, urlPath: string): HostHandler | null {
+  findMatchingRule(targetHost: string, urlPath: string): HostRule | null {
     const rules = this.findAnchorRules(targetHost);
     if (!rules) return null;
-    const rule = rules.find(
-      (r) => r.hostPattern.test(targetHost) && r.pathPattern.test(urlPath),
+    return (
+      rules.find(
+        (r) => r.hostPattern.test(targetHost) && r.pathPattern.test(urlPath),
+      ) ?? null
     );
-    return rule?.handler ?? null;
+  }
+
+  /** Find the handler for a request. Convenience wrapper around findMatchingRule. */
+  matchHostRule(targetHost: string, urlPath: string): HostHandler | null {
+    return this.findMatchingRule(targetHost, urlPath)?.handler ?? null;
   }
 
   // ── MITM dispatch ───────────────────────────────────────────────
@@ -556,19 +580,25 @@ export class CredentialProxy {
     sourceIP: string = '',
     tapResolver?: ProxyTapResolver | null,
   ): void {
-    const tapCb = tapResolver?.(targetHost, scope) ?? null;
-    const emitSocket = tapCb
-      ? this.wrapWithTap(socket as Socket, tapCb, {
-          targetHost,
-          targetPort,
-          scope,
-        })
+    const tapResult = tapResolver?.(targetHost, scope) ?? null;
+    const emitSocket = tapResult
+      ? this.wrapWithTap(
+          socket as Socket,
+          tapResult.callback,
+          {
+            targetHost,
+            targetPort,
+            scope,
+          },
+          tapResult.checkExclusion,
+        )
       : socket;
     this.socketMeta.set(emitSocket, {
       targetHost,
       targetPort,
       scope,
       sourceIP,
+      checkExclusion: tapResult?.checkExclusion,
     });
     this.mitmDispatcher.emit('connection', emitSocket);
   }
@@ -591,6 +621,7 @@ export class CredentialProxy {
     socket: Socket,
     tapCb: ProxyTapCallback,
     meta: { targetHost: string; targetPort: number; scope: GroupScope },
+    checkExclusion?: import('./proxy-tap-logger.js').TapExclusionCheck,
   ): Duplex {
     const inTap = new PassThrough(); // client → dispatcher (request data)
     const outTap = new PassThrough(); // dispatcher → client (response data)
@@ -619,6 +650,12 @@ export class CredentialProxy {
     outTap.on('end', () => socket.end());
 
     socket.on('close', () => {
+      // Ensure exclusion check fires even if dispatcher never matched
+      // (non-HTTP, connection dropped before request). Idempotent — safe
+      // if the dispatcher already called it.
+      try {
+        checkExclusion?.(null);
+      } catch {}
       try {
         tapCb({ ...meta, direction: 'close', chunk: Buffer.alloc(0) });
       } catch {}
