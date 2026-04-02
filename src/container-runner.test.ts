@@ -110,8 +110,13 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  runContainerAgent,
+  buildVolumeMounts,
+  ContainerOutput,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
+import fs from 'fs';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
@@ -245,5 +250,44 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('buildVolumeMounts home persistence', () => {
+  const group: RegisteredGroup = {
+    name: 'Test',
+    folder: 'test-home',
+    trigger: '@test',
+    added_at: new Date().toISOString(),
+  };
+
+  beforeEach(() => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.readdirSync).mockReturnValue([]);
+  });
+
+  it('agent container mounts /home/node for persistence', () => {
+    const mounts = buildVolumeMounts(group, false);
+    const homeMount = mounts.find((m) => m.containerPath === '/home/node');
+    expect(homeMount).toBeDefined();
+    expect(homeMount!.readonly).toBe(false);
+    expect(homeMount!.hostPath).toContain('sessions/test-home/home');
+  });
+
+  it('/home/node is mounted before /home/node/.claude', () => {
+    const mounts = buildVolumeMounts(group, false);
+    const homeIdx = mounts.findIndex((m) => m.containerPath === '/home/node');
+    const claudeIdx = mounts.findIndex(
+      (m) => m.containerPath === '/home/node/.claude',
+    );
+    expect(homeIdx).toBeGreaterThanOrEqual(0);
+    expect(claudeIdx).toBeGreaterThan(homeIdx);
+  });
+
+  it('works the same for main group', () => {
+    const mounts = buildVolumeMounts(group, true);
+    const homeMount = mounts.find((m) => m.containerPath === '/home/node');
+    expect(homeMount).toBeDefined();
+    expect(homeMount!.readonly).toBe(false);
   });
 });

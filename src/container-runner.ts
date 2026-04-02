@@ -153,6 +153,26 @@ export function buildVolumeMounts(
     );
   }
 
+  // Per-group persistent home directory.
+  // Subdirectories (app config like .config/gh/, .aws/, .npm/) survive across
+  // runs. Flat files in ~/ are cleaned on each launch to prevent dotfile
+  // injection (.bashrc, .profile) between sessions.
+  const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder, 'home');
+  fs.mkdirSync(groupHomeDir, { recursive: true });
+  for (const entry of fs.readdirSync(groupHomeDir)) {
+    const full = path.join(groupHomeDir, entry);
+    try {
+      if (fs.statSync(full).isFile()) fs.unlinkSync(full);
+    } catch {
+      /* race with container shutdown, ignore */
+    }
+  }
+  mounts.push({
+    hostPath: groupHomeDir,
+    containerPath: '/home/node',
+    readonly: false,
+  });
+
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');

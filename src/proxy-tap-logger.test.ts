@@ -24,7 +24,7 @@ vi.mock('./auth/registry.js', () => ({
   },
 }));
 
-import { createTapFilter } from './proxy-tap-logger.js';
+import { createTapFilter, readTapLog, LOG_FILE } from './proxy-tap-logger.js';
 import type { TapExclusionCheck } from './proxy-tap-logger.js';
 import type { ProxyTapEvent } from './credential-proxy.js';
 
@@ -262,5 +262,138 @@ describe('tap callback deferred emission', () => {
     const entries = readLog();
     expect(entries).toHaveLength(1);
     expect(entries[0].type).toBe('connection');
+  });
+
+  it('includes connId in all emitted entries', () => {
+    const filter = createFilter(new Set());
+    const { callback, checkExclusion } = resolveConnection(
+      filter,
+      'id-test.com',
+    );
+
+    callback({
+      direction: 'inbound',
+      chunk: httpRequest('GET', '/', 'id-test.com'),
+      targetHost: 'id-test.com',
+      targetPort: 443,
+      scope: 'test',
+    } as ProxyTapEvent);
+
+    checkExclusion(null);
+
+    const entries = readLog();
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    // All entries from same connection share the same connId
+    const connId = entries[0].connId as string;
+    expect(connId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    for (const e of entries) {
+      expect(e.connId).toBe(connId);
+    }
+  });
+
+  it('different connections get different connIds', () => {
+    const filter = createFilter(new Set());
+    const c1 = resolveConnection(filter, 'host1.com');
+    const c2 = resolveConnection(filter, 'host2.com');
+
+    c1.callback({
+      direction: 'inbound',
+      chunk: httpRequest('GET', '/1', 'host1.com'),
+      targetHost: 'host1.com',
+      targetPort: 443,
+      scope: 'test',
+    } as ProxyTapEvent);
+    c1.checkExclusion(null);
+
+    c2.callback({
+      direction: 'inbound',
+      chunk: httpRequest('GET', '/2', 'host2.com'),
+      targetHost: 'host2.com',
+      targetPort: 443,
+      scope: 'test',
+    } as ProxyTapEvent);
+    c2.checkExclusion(null);
+
+    const entries = readLog();
+    const ids = new Set(entries.map((e) => e.connId));
+    expect(ids.size).toBe(2);
+  });
+});
+
+describe('readTapLog', () => {
+  let tmpDir: string;
+  let logFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tap-read-'));
+    logFile = path.join(tmpDir, 'proxy-tap.jsonl');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeEntries(entries: Record<string, unknown>[]) {
+    fs.writeFileSync(
+      logFile,
+      entries.map((e) => JSON.stringify(e)).join('\n') + '\n',
+    );
+  }
+
+  function makeHead(i: number) {
+    return {
+      ts: `2026-04-02T10:00:0${i}Z`,
+      connId: `conn-${i}`,
+      scope: 'test',
+      host: `host${i}.com`,
+      direction: 'inbound',
+      method: 'GET',
+      url: `/${i}`,
+      headers: {},
+    };
+  }
+
+  function makeBody(i: number) {
+    return {
+      ts: `2026-04-02T10:00:0${i}Z`,
+      connId: `conn-${i}`,
+      scope: 'test',
+      host: `host${i}.com`,
+      direction: 'inbound',
+      type: 'body',
+      method: 'GET',
+      url: `/${i}`,
+      body: Buffer.from('hello').toString('base64'),
+    };
+  }
+
+  it('defaults to last 5 entries', () => {
+    writeEntries(Array.from({ length: 10 }, (_, i) => makeHead(i)));
+    const output = readTapLog('tail', 5, false, logFile);
+    expect(output).toContain('Last 5 of 10');
+  });
+
+  it('filters out body entries by default', () => {
+    writeEntries([makeHead(0), makeBody(0), makeHead(1), makeBody(1)]);
+    const output = readTapLog('tail', 10, false, logFile);
+    expect(output).not.toContain('BODY');
+    expect(output).toContain('Last 2 of 2');
+  });
+
+  it('includes body entries when showBody is true', () => {
+    writeEntries([makeHead(0), makeBody(0)]);
+    const output = readTapLog('tail', 10, true, logFile);
+    expect(output).toContain('BODY');
+    expect(output).toContain('Last 2 of 2');
+  });
+
+  it('shows connId prefix in formatted output', () => {
+    writeEntries([
+      { ...makeHead(0), connId: 'abcdef01-2345-6789-abcd-ef0123456789' },
+    ]);
+    const output = readTapLog('tail', 5, false, logFile);
+    expect(output).toContain('abcdef01');
   });
 });

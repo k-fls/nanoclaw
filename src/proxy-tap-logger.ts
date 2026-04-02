@@ -8,6 +8,7 @@
  * Writes to data/proxy-tap.jsonl. Each line is a JSON object:
  *   { ts, scope, host, direction, method?, url?, statusCode?, headers }
  */
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -67,6 +68,7 @@ function formatTapEntry(line: string): string | null {
   const ts = String(entry.ts ?? '')
     .replace(/T/, ' ')
     .replace(/\.\d+Z$/, 'Z');
+  const cid = entry.connId ? String(entry.connId).slice(0, 8) : '';
   const dir = entry.direction === 'outbound' ? '→' : '←';
   const scope = entry.scope ? ` [${entry.scope}]` : '';
 
@@ -86,7 +88,7 @@ function formatTapEntry(line: string): string | null {
     const label = entry.method
       ? `${entry.method} ${entry.url ?? ''}`
       : `${entry.statusCode ?? ''}`;
-    return `${ts} ${dir}${scope} BODY ${label}\n${body}`;
+    return `${ts} ${cid} ${dir}${scope} BODY ${label}\n${body}`;
   }
 
   // Header entry
@@ -103,19 +105,33 @@ function formatTapEntry(line: string): string | null {
       .join('\n');
   }
 
-  return `${ts} ${dir}${scope} ${method}${status}${url} (${host})${headerStr ? '\n' + headerStr : ''}`;
+  return `${ts} ${cid} ${dir}${scope} ${method}${status}${url} (${host})${headerStr ? '\n' + headerStr : ''}`;
 }
 
 /**
  * Read tap log entries.
- * @param mode  'head' or 'tail' (default: 'tail')
- * @param count Number of entries (default: 20)
+ * @param mode      'head' or 'tail' (default: 'tail')
+ * @param count     Number of entries (default: 5)
+ * @param showBody  Include body entries (default: false)
  */
-export function readTapLog(mode: 'head' | 'tail' = 'tail', count = 20): string {
-  if (!fs.existsSync(LOG_FILE)) return 'No tap log file.';
+export function readTapLog(
+  mode: 'head' | 'tail' = 'tail',
+  count = 5,
+  showBody = false,
+  file: string = LOG_FILE,
+): string {
+  if (!fs.existsSync(file)) return 'No tap log file.';
 
-  const content = fs.readFileSync(LOG_FILE, 'utf-8');
-  const lines = content.split('\n').filter((l) => l.trim());
+  const content = fs.readFileSync(file, 'utf-8');
+  const lines = content.split('\n').filter((l) => {
+    if (!l.trim()) return false;
+    if (!showBody) {
+      try {
+        if (JSON.parse(l).type === 'body') return false;
+      } catch {}
+    }
+    return true;
+  });
   if (lines.length === 0) return 'Tap log is empty.';
 
   const selected =
@@ -226,6 +242,8 @@ function createTapCallback(
   pathRe: RegExp,
   excludeProviders: ReadonlySet<string>,
 ): { callback: ProxyTapCallback; checkExclusion: TapExclusionCheck } {
+  const connId = crypto.randomUUID();
+
   // Per-direction state
   const bufs: Record<string, Buffer[]> = { inbound: [], outbound: [] };
   const headParsed: Record<string, ParsedHead | null> = {
@@ -255,6 +273,7 @@ function createTapCallback(
   function emitHead(direction: string, parsed: ParsedHead) {
     const entry = {
       ts: new Date().toISOString(),
+      connId,
       scope,
       host,
       direction,
@@ -304,6 +323,7 @@ function createTapCallback(
 
     const entry = {
       ts: new Date().toISOString(),
+      connId,
       scope,
       host,
       direction,
@@ -321,6 +341,7 @@ function createTapCallback(
   function emitConnectionOnly() {
     const entry = {
       ts: new Date().toISOString(),
+      connId,
       scope,
       host,
       type: 'connection' as const,

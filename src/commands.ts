@@ -235,18 +235,20 @@ const commands: Record<string, Command> = {
         return reply('Tap stopped.');
       }
 
-      // /tap list [head|tail <N>] — show log entries
+      // /tap list [head|tail <N>] [body] — show log entries
       if (args === 'list' || args.startsWith('list ')) {
         const listArgs = args.slice(4).trim().split(/\s+/).filter(Boolean);
         let mode: 'head' | 'tail' = 'tail';
-        let count = 20;
-        if (listArgs[0] === 'head' || listArgs[0] === 'tail') {
-          mode = listArgs[0];
-          if (listArgs[1]) count = parseInt(listArgs[1], 10) || 20;
-        } else if (listArgs[0]) {
-          count = parseInt(listArgs[0], 10) || 20;
+        let count = 5;
+        const showBody = listArgs.includes('body');
+        const filtered = listArgs.filter((a) => a !== 'body');
+        if (filtered[0] === 'head' || filtered[0] === 'tail') {
+          mode = filtered[0];
+          if (filtered[1]) count = parseInt(filtered[1], 10) || 5;
+        } else if (filtered[0]) {
+          count = parseInt(filtered[0], 10) || 5;
         }
-        return reply(readTapLog(mode, count));
+        return reply(readTapLog(mode, count, showBody));
       }
 
       // /tap all [exclude=provider1,provider2] — tap everything
