@@ -86,6 +86,8 @@ export interface ExecContainerResult {
   handle: ExecHandle;
   /** Container's bridge IP for callback delivery to the CLI's OAuth server. */
   containerIP: string;
+  /** Container name for docker exec. */
+  containerName: string;
 }
 
 /** Context passed to auth option run(). */

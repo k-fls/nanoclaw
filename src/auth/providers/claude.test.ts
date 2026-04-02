@@ -59,7 +59,6 @@ const {
   classifyAuthError,
   waitForPattern,
   detectCodeDelivery,
-  isPortOpen,
   parseCallbackUrl,
   extractStreamRequestId,
   extractUpstreamRequestId,
@@ -487,7 +486,7 @@ describe('detectCodeDelivery', () => {
       5000,
       handle,
       DUMMY_URL,
-      '127.0.0.1',
+      'nanoclaw-auth-test',
     );
 
     // Simulate paste prompt appearing (no trailing \n — it's a prompt)
@@ -499,62 +498,46 @@ describe('detectCodeDelivery', () => {
     expect(result!.instructions).toContain('code');
   });
 
-  it('detects callback when .oauth-url file appears and port is open', async () => {
-    // Start a real TCP server so isPortOpen succeeds
-    const server = net.createServer();
-    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-    const port = (server.address() as net.AddressInfo).port;
-
-    try {
-      const sessionDir = path.join(tmpDir, 'detect-callback');
-      fs.mkdirSync(sessionDir, { recursive: true });
-      const output = { value: '' };
-      const handle = makeHandle();
-
-      const shimUrl = `https://console.anthropic.com/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A${port}%2Fcallback`;
-      const promise = detectCodeDelivery(
-        output,
-        sessionDir,
-        10_000,
-        handle,
-        DUMMY_URL,
-        '127.0.0.1',
-      );
-
-      // Simulate shim writing the OAuth URL (with encoded redirect_uri containing the real port)
-      fs.writeFileSync(path.join(sessionDir, '.oauth-url'), shimUrl + '\n');
-
-      const result = await promise;
-      expect(result).not.toBeNull();
-      expect(result!.oauthUrl).toBe(shimUrl);
-      expect(result!.instructions).toContain('localhost');
-    } finally {
-      server.close();
-    }
-  });
-
-  it('returns null when .oauth-url port is not open', async () => {
-    const sessionDir = path.join(tmpDir, 'detect-callback-closed');
+  it('detects callback when .oauth-url file appears with localhost port', async () => {
+    const sessionDir = path.join(tmpDir, 'detect-callback');
     fs.mkdirSync(sessionDir, { recursive: true });
     const output = { value: '' };
     const handle = makeHandle();
 
+    const shimUrl = `https://console.anthropic.com/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A9876%2Fcallback`;
     const promise = detectCodeDelivery(
       output,
       sessionDir,
       10_000,
       handle,
       DUMMY_URL,
-      '127.0.0.1',
+      'nanoclaw-auth-test',
     );
 
-    // Simulate shim writing URL with a port that is NOT listening
-    fs.writeFileSync(
-      path.join(sessionDir, '.oauth-url'),
-      'https://console.anthropic.com/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A59998%2Fcallback\n',
-    );
+    // Simulate shim writing the OAuth URL (shim already verified port is open)
+    fs.writeFileSync(path.join(sessionDir, '.oauth-url'), shimUrl + '\n');
 
     const result = await promise;
+    expect(result).not.toBeNull();
+    expect(result!.oauthUrl).toBe(shimUrl);
+    expect(result!.instructions).toContain('localhost');
+  });
+
+  it('returns null on timeout when no delivery method appears', async () => {
+    const sessionDir = path.join(tmpDir, 'detect-timeout');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const output = { value: '' };
+    const handle = makeHandle();
+
+    // No URL file written, no paste prompt — should timeout
+    const result = await detectCodeDelivery(
+      output,
+      sessionDir,
+      1_000,
+      handle,
+      DUMMY_URL,
+      'nanoclaw-auth-test',
+    );
     expect(result).toBeNull();
   });
 
@@ -576,7 +559,7 @@ describe('detectCodeDelivery', () => {
       5000,
       handle,
       DUMMY_URL,
-      '127.0.0.1',
+      'nanoclaw-auth-test',
     );
 
     // stdin check runs first in the interval, so set it immediately
@@ -600,7 +583,7 @@ describe('detectCodeDelivery', () => {
       1000,
       handle,
       DUMMY_URL,
-      '127.0.0.1',
+      'nanoclaw-auth-test',
       null,
     );
     expect(result).toBeNull();
@@ -618,7 +601,7 @@ describe('detectCodeDelivery', () => {
       500,
       handle,
       DUMMY_URL,
-      '127.0.0.1',
+      'nanoclaw-auth-test',
     );
     expect(result).toBeNull();
   });
@@ -635,7 +618,7 @@ describe('detectCodeDelivery', () => {
       30_000,
       handle,
       DUMMY_URL,
-      '127.0.0.1',
+      'nanoclaw-auth-test',
     );
 
     // Simulate container exit
@@ -670,7 +653,7 @@ describe('CodeDeliveryHandler.deliver', () => {
       5000,
       handle as any,
       'https://example.com/oauth',
-      '127.0.0.1',
+      'nanoclaw-auth-test',
     );
     output.value = 'Paste code here if prompted > ';
 
@@ -709,7 +692,7 @@ describe('CodeDeliveryHandler.deliver', () => {
       5000,
       handle as any,
       'https://example.com/oauth',
-      '127.0.0.1',
+      'nanoclaw-auth-test',
     );
     output.value = 'Paste code here if prompted > ';
 
@@ -749,7 +732,7 @@ describe('CodeDeliveryHandler.deliver', () => {
         10_000,
         handle as any,
         'https://example.com/oauth',
-        '127.0.0.1',
+        'nanoclaw-auth-test',
       );
       fs.writeFileSync(
         path.join(sessionDir, '.oauth-url'),
@@ -795,7 +778,7 @@ describe('CodeDeliveryHandler.deliver', () => {
         10_000,
         handle as any,
         'https://example.com/oauth',
-        '127.0.0.1',
+        'nanoclaw-auth-test',
       );
       fs.writeFileSync(
         path.join(sessionDir, '.oauth-url'),
@@ -852,14 +835,6 @@ describe('parseCallbackUrl', () => {
   it('returns null for non-URL input', () => {
     expect(parseCallbackUrl('not a url')).toBeNull();
     expect(parseCallbackUrl('')).toBeNull();
-  });
-});
-
-describe('isPortOpen', () => {
-  it('returns false for a port that is not listening', async () => {
-    // Use a high port unlikely to be in use
-    const result = await isPortOpen(59999, 500, '127.0.0.1');
-    expect(result).toBe(false);
   });
 });
 
