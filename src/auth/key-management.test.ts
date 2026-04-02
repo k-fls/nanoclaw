@@ -42,9 +42,9 @@ const mockExportPublicKey = vi.fn(
 );
 vi.mock('./gpg.js', () => ({
   isGpgAvailable: () => mockGpgAvailable(),
-  ensureGpgKey: (...args: any[]) => mockEnsureGpgKey(...args),
-  exportPublicKey: (...args: any[]) => mockExportPublicKey(...args),
-  gpgDecrypt: (...args: any[]) => mockGpgDecrypt(...args),
+  ensureGpgKey: mockEnsureGpgKey,
+  exportPublicKey: mockExportPublicKey,
+  gpgDecrypt: mockGpgDecrypt,
   isPgpMessage: (text: string) => text.includes('-----BEGIN PGP MESSAGE-----'),
 }));
 
