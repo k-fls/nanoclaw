@@ -586,4 +586,86 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
     expect(refreshResolved).not.toBeNull();
     expect(refreshResolved!.realToken).toBe(REAL_REFRESH);
   }, 45_000);
+
+  // ── 10. docker exec callback delivery + xdg-open-auth shim ────────
+
+  it('docker exec curl delivers callback to container localhost via xdg-open-auth shim', async () => {
+    const PORT = 19876;
+    const OAUTH_URL = `https://example.com/oauth?redirect_uri=http%3A%2F%2Flocalhost%3A${PORT}%2Fcallback`;
+
+    // Setup: copy auth shim + listener script into IPC dir (mounted at /workspace/ipc)
+    const { resolveGroupIpcPath } = await import('../group-folder.js');
+    const ipcDir = resolveGroupIpcPath(SCOPE);
+    const fsMod = await import('fs');
+    const pathMod = await import('path');
+
+    const shimSrc = pathMod.join(
+      process.cwd(),
+      'container',
+      'shims',
+      'xdg-open-auth',
+    );
+    const shimContent = fsMod
+      .readFileSync(shimSrc, 'utf-8')
+      .replace('/workspace/auth-ipc/.oauth-url', '/workspace/ipc/.oauth-url');
+    fsMod.writeFileSync(pathMod.join(ipcDir, 'xdg-open-auth'), shimContent, {
+      mode: 0o755,
+    });
+    try {
+      fsMod.unlinkSync(pathMod.join(ipcDir, '.oauth-url'));
+    } catch {}
+
+    const listenerScript = [
+      `const s = require('http').createServer((q,r) => {`,
+      `  require('fs').writeFileSync('/tmp/cb', q.url);`,
+      `  r.end('ok');`,
+      `});`,
+      `s.listen(${PORT}, '127.0.0.1', () => {`,
+      `  require('fs').writeFileSync('/tmp/listening', '1');`,
+      `});`,
+      `setTimeout(() => process.exit(0), 30000);`,
+    ].join('\n');
+    fsMod.writeFileSync(pathMod.join(ipcDir, 'listener.js'), listenerScript);
+
+    // Container: start listener, run shim (verifies port, writes .oauth-url), then wait.
+    // Host will read .oauth-url and deliver callback via docker exec.
+    const container = await h.startContainer(
+      `node /workspace/ipc/listener.js &
+       for i in $(seq 1 20); do [ -f /tmp/listening ] && break; sleep 0.1; done &&
+       /workspace/ipc/xdg-open-auth "${OAUTH_URL}" &&
+       wait`,
+      { scope: SCOPE },
+    );
+
+    try {
+      // Host: poll .oauth-url written by the shim (via IPC mount)
+      const oauthUrlPath = pathMod.join(ipcDir, '.oauth-url');
+      let shimUrl = '';
+      for (let i = 0; i < 30; i++) {
+        try {
+          shimUrl = fsMod.readFileSync(oauthUrlPath, 'utf-8').trim();
+        } catch {}
+        if (shimUrl) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(shimUrl).toContain(`localhost%3A${PORT}`);
+
+      // Host: deliver callback via docker exec (production mechanism)
+      const execResult = h.execInContainer(
+        container.containerName,
+        `curl -sf "http://localhost:${PORT}/callback?code=testcode123&state=teststate456"`,
+      );
+      expect(execResult.exitCode).toBe(0);
+
+      // Verify the listener received the callback
+      const cbResult = h.execInContainer(
+        container.containerName,
+        'cat /tmp/cb',
+      );
+      expect(cbResult.stdout).toContain('code=testcode123');
+      expect(cbResult.stdout).toContain('state=teststate456');
+    } finally {
+      await container.stop();
+    }
+  }, 60_000);
 });

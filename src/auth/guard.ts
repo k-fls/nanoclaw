@@ -61,6 +61,9 @@ export interface AuthGuard {
     agentError?: string,
   ): Promise<'not-auth' | 'reauth-ok' | 'reauth-failed'>;
 
+  /** Set the container name once known (after spawn). */
+  setContainerName(name: string): void;
+
   /**
    * Chat lock shared between the flow consumer and the output sender.
    * Acquire before sending messages to prevent interleaving.
@@ -100,6 +103,10 @@ export function createAuthGuard(
 
   return {
     chatLock,
+
+    setContainerName(name: string): void {
+      sessionCtx.containerName = name;
+    },
 
     async start(): Promise<boolean> {
       proxy.registerSessionContext(scope, sessionCtx);

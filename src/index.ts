@@ -355,38 +355,44 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const agentResult = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
-        await guard.chatLock.acquire();
-        try {
-          await channel.sendMessage(chatJid, text);
-        } finally {
-          guard.chatLock.release();
+  const agentResult = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    (name) => guard.setContainerName(name),
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        if (text) {
+          await guard.chatLock.acquire();
+          try {
+            await channel.sendMessage(chatJid, text);
+          } finally {
+            guard.chatLock.release();
+          }
+          outputSentToUser = true;
         }
-        outputSentToUser = true;
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
+      } else {
+        // Non-text events (tool use, thinking, etc.) — refresh typing indicator
+        channel.setTyping?.(chatJid, true)?.catch(() => {});
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    } else {
-      // Non-text events (tool use, thinking, etc.) — refresh typing indicator
-      channel.setTyping?.(chatJid, true)?.catch(() => {});
-    }
 
-    queue.notifyIdle(chatJid);
-    if (result.status === 'error') {
-      hadError = true;
-    }
-    guard.onStreamResult(result);
-  });
+      queue.notifyIdle(chatJid);
+      if (result.status === 'error') {
+        hadError = true;
+      }
+      guard.onStreamResult(result);
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -436,6 +442,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  onContainerName?: (name: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<{ status: 'success' | 'error'; error?: string; fatal?: boolean }> {
   const isMain = group.isMain === true;
@@ -489,8 +496,10 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder),
+      (proc, containerName) => {
+        onContainerName?.(containerName);
+        queue.registerProcess(chatJid, proc, containerName, group.folder);
+      },
       tokenEngine,
       wrappedOnOutput,
     );
