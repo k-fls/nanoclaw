@@ -153,7 +153,9 @@ function currentApp() {
   return appRef.current;
 }
 
-async function triggerMessageEvent(event: ReturnType<typeof createMessageEvent>) {
+async function triggerMessageEvent(
+  event: ReturnType<typeof createMessageEvent>,
+) {
   const handler = currentApp().eventHandlers.get('message');
   if (handler) await handler({ event });
 }
@@ -330,7 +332,10 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ user: 'U_BOT_123', text: 'Self message' });
+      const event = createMessageEvent({
+        user: 'U_BOT_123',
+        text: 'Self message',
+      });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
@@ -412,13 +417,17 @@ describe('SlackChannel', () => {
       await channel.connect();
 
       // First message — API call
-      await triggerMessageEvent(createMessageEvent({ user: 'U_USER_456', text: 'First' }));
+      await triggerMessageEvent(
+        createMessageEvent({ user: 'U_USER_456', text: 'First' }),
+      );
       // Second message — should use cache
-      await triggerMessageEvent(createMessageEvent({
-        user: 'U_USER_456',
-        text: 'Second',
-        ts: '1704067201.000000',
-      }));
+      await triggerMessageEvent(
+        createMessageEvent({
+          user: 'U_USER_456',
+          text: 'Second',
+          ts: '1704067201.000000',
+        }),
+      );
 
       expect(currentApp().client.users.info).toHaveBeenCalledTimes(1);
     });
@@ -428,7 +437,9 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      currentApp().client.users.info.mockRejectedValueOnce(new Error('API error'));
+      currentApp().client.users.info.mockRejectedValueOnce(
+        new Error('API error'),
+      );
 
       const event = createMessageEvent({ user: 'U_UNKNOWN', text: 'Hi' });
       await triggerMessageEvent(event);
@@ -833,17 +844,13 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
 
       // First page returns a cursor; second page returns no cursor
-      currentApp().client.conversations.list
-        .mockResolvedValueOnce({
-          channels: [
-            { id: 'C001', name: 'general', is_member: true },
-          ],
+      currentApp()
+        .client.conversations.list.mockResolvedValueOnce({
+          channels: [{ id: 'C001', name: 'general', is_member: true }],
           response_metadata: { next_cursor: 'cursor_page2' },
         })
         .mockResolvedValueOnce({
-          channels: [
-            { id: 'C002', name: 'random', is_member: true },
-          ],
+          channels: [{ id: 'C002', name: 'random', is_member: true }],
           response_metadata: {},
         });
 
@@ -851,7 +858,8 @@ describe('SlackChannel', () => {
 
       // Should have called conversations.list twice (once per page)
       expect(currentApp().client.conversations.list).toHaveBeenCalledTimes(2);
-      expect(currentApp().client.conversations.list).toHaveBeenNthCalledWith(2,
+      expect(currentApp().client.conversations.list).toHaveBeenNthCalledWith(
+        2,
         expect.objectContaining({ cursor: 'cursor_page2' }),
       );
 
@@ -878,7 +886,8 @@ describe('SlackChannel', () => {
             mimetype: 'image/png',
             size: 12345,
             url_private: 'https://files.slack.com/files-pri/T123/photo.png',
-            url_private_download: 'https://files.slack.com/files-pri/T123/download/photo.png',
+            url_private_download:
+              'https://files.slack.com/files-pri/T123/download/photo.png',
           },
         ],
       };
@@ -892,13 +901,17 @@ describe('SlackChannel', () => {
           filename: 'photo.png',
           size: 12345,
           mediaType: 'image',
-          ref: { url: 'https://files.slack.com/files-pri/T123/download/photo.png' },
+          ref: {
+            url: 'https://files.slack.com/files-pri/T123/download/photo.png',
+          },
         }),
       );
       expect(opts.onMessage).toHaveBeenCalledWith(
         'slack:C0123456789',
         expect.objectContaining({
-          attachments: [expect.objectContaining({ id: 'slack:media:test-123' })],
+          attachments: [
+            expect.objectContaining({ id: 'slack:media:test-123' }),
+          ],
         }),
       );
     });
@@ -938,8 +951,19 @@ describe('SlackChannel', () => {
       await channel.connect();
 
       const event = {
-        ...createMessageEvent({ text: 'bot file', botId: 'B_BOT', subtype: 'bot_message' }),
-        files: [{ id: 'F789', name: 'bot.png', mimetype: 'image/png', url_private: 'https://example.com' }],
+        ...createMessageEvent({
+          text: 'bot file',
+          botId: 'B_BOT',
+          subtype: 'bot_message',
+        }),
+        files: [
+          {
+            id: 'F789',
+            name: 'bot.png',
+            mimetype: 'image/png',
+            url_private: 'https://example.com',
+          },
+        ],
       };
       await triggerMessageEvent(event);
 
@@ -968,7 +992,15 @@ describe('SlackChannel', () => {
 
       const event = {
         ...createMessageEvent({ text: 'too large' }),
-        files: [{ id: 'F999', name: 'huge.bin', mimetype: 'application/octet-stream', size: 999999999, url_private: 'https://example.com' }],
+        files: [
+          {
+            id: 'F999',
+            name: 'huge.bin',
+            mimetype: 'application/octet-stream',
+            size: 999999999,
+            url_private: 'https://example.com',
+          },
+        ],
       };
       await triggerMessageEvent(event);
 
@@ -989,7 +1021,14 @@ describe('SlackChannel', () => {
       // Video file
       const event = {
         ...createMessageEvent({ text: '' }),
-        files: [{ id: 'FV', name: 'clip.mp4', mimetype: 'video/mp4', url_private: 'https://example.com' }],
+        files: [
+          {
+            id: 'FV',
+            name: 'clip.mp4',
+            mimetype: 'video/mp4',
+            url_private: 'https://example.com',
+          },
+        ],
       };
       await triggerMessageEvent(event);
 

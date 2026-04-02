@@ -77,7 +77,8 @@ export class SlackChannel implements Channel {
       // Bolt's event type is the full MessageEvent union (17+ subtypes).
       // We filter on subtype first, then narrow to the two types we handle.
       const subtype = (event as { subtype?: string }).subtype;
-      if (subtype && subtype !== 'bot_message' && subtype !== 'file_share') return;
+      if (subtype && subtype !== 'bot_message' && subtype !== 'file_share')
+        return;
 
       // After filtering, event is either GenericMessageEvent or BotMessageEvent
       const msg = event as HandledMessageEvent;
@@ -100,8 +101,7 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
 
-      const isBotMessage =
-        !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
@@ -119,20 +119,25 @@ export class SlackChannel implements Channel {
       let content = msg.text || '';
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
+        if (
+          content.includes(mentionPattern) &&
+          !TRIGGER_PATTERN.test(content)
+        ) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
       }
 
       // Process file attachments via processInboundMedia
-      const files = (msg as any).files as Array<{
-        id: string;
-        name?: string;
-        mimetype?: string;
-        size?: number;
-        url_private?: string;
-        url_private_download?: string;
-      }> | undefined;
+      const files = (msg as any).files as
+        | Array<{
+            id: string;
+            name?: string;
+            mimetype?: string;
+            size?: number;
+            url_private?: string;
+            url_private_download?: string;
+          }>
+        | undefined;
 
       let attachments: import('../types.js').MediaAttachment[] | undefined;
       if (files?.length && !isBotMessage) {
@@ -141,7 +146,9 @@ export class SlackChannel implements Channel {
           const downloadUrl = file.url_private_download || file.url_private;
           if (!downloadUrl) continue;
 
-          const mediaType = this.guessMediaType(file.mimetype || 'application/octet-stream');
+          const mediaType = this.guessMediaType(
+            file.mimetype || 'application/octet-stream',
+          );
           const result = processInboundMedia(group.folder, {
             channel: 'slack',
             mimetype: file.mimetype || 'application/octet-stream',
@@ -186,10 +193,7 @@ export class SlackChannel implements Channel {
       this.botUserId = auth.user_id as string;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
-      logger.warn(
-        { err },
-        'Connected to Slack but failed to get bot user ID',
-      );
+      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
 
     this.connected = true;
@@ -248,7 +252,11 @@ export class SlackChannel implements Channel {
     await this.app.stop();
   }
 
-  async sendMedia(jid: string, filePath: string, options?: MediaSendOptions): Promise<void> {
+  async sendMedia(
+    jid: string,
+    filePath: string,
+    options?: MediaSendOptions,
+  ): Promise<void> {
     if (!this.connected) {
       logger.warn('Slack not connected, cannot send media');
       return;
@@ -279,7 +287,8 @@ export class SlackChannel implements Channel {
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!response.ok) throw new Error(`Slack file download failed: ${response.status}`);
+    if (!response.ok)
+      throw new Error(`Slack file download failed: ${response.status}`);
     return Buffer.from(await response.arrayBuffer());
   }
 
@@ -331,9 +340,7 @@ export class SlackChannel implements Channel {
     return 'document';
   }
 
-  private async resolveUserName(
-    userId: string,
-  ): Promise<string | undefined> {
+  private async resolveUserName(userId: string): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);
