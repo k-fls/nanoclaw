@@ -29,6 +29,7 @@ import {
 import {
   ContainerOutput,
   runContainerAgent,
+  snapshotContainerFiles,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -676,6 +677,7 @@ function recoverPendingMessages(): void {
 
 function ensureContainerSystemRunning(): void {
   ensureContainerRuntimeRunning();
+  snapshotContainerFiles();
   cleanupOrphans();
 }
 

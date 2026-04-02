@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { parseCommand, extractCommand, handleCommand } from './commands.js';
+import { ASSISTANT_NAME } from './config.js';
 import type { NewMessage, RegisteredGroup } from './types.js';
 
 // Mock registry so /auth <provider> can validate discovery providers
@@ -177,8 +178,7 @@ describe('extractCommand', () => {
   });
 
   it('extracts command from trigger message in non-main group', () => {
-    // TRIGGER_PATTERN is ^@{ASSISTANT_NAME}\b — default is "Andy"
-    const messages = [msg('context'), msg('@Andy /stop')];
+    const messages = [msg('context'), msg(`@${ASSISTANT_NAME} /stop`)];
     const result = extractCommand(messages, false);
     expect(result).not.toBeNull();
     expect(result!.cmd.name).toBe('stop');
@@ -196,7 +196,7 @@ describe('extractCommand', () => {
   });
 
   it('returns null when trigger message is not a command', () => {
-    const messages = [msg('@Andy hello')];
+    const messages = [msg(`@${ASSISTANT_NAME} hello`)];
     expect(extractCommand(messages, false)).toBeNull();
   });
 });

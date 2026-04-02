@@ -18,6 +18,7 @@ import {
   readonlyMountArgs,
   stopContainer,
 } from '../container-runtime.js';
+import { getSnapshotDir } from '../container-runner.js';
 import { getProxy } from '../credential-proxy.js';
 import {
   allocateContainerIP,
@@ -41,38 +42,14 @@ export interface ExecContainerOpts {
   credentialScope: CredentialScope;
 }
 
-// Auth shim: writes URL to file so detectCodeDelivery can poll it.
-// Agent containers use a different shim (container/shims/xdg-open) that POSTs
-// to the credential proxy's browser-open endpoint for the flow queue path.
-const XDG_OPEN_SHIM = path.join(
-  process.cwd(),
-  'container',
-  'shims',
-  'xdg-open-auth',
-);
-
-/**
- * Auth-exec shim: mounted at /app/src/index.ts so the standard entrypoint
- * compiles and runs it instead of agent-runner. Reads AUTH_EXEC_CMD env var
- * and spawns the real command.
- */
-const AUTH_EXEC_SHIM = path.join(
-  process.cwd(),
-  'container',
-  'shims',
-  'auth-exec.ts',
-);
-
-/** Entrypoint script (shared with agent containers, mounted read-only). */
-const ENTRYPOINT_PATH = path.join(process.cwd(), 'container', 'entrypoint.sh');
-
-/** Agent-runner tsconfig.json — needed by entrypoint for tsc compilation. */
-const AGENT_RUNNER_TSCONFIG = path.join(
-  process.cwd(),
-  'container',
-  'agent-runner',
-  'tsconfig.json',
-);
+// Resolve paths from the snapshot dir (frozen at startup) so a project
+// update while running doesn't break auth containers mid-flight.
+const shimPath = (name: string) => path.join(getSnapshotDir(), 'shims', name);
+const XDG_OPEN_SHIM = () => shimPath('xdg-open-auth');
+const AUTH_EXEC_SHIM = () => shimPath('auth-exec.ts');
+const ENTRYPOINT_PATH = () => path.join(getSnapshotDir(), 'entrypoint.sh');
+const AGENT_RUNNER_TSCONFIG = () =>
+  path.join(getSnapshotDir(), 'agent-runner', 'tsconfig.json');
 
 /**
  * Spawn a command inside a nanoclaw-agent container with transparent proxy.
@@ -128,24 +105,24 @@ export function startExecInContainer(
   // Pass the real command via env var — the auth-exec shim reads it
   args.push('-e', `AUTH_EXEC_CMD=${JSON.stringify(command)}`);
 
-  // Mount auth-exec shim over agent-runner source so entrypoint compiles + runs it
-  args.push(...readonlyMountArgs(AUTH_EXEC_SHIM, '/app/src/index.ts'));
+  // Mount from snapshot (frozen at startup by snapshotContainerFiles).
+  args.push(...readonlyMountArgs(AUTH_EXEC_SHIM(), '/app/src/index.ts'));
 
-  // Mount entrypoint + tsconfig (shared with agent containers)
-  if (fs.existsSync(ENTRYPOINT_PATH)) {
-    args.push(...readonlyMountArgs(ENTRYPOINT_PATH, '/app/entrypoint.sh'));
+  const entrypoint = ENTRYPOINT_PATH();
+  if (fs.existsSync(entrypoint)) {
+    args.push(...readonlyMountArgs(entrypoint, '/app/entrypoint.sh'));
   }
-  if (fs.existsSync(AGENT_RUNNER_TSCONFIG)) {
-    args.push(
-      ...readonlyMountArgs(AGENT_RUNNER_TSCONFIG, '/app/tsconfig.json'),
-    );
+  const tsconfig = AGENT_RUNNER_TSCONFIG();
+  if (fs.existsSync(tsconfig)) {
+    args.push(...readonlyMountArgs(tsconfig, '/app/tsconfig.json'));
   }
 
   // Infrastructure mounts
   args.push('-v', `${authIpcDir}:/workspace/auth-ipc`);
-  if (fs.existsSync(XDG_OPEN_SHIM)) {
-    args.push('-v', `${XDG_OPEN_SHIM}:/usr/local/bin/xdg-open:ro`);
-    args.push('-v', `${XDG_OPEN_SHIM}:/usr/bin/xdg-open:ro`);
+  const xdgOpen = XDG_OPEN_SHIM();
+  if (fs.existsSync(xdgOpen)) {
+    args.push(...readonlyMountArgs(xdgOpen, '/usr/local/bin/xdg-open'));
+    args.push(...readonlyMountArgs(xdgOpen, '/usr/bin/xdg-open'));
   }
 
   // Provider-specific mounts

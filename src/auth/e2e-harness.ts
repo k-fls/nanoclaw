@@ -40,7 +40,11 @@ import {
 import type { OAuthProvider, SubstituteConfig } from './oauth-types.js';
 import { asGroupScope } from './oauth-types.js';
 import type { TokenRole } from './token-substitute.js';
-import { buildContainerArgs, buildVolumeMounts } from '../container-runner.js';
+import {
+  buildContainerArgs,
+  buildVolumeMounts,
+  snapshotContainerFiles,
+} from '../container-runner.js';
 import { allocateContainerIP, ensureNetwork } from './container-args.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from '../config.js';
@@ -261,9 +265,10 @@ export class OAuthE2EHarness {
   }
 
   async start(): Promise<void> {
-    // 0. Initialize credential store and ensure Docker network exists
+    // 0. Initialize credential store, ensure Docker network, snapshot container files
     initCredentialStore();
     ensureNetwork();
+    snapshotContainerFiles();
 
     // 1. Start mock upstream
     await this.mockUpstream.start();
