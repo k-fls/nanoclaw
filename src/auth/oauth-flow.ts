@@ -24,7 +24,6 @@ import { logger } from '../logger.js';
 function pushOAuthFlow(
   ctx: ContainerSessionContext,
   url: string,
-  containerIP: string,
   providerId: string,
   reason: string,
 ): string {
@@ -67,11 +66,15 @@ function pushOAuthFlow(
 
   // Build replyFn only for localhost callbacks — non-localhost redirects
   // are handled by the OAuth provider directly (browser redirect).
-  // Reuses callbackHandler for URL parsing and validation.
+  // Delivery uses docker exec to curl localhost inside the container.
   let handler: ReturnType<typeof callbackHandler> | null = null;
-  if (isLocalhost && callbackPort && containerIP) {
-    const host = containerIP.includes(':') ? `[${containerIP}]` : containerIP;
-    handler = callbackHandler(url, host, callbackPort, callbackPath);
+  if (isLocalhost && callbackPort && ctx.containerName) {
+    handler = callbackHandler(
+      url,
+      ctx.containerName,
+      callbackPort,
+      callbackPath,
+    );
   }
 
   ctx.flowQueue.push(
@@ -103,11 +106,10 @@ export function wireAuthCallbacks(proxy: CredentialProxy): void {
   setOAuthInitiationResolver((eventScope) => {
     const ctx = proxy.getSessionContext(eventScope);
     if (!ctx) return null;
-    return (authUrl: string, providerId: string, containerIP: string) => {
+    return (authUrl: string, providerId: string, _containerIP: string) => {
       pushOAuthFlow(
         ctx,
         authUrl,
-        containerIP,
         providerId,
         'proxy intercepted authorization endpoint',
       );
@@ -147,7 +149,6 @@ export function wireAuthCallbacks(proxy: CredentialProxy): void {
       return pushOAuthFlow(
         ctx,
         url,
-        containerIP,
         providerId,
         'xdg-open shim detected OAuth URL',
       );

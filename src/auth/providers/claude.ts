@@ -26,6 +26,7 @@ import {
 import { IDLE_TIMEOUT } from '../../config.js';
 import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
+import { CONTAINER_RUNTIME_BIN } from '../../container-runtime.js';
 import { proxyPipe, getProxy } from '../../credential-proxy.js';
 import {
   RESELECT,
@@ -187,32 +188,6 @@ function stripAnsi(text: string): string {
 }
 
 /**
- * Check if a TCP port is open on a given host.
- * Returns true if a connection is established within timeoutMs.
- */
-export function isPortOpen(
-  port: number,
-  timeoutMs: number,
-  host: string,
-): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = net.createConnection({ host, port, timeout: timeoutMs });
-    sock.once('connect', () => {
-      sock.destroy();
-      resolve(true);
-    });
-    sock.once('error', () => {
-      sock.destroy();
-      resolve(false);
-    });
-    sock.once('timeout', () => {
-      sock.destroy();
-      resolve(false);
-    });
-  });
-}
-
-/**
  * Parse a localhost callback URL to extract code, state, and port.
  * Accepts URLs like: http://localhost:54321/callback?code=abc&state=xyz
  * Returns the port so callers can verify it matches the expected callback port.
@@ -293,7 +268,7 @@ export function detectCodeDelivery(
   timeoutMs: number,
   handle: ExecHandle,
   stdoutOauthUrl: string,
-  containerIP: string,
+  containerName: string,
   pastePrompt: RegExp | null = DEFAULT_PASTE_PROMPT_RE,
 ): Promise<CodeDeliveryHandler | null> {
   const oauthUrlPath = path.join(authIpcDir, OAUTH_URL_FILE);
@@ -309,12 +284,16 @@ export function detectCodeDelivery(
     };
 
     const check = setInterval(() => {
-      // Check stdout for paste prompt (only if pattern provided)
+      // (a) Check stdout for paste prompt
       if (pastePrompt && pastePrompt.test(stripAnsi(outputRef.value))) {
         done(stdinHandler(stdoutOauthUrl, handle));
         return;
       }
-      // Check for shim-written URL file (callback path)
+
+      // (b) Check for shim-written URL file.
+      // The shim only writes when the CLI opens a localhost callback listener,
+      // and waits until the port is open before writing — so presence of the
+      // file means localhost:port is ready for delivery via docker exec.
       try {
         const url = fs.readFileSync(oauthUrlPath, 'utf-8').trim();
         if (url) {
@@ -323,13 +302,8 @@ export function detectCodeDelivery(
           );
           if (portMatch) {
             const port = parseInt(portMatch[1], 10);
-            isPortOpen(port, 5000, containerIP).then((open) => {
-              done(open ? callbackHandler(url, containerIP, port) : null);
-            });
-          } else {
-            done(null);
+            done(callbackHandler(url, containerName, port));
           }
-          return;
         }
       } catch {
         /* not yet */
@@ -370,15 +344,16 @@ function stdinHandler(
 
 /**
  * Build a CodeDeliveryHandler that validates user input as a callback URL
- * and delivers the code+state to a localhost callback port.
+ * and delivers the code+state via docker exec curl inside the container
+ * (the CLI binds to localhost which isn't reachable from outside).
  *
- * @param host  Target host for the callback (localhost for reauth, container bridge IP for flow queue).
+ * @param containerName  Docker container name for exec.
  * @param port  Expected callback port — mismatches are rejected so the user can retry.
  * @param cbPath  Callback path (default: /callback).
  */
 export function callbackHandler(
   oauthUrl: string,
-  host: string,
+  containerName: string,
   port: number,
   cbPath = '/callback',
 ): CodeDeliveryHandler {
@@ -406,17 +381,20 @@ export function callbackHandler(
           response: `Port mismatch: URL has port ${parsed.port} but expected ${port}. Make sure you copied the correct URL.`,
         };
       }
-      const callbackUrl = `http://${host}:${port}${cbPath}?code=${encodeURIComponent(parsed.code)}&state=${encodeURIComponent(parsed.state)}`;
+      const callbackUrl = `http://localhost:${port}${cbPath}?code=${encodeURIComponent(parsed.code)}&state=${encodeURIComponent(parsed.state)}`;
       try {
-        const res = await fetch(callbackUrl, {
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (res.ok) {
-          return { done: true };
-        }
-        return { done: false, response: `Callback returned ${res.status}` };
+        const { execFileSync } = await import('child_process');
+        const result = execFileSync(
+          CONTAINER_RUNTIME_BIN,
+          ['exec', containerName, 'curl', '-sf', callbackUrl],
+          { timeout: 10_000 },
+        );
+        return { done: true };
       } catch (err) {
-        logger.warn({ callbackUrl, err }, 'Callback delivery failed');
+        logger.warn(
+          { containerName, callbackUrl, err },
+          'Callback delivery failed',
+        );
         return {
           done: true,
           response: err instanceof Error ? err.message : String(err),
@@ -506,7 +484,7 @@ async function runOAuthFlow(
   } catch {
     /* ignore */
   }
-  const { handle, containerIP } = ctx.startExec(
+  const { handle, containerName } = ctx.startExec(
     // Wide PTY so Ink doesn't wrap long URLs/tokens (\r overwrites corrupt them)
     ['script', '-qc', `stty columns 500 && ${cliCommand}`, '/dev/null'],
     claudeExecOpts(sessionDir),
@@ -539,7 +517,7 @@ async function runOAuthFlow(
     DELIVERY_DETECT_MS,
     handle,
     urlMatch[0],
-    containerIP,
+    containerName,
     pastePrompt,
   );
   if (!delivery) {

@@ -31,6 +31,9 @@ export interface ContainerSessionContext {
   /** The group's credential scope. */
   scope: string;
 
+  /** Container name for docker exec (set after spawn). */
+  containerName: string;
+
   /** Pending auth errors tracker — wires proxy to auth guard. */
   pendingErrors: PendingAuthErrors;
 
@@ -76,6 +79,7 @@ export function createSessionContext(
 
   return {
     scope,
+    containerName: '',
     pendingErrors,
     flowQueue,
     statusRegistry,

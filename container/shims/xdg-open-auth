@@ -1,6 +1,24 @@
 #!/bin/sh
 # Shim replacing xdg-open inside auth containers.
-# Captures the URL (localhost callback) for the auth flow.
+# Captures the OAuth URL for the auth flow.
+# If the URL has a localhost callback port, waits until it's listening
+# before writing — so the host knows the port is ready for delivery.
 # Exits 0 so the CLI thinks the browser opened and waits for the callback.
-echo "$1" > /workspace/auth-ipc/.oauth-url
+#
+# Uses only tools available in node:22-slim (no nc, no grep -P).
+
+URL="$1"
+PORT=$(echo "$URL" | sed -n 's/.*redirect_uri=http%3A%2F%2Flocalhost%3A\([0-9]*\).*/\1/p')
+
+if [ -n "$PORT" ]; then
+  # Wait up to 5s for the CLI to open its callback listener
+  for i in $(seq 1 50); do
+    if node -e "const s=require('net').connect($PORT,'127.0.0.1');s.on('connect',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1))" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+fi
+
+echo "$URL" > /workspace/auth-ipc/.oauth-url
 exit 0

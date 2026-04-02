@@ -228,7 +228,7 @@ export function startExecInContainer(
     },
   };
 
-  return { handle, containerIP };
+  return { handle, containerIP, containerName };
 }
 
 /** Base data directory for a scope (e.g. data/sessions/{scope}). */

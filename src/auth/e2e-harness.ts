@@ -441,7 +441,12 @@ export class OAuthE2EHarness {
       timeoutMs?: number;
       scope?: string;
     } = {},
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  ): Promise<{
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    containerName: string;
+  }> {
     const { env = {}, timeoutMs = 30_000, scope = 'e2e-test' } = opts;
 
     // Create a minimal RegisteredGroup for the real buildVolumeMounts
@@ -548,14 +553,141 @@ export class OAuthE2EHarness {
           markerIdx >= 0
             ? stdout.slice(markerIdx + marker.length + 1) // +1 for \n
             : stdout;
-        resolve({ exitCode: code ?? 1, stdout: cleanStdout, stderr });
+        resolve({
+          exitCode: code ?? 1,
+          stdout: cleanStdout,
+          stderr,
+          containerName,
+        });
       });
       proc.on('error', (err) => {
         clearTimeout(timer);
         releaseIP();
-        resolve({ exitCode: 1, stdout, stderr: stderr + err.message });
+        resolve({
+          exitCode: 1,
+          stdout,
+          stderr: stderr + err.message,
+          containerName,
+        });
       });
     });
+  }
+
+  /**
+   * Start a long-running container and return a handle.
+   * The container runs the command, which should block (e.g. sleep, nc -l).
+   * Use execInContainer() to run commands inside it, then stop() to clean up.
+   */
+  async startContainer(
+    command: string,
+    opts: { scope?: string } = {},
+  ): Promise<{
+    containerName: string;
+    stop: () => Promise<{ stdout: string; stderr: string }>;
+  }> {
+    const { scope = 'e2e-test' } = opts;
+    const group = this.ensureGroupFolder(scope);
+    const volumeMounts = buildVolumeMounts(group, false);
+    const containerName = `nanoclaw-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const { ip: containerIP, release: releaseIP } = allocateContainerIP(
+      asGroupScope(scope),
+      this.proxy,
+    );
+
+    const containerArgs = buildContainerArgs(
+      volumeMounts,
+      containerName,
+      group,
+      this.tokenEngine,
+      containerIP,
+    );
+
+    for (let i = 0; i < containerArgs.length; i++) {
+      if (
+        containerArgs[i] === '-e' &&
+        containerArgs[i + 1]?.startsWith('PROXY_PORT=')
+      ) {
+        containerArgs[i + 1] = `PROXY_PORT=${this.proxyPort}`;
+      }
+    }
+
+    const runId = crypto.randomUUID().replace(/-/g, '');
+    const testScript = path.join(this.tmpDir, `e2e-index-${runId}.js`);
+    fs.writeFileSync(
+      testScript,
+      `const { execSync } = require('child_process');\n` +
+        `try { execSync(${JSON.stringify(command)}, { stdio: 'inherit', shell: '/bin/bash' }); }\n` +
+        `catch (e) { process.exit(e.status || 1); }\n`,
+    );
+    const noopTsc = path.join(this.tmpDir, `tsc-${runId}`);
+    fs.writeFileSync(noopTsc, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
+    containerArgs.splice(
+      imageIdx,
+      0,
+      '-v',
+      `${testScript}:/tmp/dist/index.js`,
+      '-v',
+      `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
+    );
+
+    const proc = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    proc.stdin.end();
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d: Buffer) => {
+      stdout += d.toString();
+    });
+    proc.stderr.on('data', (d: Buffer) => {
+      stderr += d.toString();
+    });
+
+    // Wait for the entrypoint to finish setup (iptables, CA, tsc, setpriv)
+    // by polling for our script's output or a short delay
+    await new Promise((r) => setTimeout(r, 3000));
+
+    return {
+      containerName,
+      stop: () =>
+        new Promise((resolve) => {
+          proc.on('close', () => {
+            releaseIP();
+            resolve({ stdout, stderr });
+          });
+          try {
+            execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${containerName}`, {
+              stdio: 'pipe',
+            });
+          } catch {
+            proc.kill('SIGKILL');
+          }
+        }),
+    };
+  }
+
+  /** Run a command inside a running container via docker exec. */
+  execInContainer(
+    containerName: string,
+    command: string,
+    timeoutMs = 10_000,
+  ): { exitCode: number; stdout: string; stderr: string } {
+    try {
+      const stdout = execSync(
+        `${CONTAINER_RUNTIME_BIN} exec ${containerName} sh -c ${JSON.stringify(command)}`,
+        { timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'] },
+      ).toString();
+      return { exitCode: 0, stdout, stderr: '' };
+    } catch (err: any) {
+      return {
+        exitCode: err.status ?? 1,
+        stdout: err.stdout?.toString() ?? '',
+        stderr: err.stderr?.toString() ?? '',
+      };
+    }
   }
 
   /**
