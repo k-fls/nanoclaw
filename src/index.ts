@@ -66,7 +66,12 @@ import {
   saveMediaFile,
   writeDownloadError,
 } from './media.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  decodeMessages,
+  findChannel,
+  formatMessages,
+  formatOutbound,
+} from './router.js';
 import { restoreRemoteControl } from './remote-control.js';
 import {
   isSenderAllowed,
@@ -315,11 +320,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
+  // Decode channel-specific encoding (e.g. Slack entities) for processing
+  const decoded = decodeMessages(missedMessages, channel);
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
-    const hasTrigger = missedMessages.some(
+    const hasTrigger = decoded.some(
       (m) =>
         triggerPattern.test(m.content.trim()) &&
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
@@ -329,9 +337,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Check for /command before invoking the agent
   const cmdCtx = commandContext(channel, chatJid, group);
-  if (await executeCommand(missedMessages, cmdCtx)) return true;
+  if (await executeCommand(decoded, cmdCtx)) return true;
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const prompt = formatMessages(decoded, TIMEZONE);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -604,13 +612,16 @@ async function startMessageLoop(): Promise<void> {
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
+          // Decode channel-specific encoding (e.g. Slack entities)
+          const decodedGroup = decodeMessages(groupMessages, channel);
+
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
             const triggerPattern = getTriggerPattern(group.trigger);
             const allowlistCfg = loadSenderAllowlist();
-            const hasTrigger = groupMessages.some(
+            const hasTrigger = decodedGroup.some(
               (m) =>
                 triggerPattern.test(m.content.trim()) &&
                 (m.is_from_me ||
@@ -621,7 +632,7 @@ async function startMessageLoop(): Promise<void> {
 
           // Check for /command before piping to container
           const cmdCtx = commandContext(channel, chatJid, group);
-          if (await executeCommand(groupMessages, cmdCtx)) continue;
+          if (await executeCommand(decodedGroup, cmdCtx)) continue;
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
@@ -631,8 +642,9 @@ async function startMessageLoop(): Promise<void> {
             ASSISTANT_NAME,
             MAX_MESSAGES_PER_PROMPT,
           );
+          const decodedPending = decodeMessages(allPending, channel);
           const messagesToSend =
-            allPending.length > 0 ? allPending : groupMessages;
+            decodedPending.length > 0 ? decodedPending : decodedGroup;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {

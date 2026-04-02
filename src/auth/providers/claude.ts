@@ -195,7 +195,13 @@ function stripAnsi(text: string): string {
 export function parseCallbackUrl(
   input: string,
 ): { code: string; state: string; port: number } | null {
-  const trimmed = input.trim();
+  // Slack wraps URLs in angle brackets and HTML-encodes ampersands:
+  //   <http://localhost:1234/callback?code=abc&amp;state=xyz>
+  // Should be handled by channel adapter, but this is a precaution.
+  let trimmed = input.trim();
+  if (trimmed.startsWith('<') && trimmed.endsWith('>')) {
+    trimmed = trimmed.slice(1, -1).replace(/&amp;/g, '&');
+  }
   try {
     const url = new URL(trimmed);
     const code = url.searchParams.get('code');

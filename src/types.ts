@@ -120,6 +120,9 @@ export interface Channel {
     options?: MediaSendOptions,
   ): Promise<void>;
   downloadMedia?(ref: unknown): Promise<Buffer>;
+  // Optional: decode channel-specific encoding from stored messages.
+  // Called after reading from DB, before trigger matching and prompt formatting.
+  decodeInbound?(text: string): string;
 }
 
 // Callback type that channels use to deliver inbound messages
