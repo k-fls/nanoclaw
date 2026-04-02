@@ -62,6 +62,31 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Container file snapshot — freeze mounted files once at startup so a
+// project update while NanoClaw is running doesn't break containers.
+// ---------------------------------------------------------------------------
+
+let _snapshotDir = '';
+
+/** Snapshot path, available after snapshotContainerFiles(). */
+export function getSnapshotDir(): string {
+  return _snapshotDir;
+}
+
+/**
+ * Copy the entire container/ directory into a stable snapshot so a project
+ * update while NanoClaw is running doesn't break containers mid-flight.
+ * Called once at startup before any container can be spawned.
+ */
+export function snapshotContainerFiles(): void {
+  _snapshotDir = path.join(DATA_DIR, 'snapshot', 'container');
+  const src = path.join(process.cwd(), 'container');
+  if (!fs.existsSync(src)) return;
+  fs.cpSync(src, _snapshotDir, { recursive: true });
+  logger.info({ dir: _snapshotDir }, 'Container directory snapshotted');
+}
+
 /** @internal Exported for e2e test reuse. */
 export function buildVolumeMounts(
   group: RegisteredGroup,
@@ -173,8 +198,8 @@ export function buildVolumeMounts(
     readonly: false,
   });
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  // Sync skills from snapshot into each group's .claude/skills/
+  const skillsSrc = path.join(_snapshotDir, 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
@@ -202,15 +227,9 @@ export function buildVolumeMounts(
     readonly: false,
   });
 
-  // Copy agent-runner source into a per-group writable location so agents
-  // can customize it (add tools, change behavior) without affecting other
-  // groups. Recompiled on container startup via entrypoint.sh.
-  const agentRunnerSrc = path.join(
-    projectRoot,
-    'container',
-    'agent-runner',
-    'src',
-  );
+  // Copy agent-runner source from snapshot into a per-group writable location
+  // so agents can customize it without affecting other groups.
+  const agentRunnerSrc = path.join(_snapshotDir, 'agent-runner', 'src');
   const groupAgentRunnerDir = path.join(
     DATA_DIR,
     'sessions',
@@ -235,44 +254,34 @@ export function buildVolumeMounts(
     readonly: false,
   });
 
-  // Mount tsconfig.json so the entrypoint can compile from /app (image root).
-  // Only package*.json are COPY'd into the image; tsconfig.json is not.
-  const agentRunnerTsconfig = path.join(
-    projectRoot,
-    'container',
-    'agent-runner',
-    'tsconfig.json',
-  );
-  if (fs.existsSync(agentRunnerTsconfig)) {
+  // Mount from snapshot (copied once at startup by snapshotContainerFiles).
+  const tsconfigSnap = path.join(_snapshotDir, 'agent-runner', 'tsconfig.json');
+  if (fs.existsSync(tsconfigSnap)) {
     mounts.push({
-      hostPath: agentRunnerTsconfig,
+      hostPath: tsconfigSnap,
       containerPath: '/app/tsconfig.json',
       readonly: true,
     });
   }
 
-  // Mount xdg-open shim so any tool (GitHub CLI, gcloud, etc.) that triggers
-  // OAuth has its browser-open intercepted by the credential proxy.
-  const xdgOpenShim = path.join(projectRoot, 'container', 'shims', 'xdg-open');
-  if (fs.existsSync(xdgOpenShim)) {
+  const xdgOpenSnap = path.join(_snapshotDir, 'shims', 'xdg-open');
+  if (fs.existsSync(xdgOpenSnap)) {
     mounts.push({
-      hostPath: xdgOpenShim,
+      hostPath: xdgOpenSnap,
       containerPath: '/usr/local/bin/xdg-open',
       readonly: true,
     });
     mounts.push({
-      hostPath: xdgOpenShim,
+      hostPath: xdgOpenSnap,
       containerPath: '/usr/bin/xdg-open',
       readonly: true,
     });
   }
 
-  // Mount entrypoint read-only so changes don't require image rebuild.
-  // Runs as root before setpriv — read-only prevents agent tampering.
-  const entrypointPath = path.join(projectRoot, 'container', 'entrypoint.sh');
-  if (fs.existsSync(entrypointPath)) {
+  const entrypointSnap = path.join(_snapshotDir, 'entrypoint.sh');
+  if (fs.existsSync(entrypointSnap)) {
     mounts.push({
-      hostPath: entrypointPath,
+      hostPath: entrypointSnap,
       containerPath: '/app/entrypoint.sh',
       readonly: true,
     });
