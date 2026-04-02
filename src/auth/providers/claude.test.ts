@@ -836,6 +836,28 @@ describe('parseCallbackUrl', () => {
     expect(parseCallbackUrl('not a url')).toBeNull();
     expect(parseCallbackUrl('')).toBeNull();
   });
+
+  it('strips Slack angle brackets', () => {
+    const result = parseCallbackUrl(
+      '<http://localhost:9999/callback?code=c&state=s>',
+    );
+    expect(result).toEqual({ code: 'c', state: 's', port: 9999 });
+  });
+
+  it('decodes Slack HTML-encoded ampersands', () => {
+    const result = parseCallbackUrl(
+      '<http://localhost:9999/callback?code=abc&amp;state=xyz>',
+    );
+    expect(result).toEqual({ code: 'abc', state: 'xyz', port: 9999 });
+  });
+
+  it('does not decode &amp; without Slack brackets', () => {
+    // Bare URL with literal &amp; should fail (state not found)
+    const result = parseCallbackUrl(
+      'http://localhost:9999/callback?code=abc&amp;state=xyz',
+    );
+    expect(result).toBeNull();
+  });
 });
 
 describe('extractStreamRequestId', () => {

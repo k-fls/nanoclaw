@@ -50,3 +50,32 @@ export function findChannel(
 ): Channel | undefined {
   return channels.find((c) => c.ownsJid(jid));
 }
+
+/**
+ * Fallback Slack decoder for compatibility with older slack channel code
+ * that doesn't implement decodeInbound yet. Handles entities, URLs, and
+ * mentions but cannot resolve bot mention → trigger (needs bot user ID).
+ */
+function fallbackSlackDecode(text: string): string {
+  return text
+    .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, '$2')
+    .replace(/<(https?:\/\/[^>]+)>/g, '$1')
+    .replace(/<#C[A-Z0-9]+\|([^>]+)>/g, '#$1')
+    .replace(/<@(U[A-Z0-9]+)>/g, '@$1')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+/** Decode channel-specific encoding from stored messages (e.g. Slack entities). */
+export function decodeMessages(
+  msgs: NewMessage[],
+  channel: Channel,
+): NewMessage[] {
+  let decode = channel.decodeInbound?.bind(channel);
+  if (!decode && channel.name === 'slack') {
+    decode = fallbackSlackDecode;
+  }
+  if (!decode) return msgs;
+  return msgs.map((m) => ({ ...m, content: decode(m.content) }));
+}

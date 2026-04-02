@@ -99,6 +99,9 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: decode channel-specific encoding from stored messages.
+  // Called after reading from DB, before trigger matching and prompt formatting.
+  decodeInbound?(text: string): string;
 }
 
 // Callback type that channels use to deliver inbound messages

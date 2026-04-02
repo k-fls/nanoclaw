@@ -199,6 +199,28 @@ describe('extractCommand', () => {
     const messages = [msg(`@${ASSISTANT_NAME} hello`)];
     expect(extractCommand(messages, false)).toBeNull();
   });
+
+  it('extracts command after Slack bot mention is decoded to trigger', () => {
+    // After decodeMessages: <@UBOTID> /auth → @AssistantName /auth
+    const messages = [msg(`@${ASSISTANT_NAME} /auth`)];
+    const result = extractCommand(messages, false);
+    expect(result).not.toBeNull();
+    expect(result!.cmd.name).toBe('auth');
+  });
+
+  it('extracts command with args after decoded bot mention', () => {
+    const messages = [msg(`@${ASSISTANT_NAME} /auth claude`)];
+    const result = extractCommand(messages, false);
+    expect(result).not.toBeNull();
+    expect(result!.cmd.name).toBe('auth');
+    expect(result!.cmd.args).toBe('claude');
+  });
+
+  it('fails when raw Slack encoding is not decoded', () => {
+    // Without decoding, <@UBOTID> doesn't match trigger pattern
+    const messages = [msg('<@U0AKKG67T7X> /auth')];
+    expect(extractCommand(messages, false)).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
