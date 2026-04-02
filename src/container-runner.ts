@@ -83,7 +83,7 @@ export function snapshotContainerFiles(): void {
   _snapshotDir = path.join(DATA_DIR, 'snapshot', 'container');
   const src = path.join(process.cwd(), 'container');
   if (!fs.existsSync(src)) return;
-  fs.cpSync(src, _snapshotDir, { recursive: true });
+  fs.cpSync(src, _snapshotDir, { recursive: true, preserveTimestamps: true });
   logger.info({ dir: _snapshotDir }, 'Container directory snapshotted');
 }
 
@@ -227,8 +227,9 @@ export function buildVolumeMounts(
     readonly: false,
   });
 
-  // Copy agent-runner source from snapshot into a per-group writable location
-  // so agents can customize it without affecting other groups.
+  // Copy agent-runner source into a per-group writable location so agents
+  // can customize it (add tools, change behavior) without affecting other
+  // groups. Recompiled on container startup via entrypoint.sh.
   const agentRunnerSrc = path.join(_snapshotDir, 'agent-runner', 'src');
   const groupAgentRunnerDir = path.join(
     DATA_DIR,
