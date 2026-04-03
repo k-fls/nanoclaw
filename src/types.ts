@@ -29,8 +29,52 @@ export interface AllowedRoot {
 
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
-  timeout?: number; // Default: 300000 (5 minutes)
+
+  // --- Per-group settings (each key present in SETTINGS is exposable via MCP) ---
+
+  /** IANA timezone (e.g. "America/New_York"). Affects message timestamps and cron schedules. */
+  timezone?: string;
+  /** Trigger phrase (e.g. "@Andy"). Overrides the DB column default. */
+  trigger?: string;
+  /** Whether messages must start with the trigger phrase. False = respond to all. */
+  requiresTrigger?: boolean;
+  /** Sender IDs that can trigger the agent. Null/absent = all users. */
+  triggerUsers?: string[];
+  /** Container idle timeout in ms. */
+  timeout?: number;
+  /** Max messages included per agent prompt. */
+  maxMessages?: number;
+
+  /** Keys from above that this group is allowed to self-modify. Empty/absent = none. Main sets this. */
+  updateable_settings?: SettingKey[];
 }
+
+/**
+ * Setting definitions — single source of truth for what constitutes a setting.
+ * Keys must be a subset of ContainerConfig keys (enforced by satisfies).
+ * Adding a key here without a RESOLVERS/APPLIERS entry causes a compile error.
+ */
+export const SETTINGS = {
+  timezone: {
+    description:
+      'IANA timezone (e.g. "America/New_York"). Affects message timestamps and cron schedules.',
+  },
+  trigger: {
+    description: 'Trigger phrase (e.g. "@Andy"). Overrides the default.',
+  },
+  requiresTrigger: {
+    description:
+      'Whether messages must start with the trigger phrase. False = respond to all.',
+  },
+  triggerUsers: {
+    description:
+      'Sender IDs that can trigger the agent. Null/absent = all users.',
+  },
+  timeout: { description: 'Container idle timeout in ms.' },
+  maxMessages: { description: 'Max messages included per agent prompt.' },
+} satisfies { [K in keyof ContainerConfig]?: { description: string } };
+
+export type SettingKey = keyof typeof SETTINGS;
 
 export interface RegisteredGroup {
   name: string;

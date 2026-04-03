@@ -52,6 +52,7 @@ The NanoClaw MCP server exposes these tools (via `mcp__nanoclaw__*` prefix):
 - `cancel_task` — cancel and delete a task
 - `update_task` — update an existing task
 - `register_group` — register a new chat/group (main only)
+- `group_settings` — view and modify per-group settings (timezone, trigger, access control, etc.)
 
 ### 4. Container skills (Bash tools)
 
@@ -61,7 +62,17 @@ Check for executable tools in the container:
 which agent-browser 2>/dev/null && echo "agent-browser: available" || echo "agent-browser: not found"
 ```
 
-### 5. Group info
+### 5. Group settings
+
+Use the MCP tool to get current settings:
+
+```
+Call mcp__nanoclaw__group_settings with action "get" (no key) to list all settings.
+```
+
+Report each setting with its value and permission flags (modifiable / group-modifiable).
+
+### 6. Group info
 
 ```bash
 ls /workspace/group/CLAUDE.md 2>/dev/null && echo "Group memory: yes" || echo "Group memory: no"
@@ -84,10 +95,16 @@ Present the report as a clean, readable message. Example:
 • Core: Bash, Read, Write, Edit, Glob, Grep
 • Web: WebSearch, WebFetch
 • Orchestration: Task, TeamCreate, SendMessage
-• MCP: send_message, schedule_task, list_tasks, pause/resume/cancel/update_task, register_group
+• MCP: send_message, schedule_task, list_tasks, pause/resume/cancel/update_task, register_group, group_settings
 
 *Container Tools:*
 • agent-browser: ✓
+
+*Group Settings:*
+(list all from `mcp__nanoclaw__group_settings` get action — shows values, descriptions, and permission flags)
+
+Settings can be changed with `group_settings set <key> <value>`.
+Main group can enable/disable self-modification per group with `group_settings enable <key> true/false`.
 
 *System:*
 • Group memory: yes/no

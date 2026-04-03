@@ -8,10 +8,8 @@ import {
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
-  MAX_MESSAGES_PER_PROMPT,
   ONECLI_URL,
   POLL_INTERVAL,
-  TIMEZONE,
 } from './config.js';
 import './channels/index.js';
 import {
@@ -23,6 +21,7 @@ import {
   runContainerAgent,
   updateAgentRunnerFingerprint,
   writeGroupsSnapshot,
+  writeSettingsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
@@ -47,7 +46,15 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
+import {
+  buildSettingsSnapshot,
+  getGroupMaxMessages,
+  getGroupRequiresTrigger,
+  getGroupTimezone,
+  getGroupTrigger,
+  getGroupTriggerUsers,
+} from './group/settings.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
@@ -229,28 +236,36 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
+  const maxMsgs = getGroupMaxMessages(group.containerConfig);
   const missedMessages = getMessagesSince(
     chatJid,
     getOrRecoverCursor(chatJid),
     ASSISTANT_NAME,
-    MAX_MESSAGES_PER_PROMPT,
+    maxMsgs,
   );
 
   if (missedMessages.length === 0) return true;
 
   // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
-    const triggerPattern = getTriggerPattern(group.trigger);
+  if (!isMainGroup && getGroupRequiresTrigger(group.containerConfig, group)) {
+    const triggerPattern = getTriggerPattern(
+      getGroupTrigger(group.containerConfig, group),
+    );
+    const triggerUsers = getGroupTriggerUsers(group.containerConfig);
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
         triggerPattern.test(m.content.trim()) &&
-        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+        (m.is_from_me ||
+          (triggerUsers
+            ? triggerUsers.includes(m.sender)
+            : isTriggerAllowed(chatJid, m.sender, allowlistCfg))),
     );
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const groupTz = getGroupTimezone(group.containerConfig);
+  const prompt = formatMessages(missedMessages, groupTz);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -352,6 +367,9 @@ async function runAgent(
     availableGroups,
     new Set(Object.keys(registeredGroups)),
   );
+
+  // Update settings snapshot
+  writeSettingsSnapshot(group, isMain);
 
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
@@ -474,34 +492,43 @@ async function startMessageLoop(): Promise<void> {
           }
 
           const isMainGroup = group.isMain === true;
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          const needsTrigger =
+            !isMainGroup &&
+            getGroupRequiresTrigger(group.containerConfig, group);
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
-            const triggerPattern = getTriggerPattern(group.trigger);
+            const triggerPattern = getTriggerPattern(
+              getGroupTrigger(group.containerConfig, group),
+            );
+            const triggerUsers = getGroupTriggerUsers(group.containerConfig);
             const allowlistCfg = loadSenderAllowlist();
             const hasTrigger = groupMessages.some(
               (m) =>
                 triggerPattern.test(m.content.trim()) &&
                 (m.is_from_me ||
-                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+                  (triggerUsers
+                    ? triggerUsers.includes(m.sender)
+                    : isTriggerAllowed(chatJid, m.sender, allowlistCfg))),
             );
             if (!hasTrigger) continue;
           }
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
+          const maxMsgs = getGroupMaxMessages(group.containerConfig);
           const allPending = getMessagesSince(
             chatJid,
             getOrRecoverCursor(chatJid),
             ASSISTANT_NAME,
-            MAX_MESSAGES_PER_PROMPT,
+            maxMsgs,
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend, TIMEZONE);
+          const groupTz = getGroupTimezone(group.containerConfig);
+          const formatted = formatMessages(messagesToSend, groupTz);
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
@@ -536,11 +563,12 @@ async function startMessageLoop(): Promise<void> {
  */
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
+    const maxMsgs = getGroupMaxMessages(group.containerConfig);
     const pending = getMessagesSince(
       chatJid,
       getOrRecoverCursor(chatJid),
       ASSISTANT_NAME,
-      MAX_MESSAGES_PER_PROMPT,
+      maxMsgs,
     );
     if (pending.length > 0) {
       logger.info(
@@ -726,6 +754,24 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    onSettingsChanged: (jid: string) => {
+      const group = registeredGroups[jid];
+      if (!group) return;
+      const isMain = group.isMain === true;
+      writeSettingsSnapshot(group, isMain);
+      // Propagate settings to running container via fixed-name signal file.
+      // Fails silently if input dir doesn't exist (no active container).
+      try {
+        fs.writeFileSync(
+          path.join(resolveGroupIpcPath(group.folder), 'input', '_settings'),
+          JSON.stringify(
+            buildSettingsSnapshot(group.containerConfig, group, isMain),
+          ),
+        );
+      } catch {
+        /* no active container */
+      }
+    },
     onTasksChanged: () => {
       const tasks = getAllTasks();
       const taskRows = tasks.map((t) => ({

@@ -12,9 +12,7 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   DATA_DIR,
   GROUPS_DIR,
-  IDLE_TIMEOUT,
   ONECLI_URL,
-  TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -25,6 +23,11 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
+import {
+  buildSettingsSnapshot,
+  getGroupTimeout,
+  getGroupTimezone,
+} from './group/settings.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -264,12 +267,13 @@ function buildVolumeMounts(
 async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  timezone: string,
   agentIdentifier?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
-  // Pass host timezone so container's local time matches the user's
-  args.push('-e', `TZ=${TIMEZONE}`);
+  // Pass per-group timezone so container's local time matches the group's setting
+  args.push('-e', `TZ=${timezone}`);
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
@@ -335,9 +339,11 @@ export async function runContainerAgent(
   const agentIdentifier = input.isMain
     ? undefined
     : group.folder.toLowerCase().replace(/_/g, '-');
+  const groupTz = getGroupTimezone(group.containerConfig);
   const containerArgs = await buildContainerArgs(
     mounts,
     containerName,
+    groupTz,
     agentIdentifier,
   );
 
@@ -461,7 +467,7 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const timeoutMs = group.containerConfig?.timeout || IDLE_TIMEOUT;
+    const timeoutMs = getGroupTimeout(group.containerConfig);
 
     const handleIdleTimeout = () => {
       timedOut = true;
@@ -780,4 +786,21 @@ export function writeGroupsSnapshot(
       2,
     ),
   );
+}
+
+/**
+ * Write per-group settings snapshot for the container to read.
+ * Contains all settings with resolved values, descriptions, and modifiability.
+ */
+export function writeSettingsSnapshot(
+  group: RegisteredGroup,
+  isMain: boolean,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const snapshot = buildSettingsSnapshot(group.containerConfig, group, isMain);
+
+  const settingsFile = path.join(groupIpcDir, 'current_settings.json');
+  fs.writeFileSync(settingsFile, JSON.stringify(snapshot, null, 2));
 }

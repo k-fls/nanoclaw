@@ -2,7 +2,7 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL } from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -18,8 +18,9 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { getGroupTimezone } from './group/settings.js';
 import { logger } from './logger.js';
-import { RegisteredGroup, ScheduledTask } from './types.js';
+import { ContainerConfig, RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
  * Compute the next run time for a recurring task, anchored to the
@@ -28,14 +29,18 @@ import { RegisteredGroup, ScheduledTask } from './types.js';
  *
  * Co-authored-by: @community-pr-601
  */
-export function computeNextRun(task: ScheduledTask): string | null {
+export function computeNextRun(
+  task: ScheduledTask,
+  config?: ContainerConfig,
+): string | null {
   if (task.schedule_type === 'once') return null;
 
   const now = Date.now();
 
   if (task.schedule_type === 'cron') {
+    const tz = getGroupTimezone(config);
     const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
+      tz,
     });
     return interval.next().toISOString();
   }
@@ -239,7 +244,7 @@ async function runTask(
     error,
   });
 
-  const nextRun = computeNextRun(task);
+  const nextRun = computeNextRun(task, group.containerConfig);
   const resultSummary = error
     ? `Error: ${error}`
     : result

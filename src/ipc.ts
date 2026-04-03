@@ -3,12 +3,23 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { DATA_DIR, IPC_POLL_INTERVAL } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getTaskById,
+  updateContainerConfig,
+  updateTask,
+} from './db.js';
+import {
+  applySetting,
+  getGroupTimezone,
+  isSettingKey,
+} from './group/settings.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { ContainerConfig, RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -23,6 +34,7 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  onSettingsChanged: (jid: string) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -173,6 +185,10 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For group_settings
+    action?: string;
+    key?: string;
+    value?: unknown;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -216,8 +232,9 @@ export async function processTaskIpc(
         let nextRun: string | null = null;
         if (scheduleType === 'cron') {
           try {
+            const tz = getGroupTimezone(targetGroupEntry.containerConfig);
             const interval = CronExpressionParser.parse(data.schedule_value, {
-              tz: TIMEZONE,
+              tz,
             });
             nextRun = interval.next().toISOString();
           } catch {
@@ -371,9 +388,14 @@ export async function processTaskIpc(
           };
           if (updatedTask.schedule_type === 'cron') {
             try {
+              // Resolve per-group timezone for cron
+              const taskGroup = Object.values(registeredGroups).find(
+                (g) => g.folder === task.group_folder,
+              );
+              const tz = getGroupTimezone(taskGroup?.containerConfig);
               const interval = CronExpressionParser.parse(
                 updatedTask.schedule_value,
-                { tz: TIMEZONE },
+                { tz },
               );
               updates.next_run = interval.next().toISOString();
             } catch {
@@ -461,6 +483,90 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'group_settings': {
+      if (!data.action) break;
+
+      // Resolve target group (main can target others, non-main targets self)
+      const settingsTargetJid = data.targetJid || data.chatJid;
+      if (!settingsTargetJid) break;
+
+      const targetGroup = registeredGroups[settingsTargetJid];
+      if (!targetGroup) {
+        logger.warn(
+          { targetJid: settingsTargetJid },
+          'group_settings: target group not registered',
+        );
+        break;
+      }
+
+      // Non-main can only target own group
+      if (!isMain && targetGroup.folder !== sourceGroup) {
+        logger.warn(
+          { sourceGroup, targetJid: settingsTargetJid },
+          'Unauthorized group_settings attempt blocked',
+        );
+        break;
+      }
+
+      const config: ContainerConfig = { ...targetGroup.containerConfig };
+
+      if (data.action === 'set') {
+        if (!data.key || !isSettingKey(data.key)) {
+          logger.warn({ key: data.key }, 'group_settings set: unknown key');
+          break;
+        }
+        const key = data.key;
+        const enabled = new Set(config.updateable_settings ?? []);
+        if (!isMain && !enabled.has(key)) {
+          logger.warn(
+            { key, sourceGroup },
+            'group_settings set: key not in updateable_settings',
+          );
+          break;
+        }
+        const err = applySetting(config, key, data.value);
+        if (err) {
+          logger.warn({ key, err }, 'group_settings set: validation failed');
+          break;
+        }
+        updateContainerConfig(settingsTargetJid, config);
+        targetGroup.containerConfig = config;
+        logger.info(
+          { key, targetJid: settingsTargetJid, sourceGroup },
+          'Group setting updated via IPC',
+        );
+        deps.onSettingsChanged(settingsTargetJid);
+      } else if (data.action === 'enable') {
+        if (!isMain) {
+          logger.warn({ sourceGroup }, 'Unauthorized settings enable attempt');
+          break;
+        }
+        if (!data.key || !isSettingKey(data.key)) {
+          logger.warn({ key: data.key }, 'group_settings enable: unknown key');
+          break;
+        }
+        const enabled = new Set(config.updateable_settings ?? []);
+        if (data.value) {
+          enabled.add(data.key);
+        } else {
+          enabled.delete(data.key);
+        }
+        config.updateable_settings = [...enabled];
+        updateContainerConfig(settingsTargetJid, config);
+        targetGroup.containerConfig = config;
+        logger.info(
+          {
+            key: data.key,
+            enabled: !!data.value,
+            targetJid: settingsTargetJid,
+          },
+          'Group setting updateability changed via IPC',
+        );
+        deps.onSettingsChanged(settingsTargetJid);
+      }
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

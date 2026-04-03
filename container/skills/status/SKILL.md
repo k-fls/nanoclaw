@@ -60,7 +60,15 @@ node --version 2>/dev/null
 claude --version 2>/dev/null
 ```
 
-### 5. Task snapshot
+### 5. Group settings
+
+Use the MCP tool to get current settings:
+
+```
+Call mcp__nanoclaw__group_settings with action "get" (no key) to list all settings.
+```
+
+### 6. Task snapshot
 
 Use the MCP tool to list tasks:
 
@@ -94,6 +102,11 @@ Present as a clean, readable message:
 • agent-browser: ✓ / not installed
 • Node: vXX.X.X
 • Claude Code: vX.X.X
+
+*Settings:*
+• timezone: America/New_York [modifiable]
+• trigger: @Andy [read-only, group-locked]
+• (list all with values and flags)
 
 *Scheduled Tasks:*
 • N active tasks / No scheduled tasks
