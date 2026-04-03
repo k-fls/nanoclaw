@@ -64,7 +64,6 @@ import {
   formatMessages,
   formatOutbound,
 } from './router.js';
-import { restoreRemoteControl } from './remote-control.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -237,7 +236,7 @@ function commandContext(
     tokenEngine: getTokenEngine(),
     chatJid,
     sender: '',
-    isActive: () => queue.isActive(chatJid),
+    getContainerName: () => queue.getContainerName(chatJid),
     hideMessage: (id) => hideMessage(chatJid, id, HIDE_REASON.COMMAND),
     advanceCursor: (ts) => {
       lastAgentTimestamp[chatJid] = ts;
@@ -704,8 +703,6 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-
-  restoreRemoteControl();
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {

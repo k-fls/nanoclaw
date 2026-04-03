@@ -158,6 +158,11 @@ export class GroupQueue {
     return this.getGroup(groupJid).active;
   }
 
+  /** Return the active container name for a group, or null. */
+  getContainerName(groupJid: string): string | null {
+    return this.groups.get(groupJid)?.containerName ?? null;
+  }
+
   /**
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.

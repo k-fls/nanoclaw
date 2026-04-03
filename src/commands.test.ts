@@ -103,7 +103,7 @@ function runCtx(
   group: RegisteredGroup = mainGroup,
 ) {
   return {
-    hasActiveContainer,
+    containerName: hasActiveContainer ? 'nanoclaw-test-1234567890' : null,
     group,
     tokenEngine: {} as any,
     chatJid: 'test@g.us',

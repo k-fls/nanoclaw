@@ -16,11 +16,6 @@ import {
 } from './proxy-tap-logger.js';
 import { parseTapExclude } from './auth/registry.js';
 import {
-  startRemoteControl,
-  stopRemoteControl,
-  getActiveSession,
-} from './remote-control.js';
-import {
   hasSubscriptionCredential,
   PROVIDER_ID as CLAUDE_PROVIDER_ID,
 } from './auth/providers/claude.js';
@@ -65,24 +60,6 @@ export interface ExtractedCommand {
 // ---------------------------------------------------------------------------
 // Access helpers
 // ---------------------------------------------------------------------------
-
-/**
- * True if the group has a Claude subscription credential (OAuth access token)
- * in its own credential scope. Resolves the effective scope via the token engine.
- */
-function canRemoteControl(
-  group: RegisteredGroup,
-  tokenEngine: TokenSubstituteEngine,
-): boolean {
-  if (group.isMain) return true;
-  const credScope = tokenEngine.resolveCredentialScope(
-    scopeOf(group),
-    CLAUDE_PROVIDER_ID,
-  );
-  return (
-    String(credScope) === group.folder && hasSubscriptionCredential(credScope)
-  );
-}
 
 /** Shorthand for a result that just sends a message. */
 function reply(text: string): CommandResult {
@@ -143,7 +120,7 @@ export function extractCommand(
 // ---------------------------------------------------------------------------
 
 interface CommandRunContext {
-  hasActiveContainer: boolean;
+  containerName: string | null;
   group: RegisteredGroup;
   tokenEngine: TokenSubstituteEngine;
   chatJid: string;
@@ -160,8 +137,8 @@ interface Command {
 const commands: Record<string, Command> = {
   stop: {
     description: 'Stop the running agent',
-    run(_args, { hasActiveContainer }) {
-      if (!hasActiveContainer) {
+    run(_args, { containerName }) {
+      if (!containerName) {
         return reply('No agent running.');
       }
       return { stopContainer: true, ...reply('Stopping agent.') };
@@ -306,48 +283,6 @@ const commands: Record<string, Command> = {
     },
   },
 
-  'remote-control': {
-    description: 'Start a host-level Claude Code remote session',
-    access(ctx) {
-      if (!canRemoteControl(ctx.group, ctx.tokenEngine)) {
-        return "Remote control requires a Claude subscription in this group's own credential scope.";
-      }
-      return null;
-    },
-    run(_args, { chatJid, sender }) {
-      const session = getActiveSession();
-      if (session) {
-        return reply(`Remote Control already active: ${session.url}`);
-      }
-      return {
-        asyncAction: async () => {
-          const result = await startRemoteControl(
-            sender,
-            chatJid,
-            process.cwd(),
-          );
-          return result.ok
-            ? result.url
-            : `Remote Control failed: ${result.error}`;
-        },
-      };
-    },
-  },
-
-  'remote-control-end': {
-    description: 'Stop the active remote control session',
-    access(ctx) {
-      if (!canRemoteControl(ctx.group, ctx.tokenEngine)) {
-        return "Remote control requires a Claude subscription in this group's own credential scope.";
-      }
-      return null;
-    },
-    run() {
-      const result = stopRemoteControl();
-      return reply(result.ok ? 'Remote Control session ended.' : result.error);
-    },
-  },
-
   'auth-gpg': {
     description: 'Print GPG public key for this group',
     run(_args, ctx) {
@@ -402,7 +337,7 @@ export interface CommandContext {
   tokenEngine: TokenSubstituteEngine;
   chatJid: string;
   sender: string;
-  isActive: () => boolean;
+  getContainerName: () => string | null;
   hideMessage: (msgId: string) => void;
   advanceCursor: (timestamp: string) => void;
   closeStdin: () => void;
@@ -429,7 +364,7 @@ export async function executeCommand(
 
   const lastMsg = messages[messages.length - 1];
   const result = handleCommand(cmd.name, cmd.args, {
-    hasActiveContainer: ctx.isActive(),
+    containerName: ctx.getContainerName(),
     group: ctx.group,
     tokenEngine: ctx.tokenEngine,
     chatJid: ctx.chatJid,
