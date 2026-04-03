@@ -184,7 +184,13 @@ async function runTask(
         script: task.script || undefined,
       },
       (proc, containerName, controls) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder, controls),
+        deps.onProcess(
+          task.chat_jid,
+          proc,
+          containerName,
+          task.group_folder,
+          controls,
+        ),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;

@@ -376,7 +376,13 @@ async function runAgent(
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName, controls) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder, controls),
+        queue.registerProcess(
+          chatJid,
+          proc,
+          containerName,
+          group.folder,
+          controls,
+        ),
       wrappedOnOutput,
       () => queue.softStop(chatJid),
     );
@@ -685,7 +691,13 @@ async function main(): Promise<void> {
     getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder, controls) =>
-      queue.registerProcess(groupJid, proc, containerName, groupFolder, controls),
+      queue.registerProcess(
+        groupJid,
+        proc,
+        containerName,
+        groupFolder,
+        controls,
+      ),
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {

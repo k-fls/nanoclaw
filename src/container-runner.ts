@@ -315,7 +315,11 @@ async function buildContainerArgs(
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
-  onProcess: (proc: ChildProcess, containerName: string, controls: { clearIdleTimeout: () => void; resetIdleTimeout: () => void }) => void,
+  onProcess: (
+    proc: ChildProcess,
+    containerName: string,
+    controls: { clearIdleTimeout: () => void; resetIdleTimeout: () => void },
+  ) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   onTimeout?: () => void,
 ): Promise<ContainerOutput> {
@@ -461,7 +465,10 @@ export async function runContainerAgent(
 
     const handleIdleTimeout = () => {
       timedOut = true;
-      logger.error({ group: group.name, containerName }, 'Idle timeout fired (stuck container)');
+      logger.error(
+        { group: group.name, containerName },
+        'Idle timeout fired (stuck container)',
+      );
       if (onTimeout) {
         // Delegate to queue's softStop → grace timer → hardStop chain
         onTimeout();

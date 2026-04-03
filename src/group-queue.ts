@@ -2,7 +2,13 @@ import { ChildProcess, exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, EVICTION_TIMEOUT, GRACE_TIMEOUT, IDLE_BEFORE_EVICT, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import {
+  DATA_DIR,
+  EVICTION_TIMEOUT,
+  GRACE_TIMEOUT,
+  IDLE_BEFORE_EVICT,
+  MAX_CONCURRENT_CONTAINERS,
+} from './config.js';
 import { stopContainer } from './container-runtime.js';
 import { logger } from './logger.js';
 
@@ -196,7 +202,10 @@ export class GroupQueue {
       // Start EVICTION_TIMEOUT
       state.evictionTimer = setTimeout(() => {
         // EVICTION_TIMEOUT expired — stop container
-        logger.info({ groupJid }, 'Eviction timeout expired, stopping container');
+        logger.info(
+          { groupJid },
+          'Eviction timeout expired, stopping container',
+        );
         this.softStop(groupJid);
       }, EVICTION_TIMEOUT);
     }, IDLE_BEFORE_EVICT);
@@ -213,7 +222,8 @@ export class GroupQueue {
    */
   sendMessage(groupJid: string, text: string): boolean {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder || state.isTaskContainer) return false;
+    if (!state.active || !state.groupFolder || state.isTaskContainer)
+      return false;
     if (state.stopping) return false;
 
     // If idle or evictable, reactivate before sending
@@ -257,7 +267,10 @@ export class GroupQueue {
 
     // Start grace timer → hard stop if container doesn't exit
     state.graceTimer = setTimeout(() => {
-      logger.warn({ groupJid }, 'Grace timeout expired, hard-stopping container');
+      logger.warn(
+        { groupJid },
+        'Grace timeout expired, hard-stopping container',
+      );
       this.hardStop(groupJid);
     }, GRACE_TIMEOUT);
   }
@@ -272,7 +285,10 @@ export class GroupQueue {
     state.stopping = true;
 
     if (state.containerName) {
-      logger.info({ groupJid, containerName: state.containerName }, 'Hard-stopping container');
+      logger.info(
+        { groupJid, containerName: state.containerName },
+        'Hard-stopping container',
+      );
       exec(stopContainer(state.containerName), { timeout: 15000 }, (err) => {
         if (err) {
           logger.warn({ groupJid, err }, 'docker stop failed, sending SIGKILL');
@@ -312,7 +328,11 @@ export class GroupQueue {
     let oldestAt = Infinity;
 
     for (const [jid, state] of this.groups) {
-      if (state.evictable && state.evictableAt != null && state.evictableAt < oldestAt) {
+      if (
+        state.evictable &&
+        state.evictableAt != null &&
+        state.evictableAt < oldestAt
+      ) {
         oldestAt = state.evictableAt;
         oldestJid = jid;
       }
@@ -320,7 +340,10 @@ export class GroupQueue {
 
     if (!oldestJid) return false;
 
-    logger.info({ groupJid: oldestJid }, 'Evicting oldest idle container for queue pressure');
+    logger.info(
+      { groupJid: oldestJid },
+      'Evicting oldest idle container for queue pressure',
+    );
     this.softStop(oldestJid);
     return true;
   }
