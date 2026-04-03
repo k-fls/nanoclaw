@@ -29,6 +29,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   snapshotContainerFiles,
+  updateAgentRunnerFingerprint,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -242,7 +243,7 @@ function commandContext(
       lastAgentTimestamp[chatJid] = ts;
       saveState();
     },
-    closeStdin: () => queue.closeStdin(chatJid),
+    closeStdin: () => queue.softStop(chatJid),
     sendMessage: (text) => channel.sendMessage(chatJid, text),
     sendRawMessage: (text) => channel.sendMessage(chatJid, text),
     runReauth: async (providerId: string) => {
@@ -289,7 +290,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     group,
     getProxy(),
     () => createChatIO(chatIODeps(channel, chatJid)),
-    () => queue.closeStdin(chatJid),
+    () => queue.softStop(chatJid),
   );
   const credentialsOk = await guard.start();
 
@@ -344,20 +345,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
-  // Track idle timer for closing stdin when agent is idle
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const resetIdleTimer = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      logger.debug(
-        { group: group.name },
-        'Idle timeout, closing container stdin',
-      );
-      queue.closeStdin(chatJid);
-    }, IDLE_TIMEOUT);
-  };
-
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
@@ -386,8 +373,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           }
           outputSentToUser = true;
         }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
-        resetIdleTimer();
       } else {
         // Non-text events (tool use, thinking, etc.) — refresh typing indicator
         channel.setTyping?.(chatJid, true)?.catch(() => {});
@@ -402,7 +387,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   await channel.setTyping?.(chatJid, false);
-  if (idleTimer) clearTimeout(idleTimer);
 
   // Stop flow consumer, handle auth errors, clean up session context
   const authResult = await guard.finish(
@@ -503,12 +487,19 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) => {
+      (proc, containerName, controls) => {
         onContainerName?.(containerName);
-        queue.registerProcess(chatJid, proc, containerName, group.folder);
+        queue.registerProcess(
+          chatJid,
+          proc,
+          containerName,
+          group.folder,
+          controls,
+        );
       },
       tokenEngine,
       wrappedOnOutput,
+      () => queue.softStop(chatJid),
     );
 
     if (output.newSessionId) {
@@ -695,6 +686,7 @@ function ensureContainerSystemRunning(): void {
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
+  updateAgentRunnerFingerprint();
 
   // Initialize the full auth/credential proxy system (providers, token engine, proxy server).
   const auth = await initAuthSystem(() => registeredGroups);
@@ -773,8 +765,14 @@ async function main(): Promise<void> {
     getSessions: () => sessions,
     queue,
     tokenEngine,
-    onProcess: (groupJid, proc, containerName, groupFolder) =>
-      queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    onProcess: (groupJid, proc, containerName, groupFolder, controls) =>
+      queue.registerProcess(
+        groupJid,
+        proc,
+        containerName,
+        groupFolder,
+        controls,
+      ),
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {

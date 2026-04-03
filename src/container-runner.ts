@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -31,6 +32,34 @@ import {
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup, scopeOf } from './types.js';
+
+/**
+ * Compute a hash fingerprint of a directory's file names and sizes.
+ * Sorted for determinism. Used to detect upstream source changes
+ * without comparing file contents byte-by-byte.
+ */
+export function dirFingerprint(dir: string): string {
+  const entries = fs
+    .readdirSync(dir)
+    .filter(
+      (f) => f !== '.fingerprint' && fs.statSync(path.join(dir, f)).isFile(),
+    )
+    .sort()
+    .map((f) => `${f}:${fs.statSync(path.join(dir, f)).mtimeMs}`)
+    .join('\n');
+  return crypto.createHash('sha256').update(entries).digest('hex');
+}
+
+/**
+ * Write a .fingerprint file into the agent-runner source directory.
+ * Call once at startup so per-group copies can be compared cheaply.
+ */
+export function updateAgentRunnerFingerprint(): void {
+  const src = path.join(process.cwd(), 'container', 'agent-runner', 'src');
+  if (fs.existsSync(src)) {
+    fs.writeFileSync(path.join(src, '.fingerprint'), dirFingerprint(src));
+  }
+}
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -98,7 +127,7 @@ export function buildVolumeMounts(
 
   if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
-    // (group folder, IPC, .claude/) are mounted separately below.
+    // (store, group folder, IPC, .claude/) are mounted separately below.
     // Read-only prevents the agent from modifying host application code
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
@@ -118,6 +147,15 @@ export function buildVolumeMounts(
         readonly: true,
       });
     }
+
+    // Main gets writable access to the store (SQLite DB) so it can
+    // query and write to the database directly.
+    const storeDir = path.join(projectRoot, 'store');
+    mounts.push({
+      hostPath: storeDir,
+      containerPath: '/workspace/project/store',
+      readonly: false,
+    });
 
     // Main also gets its group folder as the working directory
     mounts.push({
@@ -238,14 +276,15 @@ export function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
-    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
-    const needsCopy =
-      !fs.existsSync(groupAgentRunnerDir) ||
-      !fs.existsSync(cachedIndex) ||
-      (fs.existsSync(srcIndex) &&
-        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
-    if (needsCopy) {
+    const srcFp = path.join(agentRunnerSrc, '.fingerprint');
+    const dstFp = path.join(groupAgentRunnerDir, '.fingerprint');
+    const srcHash = fs.existsSync(srcFp)
+      ? fs.readFileSync(srcFp, 'utf-8').trim()
+      : '';
+    const dstHash = fs.existsSync(dstFp)
+      ? fs.readFileSync(dstFp, 'utf-8').trim()
+      : '';
+    if (!srcHash || srcHash !== dstHash) {
       fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
     }
   }
@@ -337,9 +376,14 @@ export function buildContainerArgs(
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
-  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onProcess: (
+    proc: ChildProcess,
+    containerName: string,
+    controls: { clearIdleTimeout: () => void; resetIdleTimeout: () => void },
+  ) => void,
   tokenEngine: TokenSubstituteEngine,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onTimeout?: () => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -396,7 +440,6 @@ export async function runContainerAgent(
     container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    onProcess(container, containerName);
   } catch (err) {
     // Release the pre-allocated IP if spawn fails before event handlers take over.
     releaseIP();
@@ -493,35 +536,41 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
-    // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
-    // graceful _close sentinel has time to trigger before the hard kill fires.
-    const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+    const timeoutMs = group.containerConfig?.timeout || IDLE_TIMEOUT;
 
-    const killOnTimeout = () => {
+    const handleIdleTimeout = () => {
       timedOut = true;
       logger.error(
         { group: group.name, containerName },
-        'Container timeout, stopping gracefully',
+        'Idle timeout fired (stuck container)',
       );
-      try {
-        stopContainer(containerName);
-      } catch (err) {
-        logger.warn(
-          { group: group.name, containerName, err },
-          'Graceful stop failed, force killing',
-        );
+      if (onTimeout) {
+        // Delegate to queue's softStop → grace timer → hardStop chain
+        onTimeout();
+      } else {
+        // Fallback when running without queue
         container.kill('SIGKILL');
       }
     };
 
-    let timeout = setTimeout(killOnTimeout, timeoutMs);
+    let timeout = setTimeout(handleIdleTimeout, timeoutMs);
 
     // Reset the timeout whenever there's activity (streaming output)
     const resetTimeout = () => {
       clearTimeout(timeout);
-      timeout = setTimeout(killOnTimeout, timeoutMs);
+      timeout = setTimeout(handleIdleTimeout, timeoutMs);
     };
+
+    const clearIdleTimeout = () => {
+      clearTimeout(timeout);
+    };
+
+    const resetIdleTimeout = () => {
+      resetTimeout();
+    };
+
+    // Register process with queue after timeout controls are available
+    onProcess(container, containerName, { clearIdleTimeout, resetIdleTimeout });
 
     container.on('close', (code) => {
       clearTimeout(timeout);
@@ -570,7 +619,7 @@ export async function runContainerAgent(
         resolve({
           status: 'error',
           result: null,
-          error: `Container timed out after ${configTimeout}ms`,
+          error: `Container timed out after ${timeoutMs}ms`,
         });
         return;
       }
