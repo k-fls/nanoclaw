@@ -10,5 +10,6 @@
     "GITHUB_TOKEN": "access"
   },
   "_source": "manually researched from official docs (docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)",
-  "_note": "GitHub OAuth2 for OAuth Apps and GitHub Apps. Supports authorization_code and device_code grant types. Token endpoint accepts Accept: application/json header to get JSON responses. No standard revocation endpoint; app authorizations are managed via the GitHub API (DELETE /applications/{client_id}/grant)."
+  "_note": "GitHub OAuth2 for OAuth Apps and GitHub Apps. Supports authorization_code and device_code grant types. Token endpoint accepts Accept: application/json header to get JSON responses. No standard revocation endpoint; app authorizations are managed via the GitHub API (DELETE /applications/{client_id}/grant).",
+  "_well_known_url": false
 }

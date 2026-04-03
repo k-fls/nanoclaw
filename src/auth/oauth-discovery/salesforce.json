@@ -90,5 +90,6 @@
     "user_id",
     "user_type",
     "zoneinfo"
-  ]
+  ],
+  "_well_known_url": "https://login.salesforce.com/.well-known/openid-configuration"
 }

@@ -48,8 +48,9 @@
     "user_id"
   ],
   "code_challenge_methods_supported": [
-     "RS256",
-     "ES256",
-     "S256"
-  ]
+    "RS256",
+    "ES256",
+    "S256"
+  ],
+  "_well_known_url": "https://www.paypal.com/.well-known/openid-configuration"
 }

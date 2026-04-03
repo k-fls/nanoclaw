@@ -44,5 +44,6 @@
   ],
   "claims_parameter_supported": false,
   "request_parameter_supported": false,
-  "request_uri_parameter_supported": false
+  "request_uri_parameter_supported": false,
+  "_well_known_url": "https://www.canva.com/.well-known/openid-configuration"
 }

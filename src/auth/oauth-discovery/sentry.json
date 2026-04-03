@@ -10,5 +10,6 @@
     "authorization_endpoint": "https://{sentry_host}/oauth/authorize/",
     "token_endpoint": "https://{sentry_host}/oauth/token/",
     "api_base_url": "https://{sentry_host}/api/0/"
-  }
+  },
+  "_well_known_url": false
 }

@@ -115,5 +115,6 @@
   ],
   "op_policy_uri": "https://www.shopify.com/legal/privacy",
   "op_tos_uri": "https://www.shopify.com/legal/terms",
-  "clock_skew": 0
+  "clock_skew": 0,
+  "_well_known_url": "https://accounts.shopify.com/.well-known/openid-configuration"
 }
