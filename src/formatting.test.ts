@@ -6,12 +6,13 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import {
+  decodeMessages,
   escapeXml,
   formatMessages,
   formatOutbound,
   stripInternalTags,
 } from './router.js';
-import { NewMessage } from './types.js';
+import type { Channel, NewMessage } from './types.js';
 
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
   return {
@@ -22,6 +23,18 @@ function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
     content: 'hello',
     timestamp: '2024-01-01T00:00:00.000Z',
     ...overrides,
+  };
+}
+
+function stubChannel(decodeInbound?: (text: string) => string): Channel {
+  return {
+    name: 'test',
+    connect: async () => {},
+    sendMessage: async () => {},
+    isConnected: () => true,
+    ownsJid: () => true,
+    disconnect: async () => {},
+    decodeInbound,
   };
 }
 
@@ -346,5 +359,269 @@ describe('trigger gating (requiresTrigger interaction)', () => {
   it('non-main group with requiresTrigger=false always processes (no trigger needed)', () => {
     const msgs = [makeMsg({ content: 'hello no trigger' })];
     expect(shouldProcess(false, false, undefined, msgs)).toBe(true);
+  });
+});
+
+// --- decodeMessages ---
+
+describe('decodeMessages', () => {
+  it('returns same array when non-slack channel has no decodeInbound', () => {
+    const ch = stubChannel();
+    ch.name = 'whatsapp';
+    const messages = [
+      makeMsg({ content: 'hello <@U123>' }),
+      makeMsg({ content: '&amp; test' }),
+    ];
+    const result = decodeMessages(messages, ch);
+    expect(result).toBe(messages);
+  });
+
+  it('applies decodeInbound to message content', () => {
+    const decode = (text: string) => text.replace(/&amp;/g, '&');
+    const messages = [
+      makeMsg({ content: 'a &amp; b' }),
+      makeMsg({ content: 'c &amp; d' }),
+    ];
+    const result = decodeMessages(messages, stubChannel(decode));
+    expect(result[0].content).toBe('a & b');
+    expect(result[1].content).toBe('c & d');
+  });
+
+  it('preserves all non-content fields', () => {
+    const decode = (text: string) => text.toUpperCase();
+    const original = makeMsg({
+      id: 'msg-42',
+      chat_jid: 'slack:C999',
+      sender: 'UABC',
+      sender_name: 'Alice',
+      timestamp: '2025-06-15T12:00:00.000Z',
+      is_from_me: false,
+      is_bot_message: true,
+    });
+    const [result] = decodeMessages([original], stubChannel(decode));
+    expect(result.content).toBe('HELLO');
+    expect(result.id).toBe('msg-42');
+    expect(result.chat_jid).toBe('slack:C999');
+    expect(result.sender).toBe('UABC');
+    expect(result.sender_name).toBe('Alice');
+    expect(result.timestamp).toBe('2025-06-15T12:00:00.000Z');
+    expect(result.is_from_me).toBe(false);
+    expect(result.is_bot_message).toBe(true);
+  });
+
+  it('does not mutate original messages', () => {
+    const decode = (text: string) => text.replace(/x/g, 'y');
+    const original = makeMsg({ content: 'x marks the spot' });
+    decodeMessages([original], stubChannel(decode));
+    expect(original.content).toBe('x marks the spot');
+  });
+
+  it('handles empty message array', () => {
+    const result = decodeMessages(
+      [],
+      stubChannel((t) => t.toUpperCase()),
+    );
+    expect(result).toEqual([]);
+  });
+});
+
+// --- Slack fallback decode (compatibility) ---
+
+describe('decodeMessages fallback for slack channel without decodeInbound', () => {
+  function slackChannelWithoutDecode(): Channel {
+    const ch = stubChannel(); // no decodeInbound
+    ch.name = 'slack';
+    return ch;
+  }
+
+  it('activates fallback when channel.name is slack and no decodeInbound', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages([makeMsg({ content: 'a &amp; b' })], ch);
+    expect(decoded.content).toBe('a & b');
+  });
+
+  it('decodes all three HTML entities', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: '1 &lt; 2 &amp;&amp; 2 &gt; 1' })],
+      ch,
+    );
+    expect(decoded.content).toBe('1 < 2 && 2 > 1');
+  });
+
+  it('unwraps bare URLs', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: '<https://example.com>' })],
+      ch,
+    );
+    expect(decoded.content).toBe('https://example.com');
+  });
+
+  it('unwraps labelled URLs', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: '<https://example.com|click here>' })],
+      ch,
+    );
+    expect(decoded.content).toBe('click here');
+  });
+
+  it('strips duplicate mention after @trigger (old slack.ts compat)', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: `@${ASSISTANT_NAME} <@U0AKKG67T7X> /auth` })],
+      ch,
+    );
+    expect(decoded.content).toBe(`@${ASSISTANT_NAME} /auth`);
+  });
+
+  it('strips duplicate but decodes remaining standalone mentions', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [
+        makeMsg({
+          content: `@${ASSISTANT_NAME} <@U0AKKG67T7X> <@U0AKKG67T7X>`,
+        }),
+      ],
+      ch,
+    );
+    expect(decoded.content).toBe(`@${ASSISTANT_NAME} @U0AKKG67T7X`);
+  });
+
+  it('decodes standalone mention when no preceding @mention', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: '<@U0AKKG67T7X> hello' })],
+      ch,
+    );
+    expect(decoded.content).toBe('@U0AKKG67T7X hello');
+  });
+
+  it('decodes channel mentions', () => {
+    const ch = slackChannelWithoutDecode();
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: 'see <#C01ABC|general>' })],
+      ch,
+    );
+    expect(decoded.content).toBe('see #general');
+  });
+
+  it('prefers channel decodeInbound over fallback', () => {
+    const ch = stubChannel((t) => t.replace(/x/g, 'X'));
+    ch.name = 'slack';
+    const [decoded] = decodeMessages([makeMsg({ content: 'x &amp; x' })], ch);
+    // Custom decode runs, not fallback — &amp; stays
+    expect(decoded.content).toBe('X &amp; X');
+  });
+
+  it('does not activate fallback for non-slack channels', () => {
+    const ch = stubChannel(); // no decodeInbound
+    ch.name = 'telegram';
+    const messages = [makeMsg({ content: '&amp; test' })];
+    const result = decodeMessages(messages, ch);
+    expect(result).toBe(messages); // same reference, no decode
+  });
+});
+
+// --- Slack decode pattern ---
+// Exercises the decode pattern that SlackChannel.decodeInbound will implement.
+
+describe('Slack decode pattern', () => {
+  const BOT_USER_ID = 'U0AKKG67T7X';
+
+  function slackDecode(text: string): string {
+    return text
+      .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, '$2')
+      .replace(/<(https?:\/\/[^>]+)>/g, '$1')
+      .replace(/<#C[A-Z0-9]+\|([^>]+)>/g, '#$1')
+      .replace(/<@(U[A-Z0-9]+)>/g, (_, id) =>
+        id === BOT_USER_ID ? `@${ASSISTANT_NAME}` : `@${id}`,
+      )
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+  }
+
+  const slackChannel = stubChannel(slackDecode);
+
+  it('decodes bot mention to trigger text', () => {
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: '<@U0AKKG67T7X> /auth' })],
+      slackChannel,
+    );
+    expect(decoded.content).toBe(`@${ASSISTANT_NAME} /auth`);
+  });
+
+  it('trigger pattern matches decoded bot mention', () => {
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: '<@U0AKKG67T7X> hello' })],
+      slackChannel,
+    );
+    expect(TRIGGER_PATTERN.test(decoded.content.trim())).toBe(true);
+  });
+
+  it('decodes HTML entities in URLs', () => {
+    const [decoded] = decodeMessages(
+      [
+        makeMsg({
+          content: '<http://localhost:9999/callback?code=abc&amp;state=xyz>',
+        }),
+      ],
+      slackChannel,
+    );
+    expect(decoded.content).toBe(
+      'http://localhost:9999/callback?code=abc&state=xyz',
+    );
+  });
+
+  it('decodes user mentions with same pattern as bot mentions', () => {
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: '<@U0AKKG67T7X> asked <@UOTHER123> something' })],
+      slackChannel,
+    );
+    expect(decoded.content).toBe(
+      `@${ASSISTANT_NAME} asked @UOTHER123 something`,
+    );
+  });
+
+  it('unwraps labelled URLs', () => {
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: 'see <https://example.com|this link>' })],
+      slackChannel,
+    );
+    expect(decoded.content).toBe('see this link');
+  });
+
+  it('unwraps bare URLs', () => {
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: 'visit <https://example.com>' })],
+      slackChannel,
+    );
+    expect(decoded.content).toBe('visit https://example.com');
+  });
+
+  it('decodes channel mentions', () => {
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: 'posted in <#C01ABC|general>' })],
+      slackChannel,
+    );
+    expect(decoded.content).toBe('posted in #general');
+  });
+
+  it('decodes all three HTML entities', () => {
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: '1 &lt; 2 &amp;&amp; 2 &gt; 1' })],
+      slackChannel,
+    );
+    expect(decoded.content).toBe('1 < 2 && 2 > 1');
+  });
+
+  it('passes plain text through unchanged', () => {
+    const [decoded] = decodeMessages(
+      [makeMsg({ content: 'just a normal message' })],
+      slackChannel,
+    );
+    expect(decoded.content).toBe('just a normal message');
   });
 });

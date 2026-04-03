@@ -382,6 +382,7 @@ async function runQuery(
   newSessionId?: string;
   lastAssistantUuid?: string;
   closedDuringQuery: boolean;
+  errorEmitted: boolean;
 }> {
   const stream = new MessageStream();
   stream.push(prompt);
@@ -389,6 +390,7 @@ async function runQuery(
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
+  let errorEmitted = false;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -524,16 +526,34 @@ async function runQuery(
 
     if (message.type === 'result') {
       resultCount++;
+      const subtype = message.subtype;
       const textResult =
         'result' in message ? (message as { result?: string }).result : null;
+      const stopReason =
+        'stop_reason' in message
+          ? (message as { stop_reason?: string }).stop_reason
+          : null;
       log(
-        `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
+        `Result #${resultCount}: subtype=${subtype}${stopReason ? ` stop_reason=${stopReason}` : ''}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId,
-      });
+      if (subtype === 'success') {
+        writeOutput({
+          status: 'success',
+          result: textResult || null,
+          newSessionId,
+        });
+      } else {
+        // error_during_execution, error_max_turns, etc.
+        errorEmitted = true;
+        writeOutput({
+          status: 'error',
+          result: null,
+          newSessionId,
+          error:
+            textResult ||
+            `Agent failed: ${subtype}${stopReason ? ` (${stopReason})` : ''}`,
+        });
+      }
     }
   }
 
@@ -541,7 +561,7 @@ async function runQuery(
   log(
     `Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`,
   );
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  return { newSessionId, lastAssistantUuid, closedDuringQuery, errorEmitted };
 }
 
 interface ScriptResult {
@@ -673,12 +693,14 @@ async function main(): Promise<void> {
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
+  let lastErrorEmitted = false;
   try {
     while (true) {
       log(
         `Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`,
       );
 
+      lastErrorEmitted = false;
       const queryResult = await runQuery(
         prompt,
         sessionId,
@@ -687,6 +709,7 @@ async function main(): Promise<void> {
         sdkEnv,
         resumeAt,
       );
+      lastErrorEmitted = queryResult.errorEmitted;
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -720,12 +743,16 @@ async function main(): Promise<void> {
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    writeOutput({
-      status: 'error',
-      result: null,
-      newSessionId: sessionId,
-      error: errorMessage,
-    });
+    // Only emit error if runQuery didn't already (the SDK throws after
+    // emitting an error result, so the error output was already written).
+    if (!lastErrorEmitted) {
+      writeOutput({
+        status: 'error',
+        result: null,
+        newSessionId: sessionId,
+        error: errorMessage,
+      });
+    }
     process.exit(1);
   }
 }

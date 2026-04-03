@@ -32,6 +32,7 @@ function createSchema(database: Database.Database): void {
       timestamp TEXT,
       is_from_me INTEGER,
       is_bot_message INTEGER DEFAULT 0,
+      hide_reason INTEGER DEFAULT 0,
       PRIMARY KEY (id, chat_jid),
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
@@ -109,6 +110,16 @@ function createSchema(database: Database.Database): void {
     database
       .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
       .run(`${ASSISTANT_NAME}:%`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add hide_reason column if it doesn't exist (migration for existing DBs)
+  // 0 = visible, 1 = flow/scripted message, 2 = command
+  try {
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN hide_reason INTEGER DEFAULT 0`,
+    );
   } catch {
     /* column already exists */
   }
@@ -328,6 +339,25 @@ export function storeMessageDirect(msg: {
   );
 }
 
+/** Hide reasons for messages excluded from agent context. */
+export const HIDE_REASON = {
+  FLOW: 1,
+  COMMAND: 2,
+} as const;
+
+/**
+ * Hide a message from agent context by setting a numeric reason.
+ */
+export function hideMessage(
+  chatJid: string,
+  messageId: string,
+  reason: number,
+): void {
+  db.prepare(
+    `UPDATE messages SET hide_reason = ? WHERE chat_jid = ? AND id = ?`,
+  ).run(reason, chatJid, messageId);
+}
+
 export function getNewMessages(
   jids: string[],
   lastTimestamp: string,
@@ -346,7 +376,8 @@ export function getNewMessages(
              reply_to_message_id, reply_to_message_content, reply_to_sender_name
       FROM messages
       WHERE timestamp > ? AND chat_jid IN (${placeholders})
-        AND is_bot_message = 0 AND content NOT LIKE ?
+        AND is_bot_message = 0 AND hide_reason = 0
+        AND content NOT LIKE ?
         AND content != '' AND content IS NOT NULL
       ORDER BY timestamp DESC
       LIMIT ?
@@ -380,7 +411,8 @@ export function getMessagesSince(
              reply_to_message_id, reply_to_message_content, reply_to_sender_name
       FROM messages
       WHERE chat_jid = ? AND timestamp > ?
-        AND is_bot_message = 0 AND content NOT LIKE ?
+        AND is_bot_message = 0 AND hide_reason = 0
+        AND content NOT LIKE ?
         AND content != '' AND content IS NOT NULL
       ORDER BY timestamp DESC
       LIMIT ?
