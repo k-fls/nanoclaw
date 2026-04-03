@@ -293,7 +293,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
   const credentialsOk = await guard.start();
 
-  const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
     chatJid,
     getOrRecoverCursor(chatJid),
@@ -377,7 +376,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         channel.setTyping?.(chatJid, true)?.catch(() => {});
       }
 
-      queue.notifyIdle(chatJid);
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
       if (result.status === 'error') {
         hadError = true;
       }

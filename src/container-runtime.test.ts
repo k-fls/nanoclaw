@@ -94,6 +94,17 @@ describe('stopContainer', () => {
     expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
     expect(mockExecSync).not.toHaveBeenCalled();
   });
+
+  it('rejects names with shell metacharacters', () => {
+    expect(() => stopContainer('foo; rm -rf /')).toThrow(
+      'Invalid container name',
+    );
+    expect(() => stopContainer('foo$(whoami)')).toThrow(
+      'Invalid container name',
+    );
+    expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
+    expect(mockExecSync).not.toHaveBeenCalled();
+  });
 });
 
 // --- ensureContainerRuntimeRunning ---
