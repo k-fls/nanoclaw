@@ -19,7 +19,7 @@ import {
   CredentialProxy,
   setUpstreamAgent,
   setProxyInstance,
-} from '../credential-proxy.js';
+} from './credential-proxy.js';
 import {
   setTestUpstreamAgent,
   setTokenFetch,
@@ -343,7 +343,7 @@ export class OAuthE2EHarness {
       const realHandler = createHandler(provider, rule, this.tokenEngine);
       const mockHost = this.mockUpstream.host;
       const mockPort = () => this.mockUpstream.port;
-      const wrappedHandler: import('../credential-proxy.js').HostHandler = (
+      const wrappedHandler: import('./credential-proxy.js').HostHandler = (
         clientReq,
         clientRes,
         targetHost,

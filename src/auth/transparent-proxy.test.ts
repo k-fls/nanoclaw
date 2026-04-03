@@ -13,9 +13,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import type { AddressInfo } from 'net';
-import { asGroupScope } from './auth/oauth-types.js';
+import { asGroupScope } from './oauth-types.js';
 
-vi.mock('./logger.js', () => ({
+vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 

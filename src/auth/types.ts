@@ -12,7 +12,7 @@ export interface StoredCredential {
 }
 
 /** Re-export HostHandler so providers can reference it without importing credential-proxy directly. */
-export type { HostHandler } from '../credential-proxy.js';
+export type { HostHandler } from './credential-proxy.js';
 
 /** Pluggable per-service credential provider. */
 export interface CredentialProvider {
@@ -28,7 +28,7 @@ export interface CredentialProvider {
   hostRules?: Array<{
     hostPattern: RegExp;
     pathPattern: RegExp;
-    handler: import('../credential-proxy.js').HostHandler;
+    handler: import('./credential-proxy.js').HostHandler;
   }>;
 
   /**

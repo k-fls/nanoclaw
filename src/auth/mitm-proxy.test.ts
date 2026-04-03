@@ -13,7 +13,7 @@ import os from 'os';
 import path from 'path';
 import type { AddressInfo } from 'net';
 
-vi.mock('./logger.js', () => ({
+vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
@@ -23,7 +23,7 @@ import {
   parseSni,
 } from './mitm-proxy.js';
 import { CredentialProxy, setUpstreamAgent } from './credential-proxy.js';
-import { asGroupScope } from './auth/oauth-types.js';
+import { asGroupScope } from './oauth-types.js';
 
 // ---------------------------------------------------------------------------
 // CONNECT helper — sends a request through the proxy via CONNECT tunnel

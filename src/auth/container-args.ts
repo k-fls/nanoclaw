@@ -12,8 +12,8 @@ import fs from 'fs';
 
 import { CREDENTIAL_PROXY_PORT } from '../config.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
-import { getProxy, type CredentialProxy } from '../credential-proxy.js';
-import { getMitmCaCertPath } from '../mitm-proxy.js';
+import { getProxy, type CredentialProxy } from './credential-proxy.js';
+import { getMitmCaCertPath } from './mitm-proxy.js';
 import { getAllProviders } from './registry.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { GroupScope } from './oauth-types.js';

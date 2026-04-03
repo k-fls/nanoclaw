@@ -3,12 +3,12 @@ import http from 'http';
 import { connect as netConnect } from 'net';
 import type { AddressInfo } from 'net';
 
-vi.mock('./logger.js', () => ({
+vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
 import { CredentialProxy } from './credential-proxy.js';
-import { asGroupScope } from './auth/oauth-types.js';
+import { asGroupScope } from './oauth-types.js';
 
 function makeRequest(
   port: number,

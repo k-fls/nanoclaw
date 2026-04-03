@@ -39,7 +39,7 @@ vi.mock('./auth/registry.js', () => {
 
 // Mock proxy + tap logger for /tap tests
 const mockSetTapFilter = vi.fn();
-vi.mock('./credential-proxy.js', () => ({
+vi.mock('./auth/credential-proxy.js', () => ({
   getProxy: () => ({ setTapFilter: mockSetTapFilter }),
 }));
 
@@ -47,7 +47,7 @@ const mockCreateTapFilter = vi.fn(
   (_a: RegExp, _b: RegExp, _c: string, _d?: ReadonlySet<string>) =>
     'mock-filter',
 );
-vi.mock('./proxy-tap-logger.js', () => ({
+vi.mock('./auth/proxy-tap-logger.js', () => ({
   createTapFilter: (a: RegExp, b: RegExp, c: string, d?: ReadonlySet<string>) =>
     mockCreateTapFilter(a, b, c, d),
   getActiveTap: () => null,

@@ -7,8 +7,8 @@
  */
 import type { RegisteredGroup, Channel } from '../types.js';
 import type { ChatIO, CredentialProvider } from './types.js';
-import type { CredentialProxy } from '../credential-proxy.js';
-import { getProxy } from '../credential-proxy.js';
+import type { CredentialProxy } from './credential-proxy.js';
+import { getProxy } from './credential-proxy.js';
 import {
   isAuthError,
   extractStreamRequestId,

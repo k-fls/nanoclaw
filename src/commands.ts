@@ -6,14 +6,14 @@
  */
 
 import { TRIGGER_PATTERN } from './config.js';
-import { getProxy } from './credential-proxy.js';
+import { getProxy } from './auth/credential-proxy.js';
 import {
   createTapFilter,
   getActiveTap,
   clearActiveTap,
   readTapLog,
   LOG_FILE,
-} from './proxy-tap-logger.js';
+} from './auth/proxy-tap-logger.js';
 import { parseTapExclude } from './auth/registry.js';
 import {
   hasSubscriptionCredential,

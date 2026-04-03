@@ -13,7 +13,7 @@ import {
   setOAuthInitiationResolver,
 } from './universal-oauth-handler.js';
 import { setBrowserOpenCallback } from './browser-open-handler.js';
-import type { CredentialProxy } from '../credential-proxy.js';
+import type { CredentialProxy } from './credential-proxy.js';
 import type { ContainerSessionContext } from './session-context.js';
 import { logger } from '../logger.js';
 

@@ -452,7 +452,7 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
     const fs = await import('fs');
     const path = await import('path');
     const os = await import('os');
-    const { createTapFilter } = await import('../proxy-tap-logger.js');
+    const { createTapFilter } = await import('./proxy-tap-logger.js');
 
     const substitute = h.storeToken(
       REAL_ACCESS_TOKEN,

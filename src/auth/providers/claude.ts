@@ -27,7 +27,7 @@ import { IDLE_TIMEOUT } from '../../config.js';
 import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
 import { CONTAINER_RUNTIME_BIN } from '../../container-runtime.js';
-import { proxyPipe, getProxy } from '../../credential-proxy.js';
+import { proxyPipe, getProxy } from '../credential-proxy.js';
 import {
   RESELECT,
   type AuthContext,

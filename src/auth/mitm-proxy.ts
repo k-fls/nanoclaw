@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import forge from 'node-forge';
 
-import { logger } from './logger.js';
+import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // CA certificate management

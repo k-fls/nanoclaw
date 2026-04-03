@@ -17,7 +17,7 @@ import {
 } from 'net';
 import { Duplex } from 'stream';
 
-import { logger } from './logger.js';
+import { logger } from '../logger.js';
 import { parseSni, type MitmContext } from './mitm-proxy.js';
 
 // No import from credential-proxy.ts — callbacks are passed via options
@@ -37,18 +37,16 @@ export interface TransparentProxyOptions {
   /** Should this hostname be TLS-terminated? null = passthrough, InterceptResult = MITM. */
   shouldIntercept(
     hostname: string,
-    scope: import('./auth/oauth-types.js').GroupScope,
+    scope: import('./oauth-types.js').GroupScope,
   ): InterceptResult | null;
   /** Resolve scope from a container's source IP. Returns null for unknown IPs. */
-  resolveScope(
-    sourceIP: string,
-  ): import('./auth/oauth-types.js').GroupScope | null;
+  resolveScope(sourceIP: string): import('./oauth-types.js').GroupScope | null;
   /** Emit a TLS socket into the shared MITM dispatcher with connection metadata. */
   emitMitmConnection(
     socket: object,
     targetHost: string,
     targetPort: number,
-    scope: import('./auth/oauth-types.js').GroupScope,
+    scope: import('./oauth-types.js').GroupScope,
     sourceIP?: string,
     tapResolver?: unknown,
   ): void;

@@ -20,14 +20,14 @@ import type { InterceptRule, OAuthProvider } from './oauth-types.js';
 import type { GroupScope } from './oauth-types.js';
 import { BEARER_SWAP_ROLES } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
-import type { HostHandler } from '../credential-proxy.js';
-import { proxyBuffered } from '../credential-proxy.js';
-import { parseBody } from '../oauth-interceptor.js';
+import type { HostHandler } from './credential-proxy.js';
+import { proxyBuffered } from './credential-proxy.js';
+import { parseBody } from './oauth-interceptor.js';
 import type { AuthErrorCallback } from './session-context.js';
 import { logger } from '../logger.js';
 
 // Re-export setUpstreamAgent for test use
-export { setUpstreamAgent } from '../credential-proxy.js';
+export { setUpstreamAgent } from './credential-proxy.js';
 
 // ---------------------------------------------------------------------------
 // Auth error callback resolver
@@ -922,7 +922,7 @@ function createAuthorizeStubHandler(
     }
 
     // No session context — forward the authorize request (passthrough).
-    const { proxyPipe } = await import('../credential-proxy.js');
+    const { proxyPipe } = await import('./credential-proxy.js');
     proxyPipe(
       clientReq,
       clientRes,
@@ -955,7 +955,7 @@ function createDeviceCodeHandler(
     targetPort: number,
     groupScope,
   ): Promise<void> => {
-    const { proxyBuffered } = await import('../credential-proxy.js');
+    const { proxyBuffered } = await import('./credential-proxy.js');
     await proxyBuffered(
       clientReq,
       clientRes,

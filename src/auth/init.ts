@@ -17,7 +17,7 @@ import {
   CredentialProxy,
   setProxyInstance,
   getProxy,
-} from '../credential-proxy.js';
+} from './credential-proxy.js';
 import { PROXY_BIND_HOST, ensureNetwork } from './container-args.js';
 import { initCredentialStore } from './store.js';
 import { importEnvToDefault } from './provision.js';
@@ -57,7 +57,7 @@ export async function initAuthSystem(
   setProxyInstance(proxy);
 
   // Activate proxy tap logger if PROXY_TAP_DOMAIN + PROXY_TAP_PATH are set
-  const { createTapFilterFromEnv } = await import('../proxy-tap-logger.js');
+  const { createTapFilterFromEnv } = await import('./proxy-tap-logger.js');
   const tapFilter = createTapFilterFromEnv();
   if (tapFilter) proxy.setTapFilter(tapFilter);
 

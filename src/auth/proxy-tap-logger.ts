@@ -12,15 +12,15 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR } from './config.js';
+import { DATA_DIR } from '../config.js';
 import type {
   ProxyTapFilter,
   ProxyTapResult,
   ProxyTapCallback,
   ProxyTapEvent,
 } from './credential-proxy.js';
-import { logger } from './logger.js';
-import { parseTapExclude } from './auth/registry.js';
+import { logger } from '../logger.js';
+import { parseTapExclude } from './registry.js';
 
 export const LOG_FILE = path.join(DATA_DIR, 'proxy-tap.jsonl');
 

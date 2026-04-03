@@ -11,7 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import type { CredentialProvider } from './types.js';
-import { getProxy } from '../credential-proxy.js';
+import { getProxy } from './credential-proxy.js';
 import { loadDiscoveryProviders } from './discovery-loader.js';
 import type { OAuthProvider } from './oauth-types.js';
 import {

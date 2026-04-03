@@ -3,12 +3,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-vi.mock('./logger.js', () => ({
+vi.mock('../logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 // Mock registry — claude is always known
-vi.mock('./auth/registry.js', () => ({
+vi.mock('./registry.js', () => ({
   parseTapExclude: (raw: string | undefined) => {
     const known = new Set(['claude', 'github']);
     if (raw === undefined)

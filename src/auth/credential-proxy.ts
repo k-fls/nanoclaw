@@ -33,12 +33,12 @@ import { Duplex, PassThrough } from 'stream';
 import { TLSSocket } from 'tls';
 import type { Server as NetServer } from 'net';
 
-import { logger } from './logger.js';
+import { logger } from '../logger.js';
 import { createMitmContext, type MitmContext } from './mitm-proxy.js';
 import { createTransparentServer } from './transparent-proxy.js';
-import { handleBrowserOpen } from './auth/browser-open-handler.js';
-import type { ContainerSessionContext } from './auth/session-context.js';
-import type { GroupScope } from './auth/oauth-types.js';
+import { handleBrowserOpen } from './browser-open-handler.js';
+import type { ContainerSessionContext } from './session-context.js';
+import type { GroupScope } from './oauth-types.js';
 
 /** Swallow socket/stream errors to prevent uncaughtException crashes. */
 function noop() {}

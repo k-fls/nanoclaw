@@ -5,7 +5,7 @@ vi.mock('../logger.js', () => ({
 }));
 
 const mockRegisterProviderHost = vi.fn();
-vi.mock('../credential-proxy.js', () => ({
+vi.mock('./credential-proxy.js', () => ({
   getProxy: () => ({
     registerProviderHost: mockRegisterProviderHost,
   }),

@@ -18,7 +18,7 @@ import {
   setOAuthInitiationResolver,
   setTokenFetch,
 } from './universal-oauth-handler.js';
-import { setUpstreamAgent } from '../credential-proxy.js';
+import { setUpstreamAgent } from './credential-proxy.js';
 import {
   TokenSubstituteEngine,
   PersistentTokenResolver,

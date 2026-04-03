@@ -17,7 +17,7 @@ import {
 import { createAuthGuard } from './auth/guard.js';
 import { createChatIO } from './auth/chat-io.js';
 import { runReauth } from './auth/reauth.js';
-import { getProxy } from './credential-proxy.js';
+import { getProxy } from './auth/credential-proxy.js';
 import { getTokenEngine } from './auth/registry.js';
 import './channels/index.js';
 import {
