@@ -103,7 +103,7 @@ describe('stopContainer', () => {
       'Invalid container name',
     );
     expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
-    expect(mockExecSync).not.toHaveBeenCalled();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 });
 

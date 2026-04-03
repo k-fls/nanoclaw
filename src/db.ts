@@ -115,7 +115,7 @@ function createSchema(database: Database.Database): void {
   }
 
   // Add hide_reason column if it doesn't exist (migration for existing DBs)
-  // 0 = visible, 1 = flow/scripted message
+  // 0 = visible, 1 = flow/scripted message, 2 = command
   try {
     database.exec(
       `ALTER TABLE messages ADD COLUMN hide_reason INTEGER DEFAULT 0`,
