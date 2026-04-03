@@ -22,6 +22,7 @@ import {
 import {
   ContainerOutput,
   runContainerAgent,
+  updateAgentRunnerFingerprint,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -569,6 +570,7 @@ function ensureContainerSystemRunning(): void {
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
+  updateAgentRunnerFingerprint();
   initDatabase();
   logger.info('Database initialized');
   loadState();

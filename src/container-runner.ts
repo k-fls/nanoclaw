@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -29,6 +30,34 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
+
+/**
+ * Compute a hash fingerprint of a directory's file names and sizes.
+ * Sorted for determinism. Used to detect upstream source changes
+ * without comparing file contents byte-by-byte.
+ */
+export function dirFingerprint(dir: string): string {
+  const entries = fs
+    .readdirSync(dir)
+    .filter(
+      (f) => f !== '.fingerprint' && fs.statSync(path.join(dir, f)).isFile(),
+    )
+    .sort()
+    .map((f) => `${f}:${fs.statSync(path.join(dir, f)).mtimeMs}`)
+    .join('\n');
+  return crypto.createHash('sha256').update(entries).digest('hex');
+}
+
+/**
+ * Write a .fingerprint file into the agent-runner source directory.
+ * Call once at startup so per-group copies can be compared cheaply.
+ */
+export function updateAgentRunnerFingerprint(): void {
+  const src = path.join(process.cwd(), 'container', 'agent-runner', 'src');
+  if (fs.existsSync(src)) {
+    fs.writeFileSync(path.join(src, '.fingerprint'), dirFingerprint(src));
+  }
+}
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -202,14 +231,15 @@ function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
-    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
-    const needsCopy =
-      !fs.existsSync(groupAgentRunnerDir) ||
-      !fs.existsSync(cachedIndex) ||
-      (fs.existsSync(srcIndex) &&
-        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
-    if (needsCopy) {
+    const srcFp = path.join(agentRunnerSrc, '.fingerprint');
+    const dstFp = path.join(groupAgentRunnerDir, '.fingerprint');
+    const srcHash = fs.existsSync(srcFp)
+      ? fs.readFileSync(srcFp, 'utf-8').trim()
+      : '';
+    const dstHash = fs.existsSync(dstFp)
+      ? fs.readFileSync(dstFp, 'utf-8').trim()
+      : '';
+    if (!srcHash || srcHash !== dstHash) {
       fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
     }
   }
