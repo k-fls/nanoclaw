@@ -340,7 +340,7 @@ export interface CommandContext {
   getContainerName: () => string | null;
   hideMessage: (msgId: string) => void;
   advanceCursor: (timestamp: string) => void;
-  closeStdin: () => void;
+  stopContainer: () => void;
   sendMessage: (text: string) => Promise<void>;
   sendRawMessage: (text: string) => Promise<void>;
   runReauth: (providerId: string) => Promise<void>;
@@ -370,7 +370,7 @@ export async function executeCommand(
     chatJid: ctx.chatJid,
     sender: lastMsg.sender,
   });
-  if (result.stopContainer) ctx.closeStdin();
+  if (result.stopContainer) ctx.stopContainer();
   if (result.sendRawMessage) await ctx.sendRawMessage(result.sendRawMessage);
   if (result.asyncAction) {
     const msg = await result.asyncAction();

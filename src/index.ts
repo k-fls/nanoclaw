@@ -6,7 +6,6 @@ import {
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
-  IDLE_TIMEOUT,
   MAX_MESSAGES_PER_PROMPT,
   POLL_INTERVAL,
   TIMEZONE,
@@ -243,7 +242,7 @@ function commandContext(
       lastAgentTimestamp[chatJid] = ts;
       saveState();
     },
-    closeStdin: () => queue.softStop(chatJid),
+    stopContainer: () => queue.softStop(chatJid),
     sendMessage: (text) => channel.sendMessage(chatJid, text),
     sendRawMessage: (text) => channel.sendMessage(chatJid, text),
     runReauth: async (providerId: string) => {

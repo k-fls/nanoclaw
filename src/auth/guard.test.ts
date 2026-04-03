@@ -159,13 +159,13 @@ describe('createAuthGuard', () => {
   });
 
   describe('onStreamResult', () => {
-    it('detects auth error and calls closeStdin', async () => {
-      const closeStdin = vi.fn();
+    it('detects auth error and calls stopContainer', async () => {
+      const stopContainer = vi.fn();
       const guard = createAuthGuard(
         group,
         mockProxy(),
         mockChat,
-        closeStdin,
+        stopContainer,
         mockProvider(),
       );
       await guard.start();
@@ -174,23 +174,23 @@ describe('createAuthGuard', () => {
       sharedPendingErrors.record('req_abc');
       guard.onStreamResult({ status: 'error', error: authError() });
 
-      expect(closeStdin).toHaveBeenCalled();
+      expect(stopContainer).toHaveBeenCalled();
     });
 
     it('ignores non-auth errors', async () => {
-      const closeStdin = vi.fn();
+      const stopContainer = vi.fn();
       const guard = createAuthGuard(
         group,
         mockProxy(),
         mockChat,
-        closeStdin,
+        stopContainer,
         mockProvider(),
       );
       await guard.start();
 
       guard.onStreamResult({ status: 'error', error: 'some random error' });
 
-      expect(closeStdin).not.toHaveBeenCalled();
+      expect(stopContainer).not.toHaveBeenCalled();
     });
   });
 

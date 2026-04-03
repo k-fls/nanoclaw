@@ -305,7 +305,7 @@ describe('GroupQueue', () => {
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
 
-    // Register a process so closeStdin has a groupFolder
+    // Register a process so writeCloseSentinel has a groupFolder
     queue.registerProcess(
       'group1@g.us',
       {} as any,

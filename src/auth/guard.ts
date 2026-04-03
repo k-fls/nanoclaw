@@ -75,7 +75,7 @@ export function createAuthGuard(
   group: RegisteredGroup,
   proxy: CredentialProxy,
   createChat: () => ChatIO,
-  closeStdin: () => void,
+  stopContainer: () => void,
   /** Override provider for testing. Defaults to claudeProvider. */
   provider: CredentialProvider = claudeProvider,
 ): AuthGuard {
@@ -149,7 +149,7 @@ export function createAuthGuard(
         streamedAuthError = result.result;
       }
       if (streamedAuthError) {
-        closeStdin();
+        stopContainer();
       }
     },
 
@@ -223,7 +223,7 @@ export type GuardedOutputCallback = (
 export interface WithAuthGuardDeps {
   group: RegisteredGroup;
   chatIODeps: ChatIODeps;
-  closeStdin: () => void;
+  stopContainer: () => void;
   /**
    * The actual agent run. Receives the guard so streaming callbacks can
    * call guard.onStreamResult() and guard.chatLock.
@@ -245,13 +245,13 @@ export interface WithAuthGuardDeps {
 export async function withAuthGuard(
   deps: WithAuthGuardDeps,
 ): Promise<GuardedResult> {
-  const { group, chatIODeps, closeStdin, runAgent } = deps;
+  const { group, chatIODeps, stopContainer, runAgent } = deps;
 
   const guard = createAuthGuard(
     group,
     getProxy(),
     () => createChatIO(chatIODeps),
-    closeStdin,
+    stopContainer,
   );
 
   const credentialsOk = await guard.start();
