@@ -1,4 +1,4 @@
-import { ChildProcess, exec } from 'child_process';
+import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -289,12 +289,12 @@ export class GroupQueue {
         { groupJid, containerName: state.containerName },
         'Hard-stopping container',
       );
-      exec(stopContainer(state.containerName), { timeout: 15000 }, (err) => {
-        if (err) {
-          logger.warn({ groupJid, err }, 'docker stop failed, sending SIGKILL');
-          state.process?.kill('SIGKILL');
-        }
-      });
+      try {
+        stopContainer(state.containerName);
+      } catch (err) {
+        logger.warn({ groupJid, err }, 'docker stop failed, sending SIGKILL');
+        state.process?.kill('SIGKILL');
+      }
     } else {
       state.process?.kill('SIGKILL');
     }
