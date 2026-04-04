@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { parseCommand, extractCommand, handleCommand } from './index.js';
 import { ASSISTANT_NAME } from '../config.js';
 import type { NewMessage, RegisteredGroup } from '../types.js';
-import type { CommandIO } from './types.js';
+import type { ChatIO } from '../interaction/types.js';
 
 // Mock remote-control module for /remote-control tests
 const mockStartRemoteControl = vi.fn();
@@ -50,15 +50,18 @@ function runCtx(
   };
 }
 
-function mockIO(): CommandIO {
+function mockIO(): ChatIO {
   return {
     send: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
     sendRaw: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
+    receive: vi.fn<(timeoutMs?: number) => Promise<string | null>>().mockResolvedValue(null),
+    hideMessage: vi.fn(),
+    advanceCursor: vi.fn(),
   };
 }
 
 async function replyText(result: {
-  asyncAction?: (io: CommandIO) => Promise<void>;
+  asyncAction?: (io: ChatIO) => Promise<void>;
 }): Promise<string | undefined> {
   if (!result.asyncAction) return undefined;
   const io = mockIO();
@@ -141,8 +144,8 @@ describe('extractCommand', () => {
   });
 
   it('returns null for empty messages', () => {
-    expect(extractCommand([], true)).toBeNull();
-    expect(extractCommand([], false)).toBeNull();
+    expect(extractCommand([], mainGroup)).toBeNull();
+    expect(extractCommand([], otherGroup)).toBeNull();
   });
 
   it('returns null when trigger message is not a command', () => {

@@ -39,8 +39,6 @@ import {
   getMessagesSince,
   getNewMessages,
   getRouterState,
-  HIDE_REASON,
-  hideMessage,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -53,6 +51,7 @@ import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { executeCommand, type CommandContext } from './commands/index.js';
+import { createChatIO } from './interaction/chat-io.js';
 import { restoreRemoteControl } from './remote-control.js';
 import {
   isSenderAllowed,
@@ -222,14 +221,16 @@ function commandContext(
     group,
     chatJid,
     sender: '',
+    chat: createChatIO({
+      channel,
+      chatJid,
+      assistantName: ASSISTANT_NAME,
+      getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
+      setAgentTimestamp: (ts) => { lastAgentTimestamp[chatJid] = ts; },
+      saveState,
+    }),
     getContainerName: () => queue.getContainerName(chatJid),
-    hideMessage: (id) => hideMessage(chatJid, id, HIDE_REASON.COMMAND),
-    advanceCursor: (ts) => {
-      lastAgentTimestamp[chatJid] = ts;
-      saveState();
-    },
     stopContainer: () => queue.softStop(chatJid),
-    sendMessage: (text) => channel.sendMessage(chatJid, text),
   };
 }
 
@@ -260,7 +261,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Check for /command before invoking the agent
   const cmdCtx = commandContext(channel, chatJid, group);
-  if (await executeCommand(missedMessages, cmdCtx)) return true;
+  if (await executeCommand(missedMessages, cmdCtx)) {
+    lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+    saveState();
+    return true;
+  }
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
@@ -517,7 +522,11 @@ async function startMessageLoop(): Promise<void> {
 
           // Check for /command before invoking the agent
           const cmdCtx = commandContext(channel, chatJid, group);
-          if (await executeCommand(groupMessages, cmdCtx)) continue;
+          if (await executeCommand(groupMessages, cmdCtx)) {
+            lastAgentTimestamp[chatJid] = groupMessages[groupMessages.length - 1].timestamp;
+            saveState();
+            continue;
+          }
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.

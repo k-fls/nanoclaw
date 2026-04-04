@@ -2,16 +2,8 @@
  * Core types for the command framework.
  */
 
+import type { ChatIO } from '../interaction/types.js';
 import type { NewMessage, RegisteredGroup } from '../types.js';
-
-// ---------------------------------------------------------------------------
-// CommandIO — minimal IO interface for command actions
-// ---------------------------------------------------------------------------
-
-export interface CommandIO {
-  send(text: string): Promise<void>;
-  sendRaw(text: string): Promise<void>;
-}
 
 // ---------------------------------------------------------------------------
 // Command result and parsing types
@@ -20,8 +12,8 @@ export interface CommandIO {
 export interface CommandResult {
   /** If set, caller should stop the container before proceeding. */
   stopContainer?: boolean;
-  /** Async action — receives IO for messaging. */
-  asyncAction?: (io: CommandIO) => Promise<void>;
+  /** Async action — receives ChatIO for messaging. */
+  asyncAction?: (io: ChatIO) => Promise<void>;
 }
 
 export interface ParsedCommand {
@@ -54,13 +46,9 @@ export interface CommandContext {
   group: RegisteredGroup;
   chatJid: string;
   sender: string;
+  chat: ChatIO;
   getContainerName: () => string | null;
-  hideMessage: (msgId: string) => void;
-  advanceCursor: (timestamp: string) => void;
   stopContainer: () => void;
-  sendMessage: (text: string) => Promise<void>;
-  /** Optional — branches provide richer IO (e.g. ChatIO with receive). */
-  createIO?: () => CommandIO;
 }
 
 // ---------------------------------------------------------------------------

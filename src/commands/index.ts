@@ -11,7 +11,6 @@ import './builtins.js';
 export type {
   Command,
   CommandContext,
-  CommandIO,
   CommandResult,
   CommandRunContext,
   ExtractedCommand,

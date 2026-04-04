@@ -5,11 +5,12 @@
 import type { NewMessage } from '../types.js';
 import { extractCommand } from './parse.js';
 import { handleCommand } from './registry.js';
-import type { CommandContext, CommandIO } from './types.js';
+import type { CommandContext } from './types.js';
 
 /**
  * Check for a command in messages and execute it.
  * Returns true if a command was handled, false if no command found.
+ * Caller is responsible for advancing the message cursor on true.
  */
 export async function executeCommand(
   messages: NewMessage[],
@@ -18,12 +19,8 @@ export async function executeCommand(
   const extracted = extractCommand(messages, ctx.group);
   if (!extracted) return false;
 
-  const { cmd, message: cmdMsg } = extracted;
-  ctx.hideMessage(cmdMsg.id);
-  ctx.advanceCursor(messages[messages.length - 1].timestamp);
-
   const lastMsg = messages[messages.length - 1];
-  const result = handleCommand(cmd.name, cmd.args, {
+  const result = handleCommand(extracted.cmd.name, extracted.cmd.args, {
     containerName: ctx.getContainerName(),
     group: ctx.group,
     chatJid: ctx.chatJid,
@@ -32,11 +29,7 @@ export async function executeCommand(
 
   if (result.stopContainer) ctx.stopContainer();
   if (result.asyncAction) {
-    const io: CommandIO = ctx.createIO?.() ?? {
-      send: (text) => ctx.sendMessage(text),
-      sendRaw: (text) => ctx.sendMessage(text),
-    };
-    await result.asyncAction(io);
+    await result.asyncAction(ctx.chat);
   }
   return true;
 }
