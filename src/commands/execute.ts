@@ -15,7 +15,7 @@ export async function executeCommand(
   messages: NewMessage[],
   ctx: CommandContext,
 ): Promise<boolean> {
-  const extracted = extractCommand(messages, ctx.group.isMain === true);
+  const extracted = extractCommand(messages, ctx.group);
   if (!extracted) return false;
 
   const { cmd, message: cmdMsg } = extracted;

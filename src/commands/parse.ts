@@ -2,8 +2,8 @@
  * Command parsing and extraction from message batches.
  */
 
-import { TRIGGER_PATTERN } from '../config.js';
-import type { NewMessage } from '../types.js';
+import { getTriggerPattern } from '../config.js';
+import type { NewMessage, RegisteredGroup } from '../types.js';
 import type { ParsedCommand, ExtractedCommand } from './types.js';
 
 const COMMAND_RE = /^\/([a-zA-Z0-9-]+)(?:\s+([\s\S]*))?$/;
@@ -25,11 +25,11 @@ export function parseCommand(content: string): ParsedCommand | null {
  */
 export function extractCommand(
   messages: NewMessage[],
-  isMainGroup: boolean,
+  group: RegisteredGroup,
 ): ExtractedCommand | null {
   if (messages.length === 0) return null;
 
-  if (isMainGroup) {
+  if (group.isMain) {
     const last = messages[messages.length - 1];
     const cmd = parseCommand(last.content.trim());
     if (cmd) return { cmd, message: last };
@@ -37,14 +37,15 @@ export function extractCommand(
   }
 
   // Non-main: find the trigger message and strip the trigger prefix
+  const triggerPattern = getTriggerPattern(group.trigger);
   const triggerMsg = messages.find((m) =>
-    TRIGGER_PATTERN.test(m.content.trim()),
+    triggerPattern.test(m.content.trim()),
   );
   if (!triggerMsg) return null;
 
   const afterTrigger = triggerMsg.content
     .trim()
-    .replace(TRIGGER_PATTERN, '')
+    .replace(triggerPattern, '')
     .trim();
   const cmd = parseCommand(afterTrigger);
   if (cmd) return { cmd, message: triggerMsg };

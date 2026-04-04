@@ -116,7 +116,7 @@ describe('parseCommand', () => {
 describe('extractCommand', () => {
   it('extracts command from main group (last message)', () => {
     const messages = [msg('hello'), msg('/stop')];
-    const result = extractCommand(messages, true);
+    const result = extractCommand(messages, mainGroup);
     expect(result).not.toBeNull();
     expect(result!.cmd.name).toBe('stop');
     expect(result!.message).toBe(messages[1]);
@@ -124,12 +124,12 @@ describe('extractCommand', () => {
 
   it('returns null for main group when last message is not a command', () => {
     const messages = [msg('/stop'), msg('hello')];
-    expect(extractCommand(messages, true)).toBeNull();
+    expect(extractCommand(messages, mainGroup)).toBeNull();
   });
 
   it('extracts command from trigger message in non-main group', () => {
     const messages = [msg('context'), msg(`@${ASSISTANT_NAME} /stop`)];
-    const result = extractCommand(messages, false);
+    const result = extractCommand(messages, otherGroup);
     expect(result).not.toBeNull();
     expect(result!.cmd.name).toBe('stop');
     expect(result!.message).toBe(messages[1]);
@@ -137,7 +137,7 @@ describe('extractCommand', () => {
 
   it('returns null for non-main group without trigger', () => {
     const messages = [msg('/stop')];
-    expect(extractCommand(messages, false)).toBeNull();
+    expect(extractCommand(messages, otherGroup)).toBeNull();
   });
 
   it('returns null for empty messages', () => {
@@ -147,19 +147,19 @@ describe('extractCommand', () => {
 
   it('returns null when trigger message is not a command', () => {
     const messages = [msg(`@${ASSISTANT_NAME} hello`)];
-    expect(extractCommand(messages, false)).toBeNull();
+    expect(extractCommand(messages, otherGroup)).toBeNull();
   });
 
   it('extracts command after Slack bot mention is decoded to trigger', () => {
     const messages = [msg(`@${ASSISTANT_NAME} /auth`)];
-    const result = extractCommand(messages, false);
+    const result = extractCommand(messages, otherGroup);
     expect(result).not.toBeNull();
     expect(result!.cmd.name).toBe('auth');
   });
 
   it('extracts command with args after decoded bot mention', () => {
     const messages = [msg(`@${ASSISTANT_NAME} /auth claude`)];
-    const result = extractCommand(messages, false);
+    const result = extractCommand(messages, otherGroup);
     expect(result).not.toBeNull();
     expect(result!.cmd.name).toBe('auth');
     expect(result!.cmd.args).toBe('claude');
@@ -167,7 +167,7 @@ describe('extractCommand', () => {
 
   it('fails when raw Slack encoding is not decoded', () => {
     const messages = [msg('<@U0AKKG67T7X> /auth')];
-    expect(extractCommand(messages, false)).toBeNull();
+    expect(extractCommand(messages, otherGroup)).toBeNull();
   });
 });
 
