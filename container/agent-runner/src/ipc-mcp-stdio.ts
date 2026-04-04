@@ -505,29 +505,24 @@ Use available_groups.json to find the JID for a group. The folder name must be c
 
 server.tool(
   'group_settings',
-  `View and modify per-group settings. Settings control timezone, trigger behavior, access control, and container configuration.
+  `Modify per-group settings. Settings control timezone, trigger behavior, access control, and container configuration.
 
-Each setting has two permission flags:
-- "modifiable": whether YOU can change it right now (always true for main group, true for non-main only if the setting is enabled for the group)
-- "group_modifiable": whether the group itself is allowed to self-modify this setting (set by main via the enable action)
+To VIEW current settings, read /workspace/ipc/current_settings.json directly — do not use this tool. The snapshot contains an array of objects with: key, value, description, updatable (whether you can change it), and group_update_enabled (whether the group is allowed to update this setting via the enable action).
 
 Actions:
-- get: Show all settings (no key) or a single setting (with key). Returns values, descriptions, and both permission flags.
-- set: Change a setting value (requires key and value). Only works if modifiable=true for you.
+- set: Change a setting value (requires key and value). Only works if updatable=true for you.
 - enable: (Main only) Allow or revoke a group's ability to self-modify a setting. Pass value=true to allow, value=false to revoke.
 
-IMPORTANT: Always call get first before using set or enable, so you know the current values and which settings are modifiable.`,
+IMPORTANT: Always read /workspace/ipc/current_settings.json first before using set or enable, so you know the current values and which settings are updatable.`,
   {
     action: z
-      .enum(['get', 'set', 'enable'])
+      .enum(['set', 'enable'])
       .describe('The action to perform'),
     key: z
       .string()
-      .optional()
-      .describe('Setting key (optional for get, required for set/enable)'),
+      .describe('Setting key (required)'),
     value: z
       .any()
-      .optional()
       .describe(
         'For set: the new setting value. For enable: true to allow self-modification, false to revoke.',
       ),
@@ -539,97 +534,6 @@ IMPORTANT: Always call get first before using set or enable, so you know the cur
       ),
   },
   async (args) => {
-    if (args.action === 'get') {
-      const settingsFile = path.join(IPC_DIR, 'current_settings.json');
-      try {
-        if (!fs.existsSync(settingsFile)) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: 'No settings snapshot available.',
-              },
-            ],
-          };
-        }
-        const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
-
-        if (args.key) {
-          const setting = settings.find(
-            (s: { key: string }) => s.key === args.key,
-          );
-          if (!setting) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Unknown setting: "${args.key}"`,
-                },
-              ],
-              isError: true,
-            };
-          }
-          const flags = [
-            setting.modifiable ? 'modifiable' : 'read-only',
-            setting.group_modifiable ? 'group-modifiable' : 'group-locked',
-          ].join(', ');
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `${setting.key}: ${setting.value == null ? '(default)' : JSON.stringify(setting.value)} [${flags}]\n${setting.description}`,
-              },
-            ],
-          };
-        }
-
-        const formatted = settings
-          .map(
-            (s: {
-              key: string;
-              value: unknown;
-              description: string;
-              modifiable: boolean;
-              group_modifiable: boolean;
-            }) => {
-              const flags = [
-                s.modifiable ? 'modifiable' : 'read-only',
-                s.group_modifiable ? 'group-modifiable' : 'group-locked',
-              ].join(', ');
-              return `- **${s.key}**: ${s.value == null ? '(default)' : JSON.stringify(s.value)} [${flags}]\n  ${s.description}`;
-            },
-          )
-          .join('\n');
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Group settings:\n${formatted}`,
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Error reading settings: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-        };
-      }
-    }
-
-    // set and enable go through IPC
-    if (!args.key) {
-      return {
-        content: [
-          { type: 'text' as const, text: 'Missing required parameter: key' },
-        ],
-        isError: true,
-      };
-    }
-
     if (args.action === 'set' && args.value === undefined) {
       return {
         content: [

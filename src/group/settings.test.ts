@@ -204,14 +204,14 @@ describe('buildSettingsSnapshot', () => {
     expect(keys).toContain('maxMessages');
   });
 
-  it('marks all settings as modifiable for main group', () => {
+  it('marks all settings as updatable for main group', () => {
     const snapshot = buildSettingsSnapshot(undefined, GROUP, true);
     for (const s of snapshot) {
-      expect(s.modifiable).toBe(true);
+      expect(s.updatable).toBe(true);
     }
   });
 
-  it('marks only enabled settings as modifiable for non-main', () => {
+  it('marks only enabled settings as updatable for non-main', () => {
     const config: ContainerConfig = {
       updateable_settings: ['timezone', 'requiresTrigger'],
     };
@@ -219,12 +219,12 @@ describe('buildSettingsSnapshot', () => {
     const tz = snapshot.find((s) => s.key === 'timezone')!;
     const trigger = snapshot.find((s) => s.key === 'trigger')!;
     const req = snapshot.find((s) => s.key === 'requiresTrigger')!;
-    expect(tz.modifiable).toBe(true);
-    expect(req.modifiable).toBe(true);
-    expect(trigger.modifiable).toBe(false);
+    expect(tz.updatable).toBe(true);
+    expect(req.updatable).toBe(true);
+    expect(trigger.updatable).toBe(false);
   });
 
-  it('group_modifiable reflects updateable_settings regardless of isMain', () => {
+  it('group_update_enabled reflects updateable_settings regardless of isMain', () => {
     const config: ContainerConfig = {
       updateable_settings: ['timezone'],
     };
@@ -236,22 +236,22 @@ describe('buildSettingsSnapshot', () => {
     const groupTz = groupSnapshot.find((s) => s.key === 'timezone')!;
     const groupTrigger = groupSnapshot.find((s) => s.key === 'trigger')!;
 
-    // group_modifiable is the same for both
-    expect(mainTz.group_modifiable).toBe(true);
-    expect(mainTrigger.group_modifiable).toBe(false);
-    expect(groupTz.group_modifiable).toBe(true);
-    expect(groupTrigger.group_modifiable).toBe(false);
+    // group_update_enabled is the same for both
+    expect(mainTz.group_update_enabled).toBe(true);
+    expect(mainTrigger.group_update_enabled).toBe(false);
+    expect(groupTz.group_update_enabled).toBe(true);
+    expect(groupTrigger.group_update_enabled).toBe(false);
 
-    // modifiable differs: main can always modify
-    expect(mainTrigger.modifiable).toBe(true);
-    expect(groupTrigger.modifiable).toBe(false);
+    // updatable differs: main can always update
+    expect(mainTrigger.updatable).toBe(true);
+    expect(groupTrigger.updatable).toBe(false);
   });
 
-  it('no updateable_settings means nothing is group_modifiable', () => {
+  it('no updateable_settings means nothing is group_update_enabled', () => {
     const snapshot = buildSettingsSnapshot(undefined, GROUP, false);
     for (const s of snapshot) {
-      expect(s.group_modifiable).toBe(false);
-      expect(s.modifiable).toBe(false);
+      expect(s.group_update_enabled).toBe(false);
+      expect(s.updatable).toBe(false);
     }
   });
 

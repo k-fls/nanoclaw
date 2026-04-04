@@ -136,10 +136,10 @@ export interface SettingSnapshot {
   key: SettingKey;
   value: unknown;
   description: string;
-  /** Whether the caller can change this setting (main can always, non-main only if enabled). */
-  modifiable: boolean;
-  /** Whether the group itself is allowed to self-modify this setting (reflects updateable_settings). */
-  group_modifiable: boolean;
+  /** Whether the caller can update this setting (main can always, non-main only if enabled). */
+  updatable: boolean;
+  /** Whether the group itself is allowed to update this setting (reflects updateable_settings / enable action). */
+  group_update_enabled: boolean;
 }
 
 /** Build the full settings snapshot written to current_settings.json before container launch. */
@@ -153,7 +153,7 @@ export function buildSettingsSnapshot(
     key,
     value: resolve(key, config, group),
     description: SETTINGS[key].description,
-    modifiable: isMain || enabledKeys.has(key),
-    group_modifiable: enabledKeys.has(key),
+    updatable: isMain || enabledKeys.has(key),
+    group_update_enabled: enabledKeys.has(key),
   }));
 }

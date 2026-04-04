@@ -52,7 +52,7 @@ The NanoClaw MCP server exposes these tools (via `mcp__nanoclaw__*` prefix):
 - `cancel_task` — cancel and delete a task
 - `update_task` — update an existing task
 - `register_group` — register a new chat/group (main only)
-- `group_settings` — view and modify per-group settings (timezone, trigger, access control, etc.)
+- `group_settings` — modify per-group settings (timezone, trigger, access control, etc.). To view settings, read `/workspace/ipc/current_settings.json`.
 
 ### 4. Container skills (Bash tools)
 
@@ -64,13 +64,13 @@ which agent-browser 2>/dev/null && echo "agent-browser: available" || echo "agen
 
 ### 5. Group settings
 
-Use the MCP tool to get current settings:
+Read the settings snapshot directly:
 
-```
-Call mcp__nanoclaw__group_settings with action "get" (no key) to list all settings.
+```bash
+cat /workspace/ipc/current_settings.json
 ```
 
-Report each setting with its value and permission flags (modifiable / group-modifiable).
+This is a JSON array of objects, each with: `key`, `value`, `description`, `updatable` (whether the agent can change it), and `group_update_enabled` (whether the group is allowed to update this setting). Report each setting with its value and permission flags.
 
 ### 6. Group info
 
@@ -101,7 +101,7 @@ Present the report as a clean, readable message. Example:
 • agent-browser: ✓
 
 *Group Settings:*
-(list all from `mcp__nanoclaw__group_settings` get action — shows values, descriptions, and permission flags)
+(list all from `/workspace/ipc/current_settings.json` — shows values, descriptions, and permission flags)
 
 Settings can be changed with `group_settings set <key> <value>`.
 Main group can enable/disable self-modification per group with `group_settings enable <key> true/false`.
