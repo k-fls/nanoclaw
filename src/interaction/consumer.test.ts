@@ -4,10 +4,16 @@ import { AsyncMutex } from './async-mutex.js';
 import {
   InteractionQueue,
   type InteractionEntry,
+  type InteractionEventKind,
   type ReplyFn,
 } from './queue.js';
 import { InteractionStatusRegistry } from './status.js';
-import { consumeInteractions, processInteraction } from './consumer.js';
+import {
+  consumeInteractions,
+  defaultHandler,
+  registerInteractionHandler,
+  type HandlerContext,
+} from './consumer.js';
 import type { ChatIO } from './types.js';
 import { setInteractionPrefix } from './types.js';
 
@@ -30,10 +36,14 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
   return chat;
 }
 
-function entry(sourceId: string, replyFn?: ReplyFn | null): InteractionEntry {
+function entry(
+  sourceId: string,
+  replyFn?: ReplyFn | null,
+  eventType: InteractionEventKind = 'notification',
+): InteractionEntry {
   return {
     interactionId: `${sourceId}:12345`,
-    eventType: 'notification',
+    eventType,
     sourceId,
     eventParam: '',
     eventUrl: `https://example.com/flow?source=${sourceId}`,
@@ -42,11 +52,22 @@ function entry(sourceId: string, replyFn?: ReplyFn | null): InteractionEntry {
   };
 }
 
+function handlerCtx(overrides: Partial<HandlerContext> = {}): HandlerContext {
+  return {
+    chat: mockChat(),
+    queue: new InteractionQueue(),
+    statusRegistry: new InteractionStatusRegistry(),
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   setInteractionPrefix('🔑🤖 ');
 });
 
-describe('processInteraction', () => {
+// ── defaultHandler ──────────────────────────────────────────────────
+
+describe('defaultHandler', () => {
   it('presents event and delivers user reply', async () => {
     const chat = mockChat();
     chat.replies.push('AUTH_CODE_123');
@@ -54,7 +75,7 @@ describe('processInteraction', () => {
     const reg = new InteractionStatusRegistry();
     const e = entry('github', replyFn);
 
-    await processInteraction(e, null, chat, reg);
+    await defaultHandler(e, handlerCtx({ chat, statusRegistry: reg }));
 
     expect(chat.sent[0]).toContain('github');
     expect(chat.sent[0]).toContain('https://example.com/flow?source=github');
@@ -68,7 +89,7 @@ describe('processInteraction', () => {
     const reg = new InteractionStatusRegistry();
     const e = entry('github', null);
 
-    await processInteraction(e, null, chat, reg);
+    await defaultHandler(e, handlerCtx({ chat, statusRegistry: reg }));
 
     expect(reg.currentState('github:12345')).toBe('completed');
     expect(chat.sent.length).toBe(1);
@@ -81,7 +102,7 @@ describe('processInteraction', () => {
     const reg = new InteractionStatusRegistry();
     const e = entry('ssh-host', null);
 
-    await processInteraction(e, null, chat, reg);
+    await defaultHandler(e, handlerCtx({ chat, statusRegistry: reg }));
 
     expect(chat.sent[0]).toMatch(/^>> /);
   });
@@ -93,7 +114,7 @@ describe('processInteraction', () => {
     const reg = new InteractionStatusRegistry();
     const e = entry('github', replyFn);
 
-    await processInteraction(e, null, chat, reg);
+    await defaultHandler(e, handlerCtx({ chat, statusRegistry: reg }));
 
     expect(replyFn).not.toHaveBeenCalled();
     expect(reg.currentState('github:12345')).toBe('failed');
@@ -111,7 +132,7 @@ describe('processInteraction', () => {
     const reg = new InteractionStatusRegistry();
     const e = entry('github', replyFn);
 
-    await processInteraction(e, null, chat, reg);
+    await defaultHandler(e, handlerCtx({ chat, statusRegistry: reg }));
 
     expect(replyFn).toHaveBeenCalledTimes(2);
     expect(reg.currentState('github:12345')).toBe('completed');
@@ -123,45 +144,13 @@ describe('processInteraction', () => {
     const reg = new InteractionStatusRegistry();
     const e = entry('github');
 
-    await processInteraction(e, null, chat, reg);
+    await defaultHandler(e, handlerCtx({ chat, statusRegistry: reg }));
 
     expect(reg.currentState('github:12345')).toBe('failed');
   });
-
-  it('acquires and releases chatLock when provided', async () => {
-    const mutex = new AsyncMutex();
-    const chat = mockChat();
-    chat.replies.push('CODE');
-    const reg = new InteractionStatusRegistry();
-    const e = entry('github');
-
-    await processInteraction(e, mutex, chat, reg);
-
-    expect(mutex.locked).toBe(false);
-  });
-
-  it('releases chatLock even on error', async () => {
-    const { muteLogger, restoreLogger } = await import('../test-helpers.js');
-    const spies = muteLogger();
-    try {
-      const mutex = new AsyncMutex();
-      const chat = mockChat();
-      chat.replies.push('CODE');
-      const replyFn = vi.fn(async () => {
-        throw new Error('boom');
-      });
-      const reg = new InteractionStatusRegistry();
-      const e = entry('github', replyFn);
-
-      await processInteraction(e, mutex, chat, reg);
-
-      expect(mutex.locked).toBe(false);
-      expect(reg.currentState('github:12345')).toBe('failed');
-    } finally {
-      restoreLogger(spies);
-    }
-  });
 });
+
+// ── consumeInteractions ─────────────────────────────────────────────
 
 describe('consumeInteractions', () => {
   it('processes entries in FIFO order then exits on abort', async () => {
@@ -202,5 +191,93 @@ describe('consumeInteractions', () => {
     abort.abort();
     await consumerDone;
     expect(mutex.locked).toBe(false);
+  });
+
+  it('releases chatLock even on handler error', async () => {
+    const { muteLogger, restoreLogger } = await import('../test-helpers.js');
+    const spies = muteLogger();
+    try {
+      const q = new InteractionQueue();
+      const mutex = new AsyncMutex();
+      const chat = mockChat();
+      const reg = new InteractionStatusRegistry();
+      const abort = new AbortController();
+
+      // Push an entry whose replyFn throws
+      const e = entry(
+        'github',
+        vi.fn(async () => {
+          throw new Error('boom');
+        }),
+      );
+      chat.replies.push('CODE');
+      q.push(e, 'test');
+
+      const consumerDone = consumeInteractions(
+        q,
+        mutex,
+        chat,
+        reg,
+        abort.signal,
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Lock should be released despite the error
+      expect(mutex.locked).toBe(false);
+      expect(reg.currentState('github:12345')).toBe('failed');
+
+      abort.abort();
+      await consumerDone;
+    } finally {
+      restoreLogger(spies);
+    }
+  });
+
+  it('dispatches to registered handler for event type', async () => {
+    const customHandler = vi.fn(async () => {});
+    registerInteractionHandler(
+      'notification' as InteractionEventKind,
+      customHandler,
+    );
+
+    try {
+      const q = new InteractionQueue();
+      const mutex = new AsyncMutex();
+      const chat = mockChat();
+      const reg = new InteractionStatusRegistry();
+      const abort = new AbortController();
+
+      q.push(entry('github', null), 'test');
+
+      const consumerDone = consumeInteractions(
+        q,
+        mutex,
+        chat,
+        reg,
+        abort.signal,
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(customHandler).toHaveBeenCalledTimes(1);
+      const [handledEntry, ctx] = customHandler.mock.calls[0] as unknown as [
+        InteractionEntry,
+        HandlerContext,
+      ];
+      expect(handledEntry.sourceId).toBe('github');
+      expect(ctx.chat).toBe(chat);
+      expect(ctx.queue).toBe(q);
+      expect(ctx.statusRegistry).toBe(reg);
+
+      abort.abort();
+      await consumerDone;
+    } finally {
+      // Clean up — deregister by re-registering with default
+      registerInteractionHandler(
+        'notification' as InteractionEventKind,
+        defaultHandler,
+      );
+    }
   });
 });

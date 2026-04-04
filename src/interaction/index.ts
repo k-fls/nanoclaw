@@ -2,13 +2,19 @@
  * Interaction module — shared infrastructure for user-facing interactions.
  *
  * Provides a queue-based event system where components push events
- * (auth, SSH, web-form, etc.) and a single consumer presents them
- * to the user and collects replies.
+ * (auth, SSH, web-form, etc.) and a single consumer dispatches them
+ * to registered per-event-type handlers.
  */
 
 export { AsyncMutex } from './async-mutex.js';
 export { createChatIO, type ChatIODeps } from './chat-io.js';
-export { consumeInteractions, processInteraction } from './consumer.js';
+export {
+  consumeInteractions,
+  defaultHandler,
+  registerInteractionHandler,
+  type HandlerContext,
+  type InteractionHandler,
+} from './consumer.js';
 export {
   InteractionQueue,
   type DeliveryResult,
