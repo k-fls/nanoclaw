@@ -7,6 +7,7 @@ import {
   getRegisteredGroup,
   getTaskById,
   setRegisteredGroup,
+  updateContainerConfig,
 } from './db.js';
 import { processTaskIpc, IpcDeps } from './ipc.js';
 import { RegisteredGroup } from './types.js';
@@ -23,14 +24,14 @@ const MAIN_GROUP: RegisteredGroup = {
 const OTHER_GROUP: RegisteredGroup = {
   name: 'Other',
   folder: 'other-group',
-  trigger: '@Andy',
+  trigger: '@OtherBot',
   added_at: '2024-01-01T00:00:00.000Z',
 };
 
 const THIRD_GROUP: RegisteredGroup = {
   name: 'Third',
   folder: 'third-group',
-  trigger: '@Andy',
+  trigger: '@ThirdBot',
   added_at: '2024-01-01T00:00:00.000Z',
 };
 
@@ -63,6 +64,7 @@ beforeEach(() => {
     getAvailableGroups: () => [],
     writeGroupsSnapshot: () => {},
     onTasksChanged: () => {},
+    onSettingsChanged: () => {},
   };
 });
 
@@ -675,5 +677,198 @@ describe('register_group success', () => {
     );
 
     expect(getRegisteredGroup('partial@g.us')).toBeUndefined();
+  });
+});
+
+// --- group_settings authorization ---
+
+describe('group_settings authorization', () => {
+  let settingsChangedJids: string[];
+
+  beforeEach(() => {
+    settingsChangedJids = [];
+    deps.onSettingsChanged = (jid: string) => {
+      settingsChangedJids.push(jid);
+    };
+    // Give other group an enabled setting
+    groups['other@g.us'] = {
+      ...OTHER_GROUP,
+      containerConfig: { updateable_settings: ['timezone'] },
+    };
+    setRegisteredGroup('other@g.us', groups['other@g.us']);
+  });
+
+  it('main can set any setting for any group', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'set',
+        key: 'trigger',
+        value: '@NewBot',
+        targetJid: 'other@g.us',
+        chatJid: 'main@g.us',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    expect(settingsChangedJids).toContain('other@g.us');
+    expect(groups['other@g.us'].trigger).toBe('@NewBot');
+  });
+
+  it('non-main can set enabled setting for own group', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'set',
+        key: 'timezone',
+        value: 'America/New_York',
+        targetJid: 'other@g.us',
+        chatJid: 'other@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(settingsChangedJids).toContain('other@g.us');
+    expect(groups['other@g.us'].containerConfig?.timezone).toBe(
+      'America/New_York',
+    );
+  });
+
+  it('non-main cannot set non-enabled setting', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'set',
+        key: 'trigger',
+        value: '@Hack',
+        targetJid: 'other@g.us',
+        chatJid: 'other@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(settingsChangedJids).toHaveLength(0);
+    expect(groups['other@g.us'].trigger).toBe('@OtherBot');
+  });
+
+  it('non-main cannot set settings for another group', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'set',
+        key: 'timezone',
+        value: 'Asia/Tokyo',
+        targetJid: 'third@g.us',
+        chatJid: 'other@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(settingsChangedJids).toHaveLength(0);
+  });
+
+  it('rejects invalid setting value', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'set',
+        key: 'timezone',
+        value: 'Not/A/Zone',
+        targetJid: 'other@g.us',
+        chatJid: 'other@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(settingsChangedJids).toHaveLength(0);
+    expect(groups['other@g.us'].containerConfig?.timezone).toBeUndefined();
+  });
+
+  it('rejects unknown setting key', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'set',
+        key: 'nonexistent',
+        value: 'anything',
+        targetJid: 'other@g.us',
+        chatJid: 'main@g.us',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    expect(settingsChangedJids).toHaveLength(0);
+  });
+
+  it('main can enable a setting for a group', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'enable',
+        key: 'trigger',
+        value: true,
+        targetJid: 'other@g.us',
+        chatJid: 'main@g.us',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    expect(settingsChangedJids).toContain('other@g.us');
+    expect(groups['other@g.us'].containerConfig?.updateable_settings).toContain(
+      'trigger',
+    );
+  });
+
+  it('main can disable a setting for a group', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'enable',
+        key: 'timezone',
+        value: false,
+        targetJid: 'other@g.us',
+        chatJid: 'main@g.us',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    expect(settingsChangedJids).toContain('other@g.us');
+    expect(
+      groups['other@g.us'].containerConfig?.updateable_settings,
+    ).not.toContain('timezone');
+  });
+
+  it('non-main cannot enable/disable settings', async () => {
+    await processTaskIpc(
+      {
+        type: 'group_settings',
+        action: 'enable',
+        key: 'trigger',
+        value: true,
+        targetJid: 'other@g.us',
+        chatJid: 'other@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(settingsChangedJids).toHaveLength(0);
   });
 });

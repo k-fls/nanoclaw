@@ -29,8 +29,59 @@ export interface AllowedRoot {
 
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
-  timeout?: number; // Default: 300000 (5 minutes)
+
+  // --- Per-group settings (each key present in SETTINGS is exposable via MCP) ---
+
+  /** IANA timezone (e.g. "America/New_York"). Affects message timestamps and cron schedules. */
+  timezone?: string;
+  /** Sender IDs that can trigger the agent. Null/absent = all users. */
+  triggerUsers?: string[];
+  /** Container idle timeout in ms. */
+  timeout?: number;
+  /** Max messages included per agent prompt. */
+  maxMessages?: number;
+
+  /** Keys from above that this group is allowed to self-modify. Empty/absent = none. Main sets this. */
+  updateable_settings?: SettingKey[];
 }
+
+/** Settings stored on RegisteredGroup (DB columns) rather than ContainerConfig (JSON). */
+export const GROUP_FIELD_SETTING_KEYS = [
+  'trigger',
+  'requiresTrigger',
+] as const;
+export type GroupFieldSettingKey = (typeof GROUP_FIELD_SETTING_KEYS)[number];
+
+/**
+ * Setting definitions — single source of truth for what constitutes a setting.
+ * Keys must exist on ContainerConfig or GROUP_FIELD_SETTING_KEYS (enforced by satisfies).
+ * Adding a key here without a RESOLVERS/APPLIERS entry causes a compile error.
+ */
+export const SETTINGS = {
+  timezone: {
+    description:
+      'IANA timezone (e.g. "America/New_York"). Affects message timestamps and cron schedules.',
+  },
+  trigger: {
+    description: 'Trigger phrase (e.g. "@Andy"). Overrides the default.',
+  },
+  requiresTrigger: {
+    description:
+      'Whether messages must start with the trigger phrase. False = respond to all.',
+  },
+  triggerUsers: {
+    description:
+      'Sender IDs that can trigger the agent. Null/absent = all users.',
+  },
+  timeout: { description: 'Container idle timeout in ms.' },
+  maxMessages: { description: 'Max messages included per agent prompt.' },
+} satisfies {
+  [K in keyof ContainerConfig | GroupFieldSettingKey]?: {
+    description: string;
+  };
+};
+
+export type SettingKey = keyof typeof SETTINGS;
 
 export interface RegisteredGroup {
   name: string;

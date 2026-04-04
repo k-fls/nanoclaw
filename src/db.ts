@@ -685,6 +685,25 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   );
 }
 
+export function updateContainerConfig(
+  jid: string,
+  config: RegisteredGroup['containerConfig'],
+): void {
+  db.prepare(
+    `UPDATE registered_groups SET container_config = ? WHERE jid = ?`,
+  ).run(config ? JSON.stringify(config) : null, jid);
+}
+
+export function updateGroupTriggerFields(
+  jid: string,
+  trigger: string,
+  requiresTrigger: boolean,
+): void {
+  db.prepare(
+    `UPDATE registered_groups SET trigger_pattern = ?, requires_trigger = ? WHERE jid = ?`,
+  ).run(trigger, requiresTrigger ? 1 : 0, jid);
+}
+
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
   const rows = db.prepare('SELECT * FROM registered_groups').all() as Array<{
     jid: string;

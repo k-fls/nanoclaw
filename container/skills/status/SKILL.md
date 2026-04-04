@@ -50,7 +50,7 @@ Confirm which tool families are available to you:
 - **Core:** Bash, Read, Write, Edit, Glob, Grep
 - **Web:** WebSearch, WebFetch
 - **Orchestration:** Task, TaskOutput, TaskStop, TeamCreate, TeamDelete, SendMessage
-- **MCP:** mcp__nanoclaw__* (send_message, schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task, register_group)
+- **MCP:** mcp__nanoclaw__* (send_message, schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task, register_group, group_settings)
 
 ### 4. Container utilities
 
@@ -60,7 +60,17 @@ node --version 2>/dev/null
 claude --version 2>/dev/null
 ```
 
-### 5. Task snapshot
+### 5. Group settings
+
+Read the settings snapshot directly:
+
+```bash
+cat /workspace/ipc/current_settings.json
+```
+
+This is a JSON array of objects, each with: `key`, `value`, `description`, `updatable`, and `group_update_enabled`. Report each setting with its value and flags.
+
+### 6. Task snapshot
 
 Use the MCP tool to list tasks:
 
@@ -94,6 +104,11 @@ Present as a clean, readable message:
 • agent-browser: ✓ / not installed
 • Node: vXX.X.X
 • Claude Code: vX.X.X
+
+*Settings:*
+• timezone: America/New_York [updatable, update enabled]
+• trigger: @Andy [not updatable, update disabled]
+• (list all with values and flags)
 
 *Scheduled Tasks:*
 • N active tasks / No scheduled tasks

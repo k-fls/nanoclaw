@@ -62,6 +62,7 @@ interface SDKUserMessage {
 
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
+const IPC_INPUT_SETTINGS_FILE = path.join(IPC_INPUT_DIR, '_settings');
 const IPC_POLL_MS = 500;
 
 /**
@@ -311,6 +312,21 @@ function shouldClose(): boolean {
 function drainIpcInput(): string[] {
   try {
     fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
+
+    // Check for settings update (fixed-name file, overwritten on each change)
+    if (fs.existsSync(IPC_INPUT_SETTINGS_FILE)) {
+      try {
+        const settings = JSON.parse(fs.readFileSync(IPC_INPUT_SETTINGS_FILE, 'utf-8'));
+        fs.unlinkSync(IPC_INPUT_SETTINGS_FILE);
+        for (const s of settings) {
+          if (s.key === 'timezone' && typeof s.value === 'string' && s.value !== process.env.TZ) {
+            process.env.TZ = s.value;
+            log(`Timezone updated to ${s.value}`);
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
     const files = fs
       .readdirSync(IPC_INPUT_DIR)
       .filter((f) => f.endsWith('.json'))

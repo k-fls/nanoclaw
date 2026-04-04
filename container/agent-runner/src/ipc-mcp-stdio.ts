@@ -503,6 +503,83 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+server.tool(
+  'group_settings',
+  `Modify per-group settings. Settings control timezone, trigger behavior, access control, and container configuration.
+
+To VIEW current settings, read /workspace/ipc/current_settings.json directly — do not use this tool. The snapshot contains an array of objects with: key, value, description, updatable (whether you can change it), and group_update_enabled (whether the group is allowed to update this setting via the enable action).
+
+Actions:
+- set: Change a setting value (requires key and value). Only works if updatable=true for you.
+- enable: (Main only) Allow or revoke a group's ability to self-modify a setting. Pass value=true to allow, value=false to revoke.
+
+IMPORTANT: Always read /workspace/ipc/current_settings.json first before using set or enable, so you know the current values and which settings are updatable.`,
+  {
+    action: z
+      .enum(['set', 'enable'])
+      .describe('The action to perform'),
+    key: z
+      .string()
+      .describe('Setting key (required)'),
+    value: z
+      .any()
+      .describe(
+        'For set: the new setting value. For enable: true to allow self-modification, false to revoke.',
+      ),
+    target_group_jid: z
+      .string()
+      .optional()
+      .describe(
+        '(Main group only) JID of the group to manage. Defaults to current group.',
+      ),
+  },
+  async (args) => {
+    if (args.action === 'set' && args.value === undefined) {
+      return {
+        content: [
+          { type: 'text' as const, text: 'Missing required parameter: value' },
+        ],
+        isError: true,
+      };
+    }
+
+    if (args.action === 'enable' && !isMain) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Only the main group can enable/disable settings.',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const targetJid =
+      isMain && args.target_group_jid ? args.target_group_jid : chatJid;
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'group_settings',
+      action: args.action,
+      key: args.key,
+      value: args.value,
+      targetJid,
+      chatJid,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Settings ${args.action} requested for "${args.key}".`,
+        },
+      ],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
