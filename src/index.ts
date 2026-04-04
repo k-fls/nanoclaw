@@ -15,7 +15,7 @@ import {
   NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
 } from './auth/init.js';
 import { createAuthGuard } from './auth/guard.js';
-import { createChatIO } from './auth/chat-io.js';
+import { createChatIO } from './interaction/index.js';
 import { runReauth } from './auth/reauth.js';
 import { getProxy } from './auth/credential-proxy.js';
 import { getTokenEngine } from './auth/registry.js';

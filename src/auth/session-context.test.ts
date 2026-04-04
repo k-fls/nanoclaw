@@ -11,27 +11,26 @@ describe('createSessionContext', () => {
     const ctx = createSessionContext('test-scope', () => null);
     expect(ctx.scope).toBe('test-scope');
     expect(ctx.pendingErrors).toBeDefined();
-    expect(ctx.flowQueue).toBeDefined();
+    expect(ctx.interactionQueue).toBeDefined();
     expect(ctx.statusRegistry).toBeDefined();
     expect(typeof ctx.onAuthError).toBe('function');
   });
 
-  it('wires flowQueue mutations to statusRegistry', () => {
+  it('wires interactionQueue mutations to statusRegistry', () => {
     const ctx = createSessionContext('test-scope', () => null);
 
-    // Push a flow entry — mutation callback should forward to status registry
-    ctx.flowQueue.push(
+    ctx.interactionQueue.push(
       {
-        flowId: 'flow-1',
+        interactionId: 'int-1',
         eventType: 'oauth-start',
-        providerId: 'claude',
+        sourceId: 'claude',
         eventParam: 'https://example.com',
         replyFn: null,
       },
       'test push',
     );
 
-    const state = ctx.statusRegistry.currentState('flow-1');
+    const state = ctx.statusRegistry.currentState('int-1');
     expect(state).toBe('queued');
   });
 
@@ -61,7 +60,7 @@ describe('createSessionContext', () => {
     expect(ctx1.scope).toBe('scope-1');
     expect(ctx2.scope).toBe('scope-2');
     expect(ctx1.pendingErrors).not.toBe(ctx2.pendingErrors);
-    expect(ctx1.flowQueue).not.toBe(ctx2.flowQueue);
+    expect(ctx1.interactionQueue).not.toBe(ctx2.interactionQueue);
     expect(ctx1.statusRegistry).not.toBe(ctx2.statusRegistry);
   });
 });

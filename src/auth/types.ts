@@ -2,6 +2,7 @@
  * Per-group credential system — type definitions.
  */
 import type { CredentialScope, GroupScope } from './oauth-types.js';
+import type { ChatIO } from '../interaction/types.js';
 
 /** On-disk credential file format at ~/.config/nanoclaw/credentials/{scope}/{service}.json */
 export interface StoredCredential {
@@ -100,22 +101,8 @@ export interface AuthContext {
   chat: ChatIO;
 }
 
-/**
- * ChatIO uses normal message routing — no special interception.
- * send() goes through the router (same path as container agent responses).
- * receive() polls main group messages, waiting for a user reply.
- */
-export interface ChatIO {
-  send(text: string): Promise<void>;
-  /** Send without any prefix decoration (e.g. for PGP keys that must be copy-pasteable). */
-  sendRaw(text: string): Promise<void>;
-  /** Polls main group messages. Returns null on timeout. */
-  receive(timeoutMs?: number): Promise<string | null>;
-  /** Mark the last received message as hidden so the agent never sees it. */
-  hideMessage(): void;
-  /** Advance the message cursor past all current messages so the agent won't re-see them. */
-  advanceCursor(): void;
-}
+/** Re-export ChatIO from the interaction module so auth consumers can import from one place. */
+export type { ChatIO } from '../interaction/types.js';
 
 /** Handle to a spawned container process. */
 export interface ExecHandle {

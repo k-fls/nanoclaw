@@ -23,20 +23,24 @@ vi.mock('./registry.js', () => ({
   })),
 }));
 
-// Mock consumeFlows — just resolve immediately
-vi.mock('./flow-consumer.js', () => ({
-  consumeFlows: vi.fn(async () => {}),
-}));
+// Mock consumeInteractions — just resolve immediately
+vi.mock('../interaction/index.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    consumeInteractions: vi.fn(async () => {}),
+  };
+});
 
 // Shared pendingErrors so tests can record request IDs before triggering errors
 const sharedPendingErrors = new PendingAuthErrors();
 
-// Mock createSessionContext to avoid real PendingAuthErrors/FlowQueue wiring
+// Mock createSessionContext to avoid real PendingAuthErrors/InteractionQueue wiring
 vi.mock('./session-context.js', () => ({
   createSessionContext: vi.fn(() => ({
     scope: 'test-scope',
     pendingErrors: sharedPendingErrors,
-    flowQueue: { onMutation: vi.fn() },
+    interactionQueue: { onMutation: vi.fn() },
     statusRegistry: { destroy: vi.fn(), emit: vi.fn() },
     onAuthError: vi.fn(),
   })),

@@ -774,7 +774,7 @@ export class CredentialProxy {
       if (req.url === '/auth/flows' && req.method === 'GET') {
         const ctx = this.sessionContexts.get(scope);
         if (ctx) {
-          ctx.statusRegistry.handleListFlows(req, res);
+          ctx.statusRegistry.handleListInteractions(req, res);
         } else {
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end('[]');

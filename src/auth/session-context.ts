@@ -9,8 +9,10 @@
  * lifetime. The auth error callback bridges them: bearer-swap resolves scope
  * from container IP, then looks up this context's callback.
  */
-import { FlowQueue } from './flow-queue.js';
-import { FlowStatusRegistry } from './flow-status.js';
+import {
+  InteractionQueue,
+  InteractionStatusRegistry,
+} from '../interaction/index.js';
 import { PendingAuthErrors } from './pending-auth-errors.js';
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -37,11 +39,11 @@ export interface ContainerSessionContext {
   /** Pending auth errors tracker — wires proxy to auth guard. */
   pendingErrors: PendingAuthErrors;
 
-  /** Flow queue for this session. */
-  flowQueue: FlowQueue;
+  /** Interaction queue for this session. */
+  interactionQueue: InteractionQueue;
 
   /** Status registry for SSE endpoints. */
-  statusRegistry: FlowStatusRegistry;
+  statusRegistry: InteractionStatusRegistry;
 
   /**
    * Auth error callback — called by bearer-swap handler on 401/403
@@ -62,15 +64,15 @@ export function createSessionContext(
   extractRequestId: (responseBody: string) => string | null,
 ): ContainerSessionContext {
   const pendingErrors = new PendingAuthErrors();
-  const flowQueue = new FlowQueue();
-  const statusRegistry = new FlowStatusRegistry();
+  const interactionQueue = new InteractionQueue();
+  const statusRegistry = new InteractionStatusRegistry();
 
   // Wire queue mutations to status registry
-  flowQueue.onMutation((flowId, eventType, event, reason) => {
-    statusRegistry.emit(flowId, eventType, event, reason);
+  interactionQueue.onMutation((interactionId, eventType, event, reason) => {
+    statusRegistry.emit(interactionId, eventType, event, reason);
   });
 
-  const onAuthError: AuthErrorCallback = (responseBody, statusCode) => {
+  const onAuthError: AuthErrorCallback = (responseBody, _statusCode) => {
     const requestId = extractRequestId(responseBody);
     if (requestId) {
       pendingErrors.record(requestId);
@@ -81,7 +83,7 @@ export function createSessionContext(
     scope,
     containerName: '',
     pendingErrors,
-    flowQueue,
+    interactionQueue,
     statusRegistry,
     onAuthError,
   };

@@ -19,9 +19,12 @@ import { runReauth } from './reauth.js';
 import { getTokenEngine } from './registry.js';
 import { scopeOf } from '../types.js';
 import { createSessionContext } from './session-context.js';
-import { consumeFlows } from './flow-consumer.js';
-import { createChatIO, type ChatIODeps } from './chat-io.js';
-import { AsyncMutex } from './async-mutex.js';
+import {
+  consumeInteractions,
+  AsyncMutex,
+  createChatIO,
+  type ChatIODeps,
+} from '../interaction/index.js';
 import { logger } from '../logger.js';
 
 const MAX_REASON_LEN = 200;
@@ -111,8 +114,8 @@ export function createAuthGuard(
     async start(): Promise<boolean> {
       proxy.registerSessionContext(scope, sessionCtx);
 
-      consumerPromise = consumeFlows(
-        sessionCtx.flowQueue,
+      consumerPromise = consumeInteractions(
+        sessionCtx.interactionQueue,
         chatLock,
         createChat(),
         sessionCtx.statusRegistry,

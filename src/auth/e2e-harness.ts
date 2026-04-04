@@ -30,7 +30,7 @@ import {
 } from './token-substitute.js';
 import { setTokenEngine } from './registry.js';
 import { createHandler } from './universal-oauth-handler.js';
-import { FlowQueue } from './flow-queue.js';
+import { InteractionQueue } from '../interaction/index.js';
 import {
   registerAuthorizationEndpoint,
   registerAuthorizationPattern,
@@ -246,7 +246,7 @@ export class OAuthE2EHarness {
   proxy: CredentialProxy;
   tokenEngine: TokenSubstituteEngine;
   resolver: PersistentTokenResolver;
-  flowQueue: FlowQueue;
+  flowQueue: InteractionQueue;
   browserOpenEvents: BrowserOpenEvent[] = [];
 
   proxyPort = 0;
@@ -261,7 +261,7 @@ export class OAuthE2EHarness {
     this.tokenEngine = new TokenSubstituteEngine(this.resolver);
     this.proxy = new CredentialProxy();
     this.mockUpstream = new MockUpstream(this.proxyBind);
-    this.flowQueue = new FlowQueue();
+    this.flowQueue = new InteractionQueue();
   }
 
   async start(): Promise<void> {
@@ -293,21 +293,21 @@ export class OAuthE2EHarness {
     setProxyInstance(this.proxy);
     setTokenEngine(this.tokenEngine);
 
-    // 4. Wire browser-open callback to flow queue
+    // 4. Wire browser-open callback to interaction queue
     setBrowserOpenCallback((event) => {
       this.browserOpenEvents.push(event);
-      const flowId = `${event.providerId}:browser-open`;
+      const interactionId = `${event.providerId}:browser-open`;
       this.flowQueue.push(
         {
-          flowId,
+          interactionId,
           eventType: 'oauth-start',
-          providerId: event.providerId,
+          sourceId: event.providerId,
           eventParam: event.url,
           replyFn: null,
         },
         'xdg-open shim',
       );
-      return flowId;
+      return interactionId;
     });
 
     // 5. Start proxy with MITM (rules must be registered before start for transparent mode log,
@@ -746,7 +746,7 @@ export class OAuthE2EHarness {
     this.mockUpstream.clearRequests();
     this.mockUpstream.clearRoutes();
     this.browserOpenEvents = [];
-    this.flowQueue = new FlowQueue();
+    this.flowQueue = new InteractionQueue();
     // Clear token state to prevent substitute collisions between tests.
     // Uses the same engine instance that handlers captured at registration.
     this.tokenEngine.revokeByScope(asGroupScope('e2e-test'));

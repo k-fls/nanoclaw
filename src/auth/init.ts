@@ -10,6 +10,8 @@ import {
   CREDENTIAL_PROXY_PORT,
   NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
 } from '../config.js';
+import { setInteractionPrefix } from '../interaction/index.js';
+import { registerAuthHandlers } from './auth-handlers.js';
 import { DISCOVERY_CACHE_DIR } from './store.js';
 import { getDiscoveryDir } from './registry.js';
 import { refreshDiscoveryCache } from './discovery-refresh.js';
@@ -48,6 +50,8 @@ export interface AuthSystem {
 export async function initAuthSystem(
   getGroups: () => Record<string, RegisteredGroup>,
 ): Promise<AuthSystem> {
+  setInteractionPrefix('🔑🤖 ');
+  registerAuthHandlers();
   initCredentialStore();
   ensureNetwork();
 
