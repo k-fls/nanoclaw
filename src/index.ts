@@ -39,6 +39,8 @@ import {
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  HIDE_REASON,
+  hideMessage,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -50,11 +52,8 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
-import {
-  restoreRemoteControl,
-  startRemoteControl,
-  stopRemoteControl,
-} from './remote-control.js';
+import { executeCommand, type CommandContext } from './commands/index.js';
+import { restoreRemoteControl } from './remote-control.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -213,6 +212,27 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+/** Build a CommandContext for a group — reusable across interception points. */
+function commandContext(
+  channel: Channel,
+  chatJid: string,
+  group: RegisteredGroup,
+): CommandContext {
+  return {
+    group,
+    chatJid,
+    sender: '',
+    getContainerName: () => queue.getContainerName(chatJid),
+    hideMessage: (id) => hideMessage(chatJid, id, HIDE_REASON.COMMAND),
+    advanceCursor: (ts) => {
+      lastAgentTimestamp[chatJid] = ts;
+      saveState();
+    },
+    stopContainer: () => queue.softStop(chatJid),
+    sendMessage: (text) => channel.sendMessage(chatJid, text),
+  };
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -237,6 +257,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   if (missedMessages.length === 0) return true;
+
+  // Check for /command before invoking the agent
+  const cmdCtx = commandContext(channel, chatJid, group);
+  if (await executeCommand(missedMessages, cmdCtx)) return true;
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
@@ -491,6 +515,10 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
+          // Check for /command before invoking the agent
+          const cmdCtx = commandContext(channel, chatJid, group);
+          if (await executeCommand(groupMessages, cmdCtx)) continue;
+
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
           const allPending = getMessagesSince(
@@ -582,60 +610,9 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // Handle /remote-control and /remote-control-end commands
-  async function handleRemoteControl(
-    command: string,
-    chatJid: string,
-    msg: NewMessage,
-  ): Promise<void> {
-    const group = registeredGroups[chatJid];
-    if (!group?.isMain) {
-      logger.warn(
-        { chatJid, sender: msg.sender },
-        'Remote control rejected: not main group',
-      );
-      return;
-    }
-
-    const channel = findChannel(channels, chatJid);
-    if (!channel) return;
-
-    if (command === '/remote-control') {
-      const result = await startRemoteControl(
-        msg.sender,
-        chatJid,
-        process.cwd(),
-      );
-      if (result.ok) {
-        await channel.sendMessage(chatJid, result.url);
-      } else {
-        await channel.sendMessage(
-          chatJid,
-          `Remote Control failed: ${result.error}`,
-        );
-      }
-    } else {
-      const result = stopRemoteControl();
-      if (result.ok) {
-        await channel.sendMessage(chatJid, 'Remote Control session ended.');
-      } else {
-        await channel.sendMessage(chatJid, result.error);
-      }
-    }
-  }
-
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
-      // Remote control commands — intercept before storage
-      const trimmed = msg.content.trim();
-      if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
-        handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
-          logger.error({ err, chatJid }, 'Remote control command error'),
-        );
-        return;
-      }
-
       // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
