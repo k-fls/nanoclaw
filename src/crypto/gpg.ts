@@ -209,3 +209,64 @@ export function gpgDecrypt(
 export function isPgpMessage(text: string): boolean {
   return text.includes('-----BEGIN PGP MESSAGE-----');
 }
+
+// ---------------------------------------------------------------------------
+// Module-level init + scope-only convenience wrappers
+// ---------------------------------------------------------------------------
+
+let defaultBaseDir: string | null = null;
+let defaultMaxAgeDays = DEFAULT_KEY_MAX_AGE_DAYS;
+
+/**
+ * Initialize the GPG module with a base directory for key storage.
+ * After calling this, the scope-only convenience functions (gpg.ensure,
+ * gpg.export, gpg.decrypt, gpg.expired, gpg.meta) become available.
+ */
+export function initGpg(baseDir: string, maxAgeDays?: number): void {
+  defaultBaseDir = baseDir;
+  if (maxAgeDays !== undefined) defaultMaxAgeDays = maxAgeDays;
+}
+
+function requireBaseDir(): string {
+  if (!defaultBaseDir) {
+    throw new Error('GPG not initialized — call initGpg(baseDir) first');
+  }
+  return defaultBaseDir;
+}
+
+/**
+ * Scope-only GPG operations. Call initGpg(baseDir) once, then use
+ * these to match the existing one-arg-per-scope pattern.
+ *
+ * @example
+ *   initGpg('/home/user/.config/nanoclaw/credentials');
+ *   gpg.ensure('my-group');
+ *   const pubKey = gpg.export('my-group');
+ *   const plain = gpg.decrypt('my-group', ciphertext);
+ */
+export const gpg = {
+  /** Ensure keypair exists for the scope. */
+  ensure(scope: string, maxAgeDays?: number): void {
+    ensureGpgKey(requireBaseDir(), scope, maxAgeDays ?? defaultMaxAgeDays);
+  },
+  /** Export public key (regenerates if expired). */
+  export(scope: string): string {
+    return exportPublicKey(requireBaseDir(), scope);
+  },
+  /** Decrypt PGP message (ignores expiry). */
+  decrypt(scope: string, ciphertext: string): string {
+    return gpgDecrypt(requireBaseDir(), scope, ciphertext);
+  },
+  /** Check if the key for this scope has expired. */
+  expired(scope: string): boolean {
+    return isKeyExpired(requireBaseDir(), scope);
+  },
+  /** Read key metadata. */
+  meta(scope: string): GpgKeyMeta | null {
+    return getKeyMeta(requireBaseDir(), scope);
+  },
+  /** Resolve GPG homedir path for this scope. */
+  home(scope: string): string {
+    return gpgHome(requireBaseDir(), scope);
+  },
+};

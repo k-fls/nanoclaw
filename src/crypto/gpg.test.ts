@@ -36,6 +36,8 @@ const {
   gpgHome,
   isKeyExpired,
   getKeyMeta,
+  initGpg,
+  gpg,
   DEFAULT_KEY_MAX_AGE_DAYS,
 } = await import('./gpg.js');
 
@@ -286,5 +288,79 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
     const keyB = exportPublicKey(baseDir, 'scope-b');
 
     expect(keyA).not.toBe(keyB);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// initGpg + gpg.* convenience wrappers
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!gpgAvailable)('gpg convenience (initGpg + gpg.*)', () => {
+  beforeEach(() => {
+    initGpg(baseDir);
+  });
+
+  it('gpg.ensure creates a keypair', () => {
+    gpg.ensure('conv-scope');
+    expect(fs.existsSync(gpgHome(baseDir, 'conv-scope'))).toBe(true);
+  });
+
+  it('gpg.export returns public key', () => {
+    gpg.ensure('conv-export');
+    const pubKey = gpg.export('conv-export');
+    expect(pubKey).toContain('-----BEGIN PGP PUBLIC KEY BLOCK-----');
+  });
+
+  it('gpg.decrypt round-trips', () => {
+    const scope = 'conv-rt';
+    gpg.ensure(scope);
+    const pubKey = gpg.export(scope);
+
+    const userHome = path.join(tmpDir, 'user-gpg-conv');
+    fs.mkdirSync(userHome, { mode: 0o700, recursive: true });
+    execFileSync('gpg', ['--homedir', userHome, '--batch', '--import'], {
+      input: pubKey,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const encrypted = execFileSync(
+      'gpg',
+      [
+        '--homedir',
+        userHome,
+        '--batch',
+        '--trust-model',
+        'always',
+        '--encrypt',
+        '--armor',
+        '--recipient',
+        'nanoclaw',
+      ],
+      { input: 'conv-secret', stdio: ['pipe', 'pipe', 'pipe'] },
+    ).toString('utf-8');
+
+    expect(gpg.decrypt(scope, encrypted)).toBe('conv-secret');
+  });
+
+  it('gpg.expired returns false for fresh key', () => {
+    gpg.ensure('conv-fresh');
+    expect(gpg.expired('conv-fresh')).toBe(false);
+  });
+
+  it('gpg.meta returns metadata', () => {
+    gpg.ensure('conv-meta');
+    const meta = gpg.meta('conv-meta');
+    expect(meta).not.toBeNull();
+    expect(meta!.maxAgeDays).toBe(DEFAULT_KEY_MAX_AGE_DAYS);
+  });
+
+  it('gpg.home returns correct path', () => {
+    expect(gpg.home('my-scope')).toBe(gpgHome(baseDir, 'my-scope'));
+  });
+
+  it('initGpg respects custom maxAgeDays', () => {
+    initGpg(baseDir, 45);
+    gpg.ensure('conv-custom-age');
+    const meta = gpg.meta('conv-custom-age');
+    expect(meta!.maxAgeDays).toBe(45);
   });
 });

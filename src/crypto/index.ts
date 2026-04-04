@@ -24,6 +24,8 @@ export {
   gpgHome,
   isKeyExpired,
   getKeyMeta,
+  initGpg,
+  gpg,
   DEFAULT_KEY_MAX_AGE_DAYS,
 } from './gpg.js';
 
