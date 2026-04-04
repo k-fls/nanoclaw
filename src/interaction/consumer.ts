@@ -5,10 +5,7 @@
  * before any chat interaction, processes one entry at a time.
  */
 import { AsyncMutex } from './async-mutex.js';
-import type {
-  InteractionQueue,
-  InteractionEntry,
-} from './queue.js';
+import type { InteractionQueue, InteractionEntry } from './queue.js';
 import type { InteractionStatusRegistry } from './status.js';
 import type { ChatIO } from './types.js';
 import { getInteractionPrefix } from './types.js';
@@ -145,9 +142,7 @@ export async function processInteraction(
         );
       } else {
         // Not done — show response and prompt again
-        await chat.send(
-          `${prefix}${result.response ?? 'Please try again.'}`,
-        );
+        await chat.send(`${prefix}${result.response ?? 'Please try again.'}`);
       }
     }
   } catch (err) {

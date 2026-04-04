@@ -48,10 +48,7 @@ describe('InteractionQueue', () => {
       q.push(entry('google', 'google:1'), 'second');
       q.push(entry('github', 'github:2'), 'third');
 
-      const extracted = q.extract(
-        (e) => e.sourceId === 'github',
-        'superseded',
-      );
+      const extracted = q.extract((e) => e.sourceId === 'github', 'superseded');
 
       expect(extracted).toHaveLength(2);
       expect(extracted[0].interactionId).toBe('github:1');

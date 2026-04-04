@@ -7,10 +7,7 @@ import {
   type ReplyFn,
 } from './queue.js';
 import { InteractionStatusRegistry } from './status.js';
-import {
-  consumeInteractions,
-  processInteraction,
-} from './consumer.js';
+import { consumeInteractions, processInteraction } from './consumer.js';
 import type { ChatIO } from './types.js';
 import { setInteractionPrefix } from './types.js';
 
@@ -33,10 +30,7 @@ function mockChat(): ChatIO & { sent: string[]; replies: string[] } {
   return chat;
 }
 
-function entry(
-  sourceId: string,
-  replyFn?: ReplyFn | null,
-): InteractionEntry {
+function entry(sourceId: string, replyFn?: ReplyFn | null): InteractionEntry {
   return {
     interactionId: `${sourceId}:12345`,
     eventType: 'notification',
@@ -63,9 +57,7 @@ describe('processInteraction', () => {
     await processInteraction(e, null, chat, reg);
 
     expect(chat.sent[0]).toContain('github');
-    expect(chat.sent[0]).toContain(
-      'https://example.com/flow?source=github',
-    );
+    expect(chat.sent[0]).toContain('https://example.com/flow?source=github');
     expect(chat.sent[0]).toContain('Reply when ready');
     expect(replyFn).toHaveBeenCalledWith('AUTH_CODE_123');
     expect(reg.currentState('github:12345')).toBe('completed');
@@ -185,13 +177,7 @@ describe('consumeInteractions', () => {
     q.push(entry('github', fn1), 'test');
     q.push(entry('google', fn2), 'test');
 
-    const consumerDone = consumeInteractions(
-      q,
-      mutex,
-      chat,
-      reg,
-      abort.signal,
-    );
+    const consumerDone = consumeInteractions(q, mutex, chat, reg, abort.signal);
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -209,13 +195,7 @@ describe('consumeInteractions', () => {
     const reg = new InteractionStatusRegistry();
     const abort = new AbortController();
 
-    const consumerDone = consumeInteractions(
-      q,
-      mutex,
-      chat,
-      reg,
-      abort.signal,
-    );
+    const consumerDone = consumeInteractions(q, mutex, chat, reg, abort.signal);
 
     await new Promise((r) => setTimeout(r, 10));
 

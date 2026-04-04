@@ -129,9 +129,7 @@ export class InteractionQueue {
    * Blocking pop from front. Blocks when empty, wakes on push or abort.
    * Returns null if the signal is aborted.
    */
-  async waitForEntry(
-    signal: AbortSignal,
-  ): Promise<InteractionEntry | null> {
+  async waitForEntry(signal: AbortSignal): Promise<InteractionEntry | null> {
     while (this.entries.length === 0) {
       if (signal.aborted) return null;
       await new Promise<void>((resolve) => {

@@ -8,10 +8,7 @@
 
 export { AsyncMutex } from './async-mutex.js';
 export { createChatIO, type ChatIODeps } from './chat-io.js';
-export {
-  consumeInteractions,
-  processInteraction,
-} from './consumer.js';
+export { consumeInteractions, processInteraction } from './consumer.js';
 export {
   InteractionQueue,
   type DeliveryResult,

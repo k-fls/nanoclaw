@@ -167,10 +167,7 @@ describe('InteractionStatusRegistry', () => {
       reg.emit('i2', 'notification', 'completed', 'done');
 
       const { res, chunks } = mockResponse();
-      reg.handleListInteractions(
-        {} as import('http').IncomingMessage,
-        res,
-      );
+      reg.handleListInteractions({} as import('http').IncomingMessage, res);
 
       expect(res.writeHead).toHaveBeenCalledWith(200, {
         'content-type': 'application/json',
@@ -189,10 +186,7 @@ describe('InteractionStatusRegistry', () => {
     it('returns empty array when no interactions exist', () => {
       const reg = new InteractionStatusRegistry();
       const { res, chunks } = mockResponse();
-      reg.handleListInteractions(
-        {} as import('http').IncomingMessage,
-        res,
-      );
+      reg.handleListInteractions({} as import('http').IncomingMessage, res);
       expect(JSON.parse(chunks[0])).toEqual([]);
     });
   });

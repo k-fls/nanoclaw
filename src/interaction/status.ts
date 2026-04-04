@@ -154,10 +154,7 @@ export class InteractionStatusRegistry {
    *
    * Returns JSON array of all interactions with their current state.
    */
-  handleListInteractions(
-    _req: IncomingMessage,
-    res: ServerResponse,
-  ): void {
+  handleListInteractions(_req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(this.listInteractions()));
   }
