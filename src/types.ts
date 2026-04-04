@@ -34,10 +34,6 @@ export interface ContainerConfig {
 
   /** IANA timezone (e.g. "America/New_York"). Affects message timestamps and cron schedules. */
   timezone?: string;
-  /** Trigger phrase (e.g. "@Andy"). Overrides the DB column default. */
-  trigger?: string;
-  /** Whether messages must start with the trigger phrase. False = respond to all. */
-  requiresTrigger?: boolean;
   /** Sender IDs that can trigger the agent. Null/absent = all users. */
   triggerUsers?: string[];
   /** Container idle timeout in ms. */
@@ -49,9 +45,16 @@ export interface ContainerConfig {
   updateable_settings?: SettingKey[];
 }
 
+/** Settings stored on RegisteredGroup (DB columns) rather than ContainerConfig (JSON). */
+export const GROUP_FIELD_SETTING_KEYS = [
+  'trigger',
+  'requiresTrigger',
+] as const;
+export type GroupFieldSettingKey = (typeof GROUP_FIELD_SETTING_KEYS)[number];
+
 /**
  * Setting definitions — single source of truth for what constitutes a setting.
- * Keys must be a subset of ContainerConfig keys (enforced by satisfies).
+ * Keys must exist on ContainerConfig or GROUP_FIELD_SETTING_KEYS (enforced by satisfies).
  * Adding a key here without a RESOLVERS/APPLIERS entry causes a compile error.
  */
 export const SETTINGS = {
@@ -72,7 +75,11 @@ export const SETTINGS = {
   },
   timeout: { description: 'Container idle timeout in ms.' },
   maxMessages: { description: 'Max messages included per agent prompt.' },
-} satisfies { [K in keyof ContainerConfig]?: { description: string } };
+} satisfies {
+  [K in keyof ContainerConfig | GroupFieldSettingKey]?: {
+    description: string;
+  };
+};
 
 export type SettingKey = keyof typeof SETTINGS;
 

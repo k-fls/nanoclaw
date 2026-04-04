@@ -24,14 +24,14 @@ const MAIN_GROUP: RegisteredGroup = {
 const OTHER_GROUP: RegisteredGroup = {
   name: 'Other',
   folder: 'other-group',
-  trigger: '@Andy',
+  trigger: '@OtherBot',
   added_at: '2024-01-01T00:00:00.000Z',
 };
 
 const THIRD_GROUP: RegisteredGroup = {
   name: 'Third',
   folder: 'third-group',
-  trigger: '@Andy',
+  trigger: '@ThirdBot',
   added_at: '2024-01-01T00:00:00.000Z',
 };
 
@@ -714,7 +714,7 @@ describe('group_settings authorization', () => {
     );
 
     expect(settingsChangedJids).toContain('other@g.us');
-    expect(groups['other@g.us'].containerConfig?.trigger).toBe('@NewBot');
+    expect(groups['other@g.us'].trigger).toBe('@NewBot');
   });
 
   it('non-main can set enabled setting for own group', async () => {
@@ -754,7 +754,7 @@ describe('group_settings authorization', () => {
     );
 
     expect(settingsChangedJids).toHaveLength(0);
-    expect(groups['other@g.us'].containerConfig?.trigger).toBeUndefined();
+    expect(groups['other@g.us'].trigger).toBe('@OtherBot');
   });
 
   it('non-main cannot set settings for another group', async () => {

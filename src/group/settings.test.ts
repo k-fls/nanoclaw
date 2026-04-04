@@ -42,24 +42,14 @@ describe('resolvers', () => {
     expect(getGroupTimezone(config)).toBe('America/New_York');
   });
 
-  it('falls back to legacy group field for trigger', () => {
+  it('reads trigger from group', () => {
     expect(getGroupTrigger(undefined, GROUP)).toBe('@Bot');
     expect(getGroupTrigger({}, GROUP)).toBe('@Bot');
   });
 
-  it('config trigger overrides legacy group trigger', () => {
-    const config: ContainerConfig = { trigger: '@NewBot' };
-    expect(getGroupTrigger(config, GROUP)).toBe('@NewBot');
-  });
-
-  it('falls back to legacy group field for requiresTrigger', () => {
+  it('reads requiresTrigger from group', () => {
     expect(getGroupRequiresTrigger(undefined, GROUP)).toBe(false);
     expect(getGroupRequiresTrigger({}, GROUP)).toBe(false);
-  });
-
-  it('config requiresTrigger overrides legacy', () => {
-    const config: ContainerConfig = { requiresTrigger: true };
-    expect(getGroupRequiresTrigger(config, GROUP)).toBe(true);
   });
 
   it('returns null for triggerUsers when not set', () => {
@@ -89,13 +79,13 @@ describe('resolvers', () => {
 describe('applySetting', () => {
   it('applies valid timezone', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'timezone', 'America/Chicago')).toBeNull();
+    expect(applySetting(config, GROUP, 'timezone', 'America/Chicago')).toBeNull();
     expect(config.timezone).toBe('America/Chicago');
   });
 
   it('rejects invalid timezone', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'timezone', 'Not/A/Zone')).toBe(
+    expect(applySetting(config, GROUP, 'timezone', 'Not/A/Zone')).toBe(
       'Invalid IANA timezone',
     );
     expect(config.timezone).toBeUndefined();
@@ -103,90 +93,90 @@ describe('applySetting', () => {
 
   it('rejects non-string timezone', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'timezone', 123)).toBe('Invalid IANA timezone');
+    expect(applySetting(config, GROUP, 'timezone', 123)).toBe('Invalid IANA timezone');
   });
 
-  it('applies valid trigger', () => {
-    const config: ContainerConfig = {};
-    expect(applySetting(config, 'trigger', '@NewName')).toBeNull();
-    expect(config.trigger).toBe('@NewName');
+  it('applies valid trigger to group', () => {
+    const group = { ...GROUP };
+    expect(applySetting({}, group, 'trigger', '@NewName')).toBeNull();
+    expect(group.trigger).toBe('@NewName');
   });
 
   it('rejects empty trigger', () => {
-    const config: ContainerConfig = {};
-    expect(applySetting(config, 'trigger', '')).toBe(
+    const group = { ...GROUP };
+    expect(applySetting({}, group, 'trigger', '')).toBe(
       'Trigger must be a non-empty string',
     );
   });
 
   it('rejects trigger over 50 chars', () => {
-    const config: ContainerConfig = {};
-    expect(applySetting(config, 'trigger', 'x'.repeat(51))).toBe(
+    const group = { ...GROUP };
+    expect(applySetting({}, group, 'trigger', 'x'.repeat(51))).toBe(
       'Trigger must be 50 characters or fewer',
     );
   });
 
-  it('applies valid requiresTrigger', () => {
-    const config: ContainerConfig = {};
-    expect(applySetting(config, 'requiresTrigger', false)).toBeNull();
-    expect(config.requiresTrigger).toBe(false);
+  it('applies valid requiresTrigger to group', () => {
+    const group = { ...GROUP };
+    expect(applySetting({}, group, 'requiresTrigger', false)).toBeNull();
+    expect(group.requiresTrigger).toBe(false);
   });
 
   it('rejects non-boolean requiresTrigger', () => {
-    const config: ContainerConfig = {};
-    expect(applySetting(config, 'requiresTrigger', 'yes')).toBe(
+    const group = { ...GROUP };
+    expect(applySetting({}, group, 'requiresTrigger', 'yes')).toBe(
       'Must be a boolean',
     );
   });
 
   it('applies valid triggerUsers', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'triggerUsers', ['user1', 'user2'])).toBeNull();
+    expect(applySetting(config, GROUP, 'triggerUsers', ['user1', 'user2'])).toBeNull();
     expect(config.triggerUsers).toEqual(['user1', 'user2']);
   });
 
   it('rejects non-array triggerUsers', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'triggerUsers', 'user1')).toBe(
+    expect(applySetting(config, GROUP, 'triggerUsers', 'user1')).toBe(
       'Must be an array of strings',
     );
   });
 
   it('rejects triggerUsers with non-string entries', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'triggerUsers', [1, 2])).toBe(
+    expect(applySetting(config, GROUP, 'triggerUsers', [1, 2])).toBe(
       'Must be an array of strings',
     );
   });
 
   it('applies valid timeout', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'timeout', 60000)).toBeNull();
+    expect(applySetting(config, GROUP, 'timeout', 60000)).toBeNull();
     expect(config.timeout).toBe(60000);
   });
 
   it('rejects timeout out of range', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'timeout', 100)).toBe(
+    expect(applySetting(config, GROUP, 'timeout', 100)).toBe(
       'Must be between 30000 (30s) and 7200000 (2h)',
     );
-    expect(applySetting(config, 'timeout', 9999999)).toBe(
+    expect(applySetting(config, GROUP, 'timeout', 9999999)).toBe(
       'Must be between 30000 (30s) and 7200000 (2h)',
     );
   });
 
   it('applies valid maxMessages', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'maxMessages', 20)).toBeNull();
+    expect(applySetting(config, GROUP, 'maxMessages', 20)).toBeNull();
     expect(config.maxMessages).toBe(20);
   });
 
   it('rejects maxMessages out of range', () => {
     const config: ContainerConfig = {};
-    expect(applySetting(config, 'maxMessages', 0)).toBe(
+    expect(applySetting(config, GROUP, 'maxMessages', 0)).toBe(
       'Must be between 1 and 100',
     );
-    expect(applySetting(config, 'maxMessages', 101)).toBe(
+    expect(applySetting(config, GROUP, 'maxMessages', 101)).toBe(
       'Must be between 1 and 100',
     );
   });

@@ -10,11 +10,13 @@ import {
   deleteTask,
   getTaskById,
   updateContainerConfig,
+  updateGroupTriggerFields,
   updateTask,
 } from './db.js';
 import {
   applySetting,
   getGroupTimezone,
+  GROUP_FIELD_SETTINGS,
   isSettingKey,
 } from './group/settings.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -525,13 +527,21 @@ export async function processTaskIpc(
           );
           break;
         }
-        const err = applySetting(config, key, data.value);
+        const err = applySetting(config, targetGroup, key, data.value);
         if (err) {
           logger.warn({ key, err }, 'group_settings set: validation failed');
           break;
         }
-        updateContainerConfig(settingsTargetJid, config);
-        targetGroup.containerConfig = config;
+        if (GROUP_FIELD_SETTINGS.has(key)) {
+          updateGroupTriggerFields(
+            settingsTargetJid,
+            targetGroup.trigger,
+            targetGroup.requiresTrigger ?? true,
+          );
+        } else {
+          updateContainerConfig(settingsTargetJid, config);
+          targetGroup.containerConfig = config;
+        }
         logger.info(
           { key, targetJid: settingsTargetJid, sourceGroup },
           'Group setting updated via IPC',

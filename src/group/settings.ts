@@ -7,6 +7,7 @@ import {
 import { isValidTimezone } from '../timezone.js';
 import {
   ContainerConfig,
+  GROUP_FIELD_SETTING_KEYS,
   RegisteredGroup,
   SETTINGS,
   SettingKey,
@@ -21,8 +22,8 @@ const RESOLVERS: {
   ) => unknown;
 } = {
   timezone: (c) => c?.timezone ?? TIMEZONE,
-  trigger: (c, g) => c?.trigger ?? g?.trigger ?? DEFAULT_TRIGGER,
-  requiresTrigger: (c, g) => c?.requiresTrigger ?? g?.requiresTrigger ?? true,
+  trigger: (_c, g) => g?.trigger ?? DEFAULT_TRIGGER,
+  requiresTrigger: (_c, g) => g?.requiresTrigger ?? true,
   triggerUsers: (c) => c?.triggerUsers ?? null,
   timeout: (c) => c?.timeout ?? IDLE_TIMEOUT,
   maxMessages: (c) => c?.maxMessages ?? MAX_MESSAGES_PER_PROMPT,
@@ -75,40 +76,44 @@ export function getGroupMaxMessages(config?: ContainerConfig): number {
 // Each validates the incoming value, mutates the config, and returns an error string on failure.
 
 const APPLIERS: {
-  [K in SettingKey]: (config: ContainerConfig, value: unknown) => string | null;
+  [K in SettingKey]: (
+    config: ContainerConfig,
+    group: RegisteredGroup,
+    value: unknown,
+  ) => string | null;
 } = {
-  timezone: (c, v) => {
+  timezone: (c, _g, v) => {
     if (typeof v !== 'string' || !isValidTimezone(v))
       return 'Invalid IANA timezone';
     c.timezone = v;
     return null;
   },
-  trigger: (c, v) => {
+  trigger: (_c, g, v) => {
     if (typeof v !== 'string' || !v.trim())
       return 'Trigger must be a non-empty string';
     if (v.length > 50) return 'Trigger must be 50 characters or fewer';
-    c.trigger = v;
+    g.trigger = v;
     return null;
   },
-  requiresTrigger: (c, v) => {
+  requiresTrigger: (_c, g, v) => {
     if (typeof v !== 'boolean') return 'Must be a boolean';
-    c.requiresTrigger = v;
+    g.requiresTrigger = v;
     return null;
   },
-  triggerUsers: (c, v) => {
+  triggerUsers: (c, _g, v) => {
     if (!Array.isArray(v) || !v.every((s) => typeof s === 'string'))
       return 'Must be an array of strings';
     c.triggerUsers = v;
     return null;
   },
-  timeout: (c, v) => {
+  timeout: (c, _g, v) => {
     if (typeof v !== 'number') return 'Must be a number';
     if (v < 30000 || v > 7200000)
       return 'Must be between 30000 (30s) and 7200000 (2h)';
     c.timeout = v;
     return null;
   },
-  maxMessages: (c, v) => {
+  maxMessages: (c, _g, v) => {
     if (typeof v !== 'number') return 'Must be a number';
     if (v < 1 || v > 100) return 'Must be between 1 and 100';
     c.maxMessages = v;
@@ -116,14 +121,20 @@ const APPLIERS: {
   },
 };
 
-/** Validate and apply a setting value to a ContainerConfig. Returns error string or null. */
+/** Validate and apply a setting. Writes to group for trigger/requiresTrigger, config for others. */
 export function applySetting(
   config: ContainerConfig,
+  group: RegisteredGroup,
   key: SettingKey,
   value: unknown,
 ): string | null {
-  return APPLIERS[key](config, value);
+  return APPLIERS[key](config, group, value);
 }
+
+/** Keys whose values are stored on RegisteredGroup (DB columns), not ContainerConfig (JSON). */
+export const GROUP_FIELD_SETTINGS: ReadonlySet<SettingKey> = new Set(
+  GROUP_FIELD_SETTING_KEYS,
+);
 
 /** Check whether a key is a valid setting key. */
 export function isSettingKey(key: string): key is SettingKey {
