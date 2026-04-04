@@ -60,7 +60,6 @@ describe('storeMessage', () => {
     const messages = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     expect(messages).toHaveLength(1);
     expect(messages[0].id).toBe('msg-1');
@@ -84,7 +83,6 @@ describe('storeMessage', () => {
     const messages = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     expect(messages).toHaveLength(0);
   });
@@ -106,7 +104,6 @@ describe('storeMessage', () => {
     const messages = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     expect(messages).toHaveLength(1);
   });
@@ -135,7 +132,6 @@ describe('storeMessage', () => {
     const messages = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe('updated');
@@ -163,7 +159,6 @@ describe('reply context', () => {
     const messages = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     expect(messages).toHaveLength(1);
     expect(messages[0].reply_to_message_id).toBe('42');
@@ -188,7 +183,6 @@ describe('reply context', () => {
     const messages = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     expect(messages).toHaveLength(1);
     expect(messages[0].reply_to_message_id).toBeNull();
@@ -214,7 +208,6 @@ describe('reply context', () => {
     const { messages } = getNewMessages(
       ['group@g.us'],
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     expect(messages).toHaveLength(1);
     expect(messages[0].reply_to_message_id).toBe('99');
@@ -267,7 +260,6 @@ describe('getMessagesSince', () => {
     const msgs = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:02.000Z',
-      'Andy',
     );
     // Should exclude m1, m2 (before/at timestamp), m3 (bot message)
     expect(msgs).toHaveLength(1);
@@ -278,14 +270,13 @@ describe('getMessagesSince', () => {
     const msgs = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     const botMsgs = msgs.filter((m) => m.content === 'bot reply');
     expect(botMsgs).toHaveLength(0);
   });
 
   it('returns all non-bot messages when sinceTimestamp is empty', () => {
-    const msgs = getMessagesSince('group@g.us', '', 'Andy');
+    const msgs = getMessagesSince('group@g.us', '');
     // 3 user messages (bot message excluded)
     expect(msgs).toHaveLength(3);
   });
@@ -315,11 +306,11 @@ describe('getMessagesSince', () => {
     });
 
     // Recover cursor from the last bot message (m3 from beforeEach)
-    const recovered = getLastBotMessageTimestamp('group@g.us', 'Andy');
+    const recovered = getLastBotMessageTimestamp('group@g.us');
     expect(recovered).toBe('2024-01-01T00:00:03.000Z');
 
     // Using recovered cursor: only gets messages after the bot reply
-    const msgs = getMessagesSince('group@g.us', recovered!, 'Andy', 10);
+    const msgs = getMessagesSince('group@g.us', recovered!, 10);
     // m4 (third, 00:00:04) + new-1 — skips all 50 old messages and m1/m2
     expect(msgs).toHaveLength(2);
     expect(msgs[0].content).toBe('third');
@@ -339,11 +330,11 @@ describe('getMessagesSince', () => {
       });
     }
 
-    const recovered = getLastBotMessageTimestamp('group@g.us', 'Andy');
+    const recovered = getLastBotMessageTimestamp('group@g.us');
     expect(recovered).toBe('2024-01-01T00:00:03.000Z');
 
     // With limit=10, only the 10 most recent are returned
-    const msgs = getMessagesSince('group@g.us', recovered!, 'Andy', 10);
+    const msgs = getMessagesSince('group@g.us', recovered!, 10);
     expect(msgs).toHaveLength(10);
     // Most recent 10: pending-21 through pending-30
     expect(msgs[0].content).toBe('pending message 21');
@@ -364,11 +355,11 @@ describe('getMessagesSince', () => {
       });
     }
 
-    const recovered = getLastBotMessageTimestamp('fresh@g.us', 'Andy');
+    const recovered = getLastBotMessageTimestamp('fresh@g.us');
     expect(recovered).toBeUndefined();
 
     // No cursor → sinceTimestamp = '' but limit caps the result
-    const msgs = getMessagesSince('fresh@g.us', '', 'Andy', 10);
+    const msgs = getMessagesSince('fresh@g.us', '', 10);
     expect(msgs).toHaveLength(10);
 
     const prompt = formatMessages(msgs, 'Asia/Jerusalem');
@@ -376,20 +367,19 @@ describe('getMessagesSince', () => {
     expect(messageTagCount).toBe(10);
   });
 
-  it('filters pre-migration bot messages via content prefix backstop', () => {
-    // Simulate a message written before migration: has prefix but is_bot_message = 0
-    store({
+  it('filters bot messages via is_bot_message flag', () => {
+    storeMessage({
       id: 'm5',
       chat_jid: 'group@g.us',
       sender: 'Bot@s.whatsapp.net',
       sender_name: 'Bot',
       content: 'Andy: old bot reply',
       timestamp: '2024-01-01T00:00:05.000Z',
+      is_bot_message: true,
     });
     const msgs = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:04.000Z',
-      'Andy',
     );
     expect(msgs).toHaveLength(0);
   });
@@ -441,7 +431,6 @@ describe('getNewMessages', () => {
     const { messages, newTimestamp } = getNewMessages(
       ['group1@g.us', 'group2@g.us'],
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
     // Excludes bot message, returns 3 user messages
     expect(messages).toHaveLength(3);
@@ -452,7 +441,6 @@ describe('getNewMessages', () => {
     const { messages } = getNewMessages(
       ['group1@g.us', 'group2@g.us'],
       '2024-01-01T00:00:02.000Z',
-      'Andy',
     );
     // Only g1 msg2 (after ts, not bot)
     expect(messages).toHaveLength(1);
@@ -460,7 +448,7 @@ describe('getNewMessages', () => {
   });
 
   it('returns empty for no registered groups', () => {
-    const { messages, newTimestamp } = getNewMessages([], '', 'Andy');
+    const { messages, newTimestamp } = getNewMessages([], '');
     expect(messages).toHaveLength(0);
     expect(newTimestamp).toBe('');
   });
@@ -581,7 +569,6 @@ describe('message query LIMIT', () => {
     const { messages, newTimestamp } = getNewMessages(
       ['group@g.us'],
       '2024-01-01T00:00:00.000Z',
-      'Andy',
       3,
     );
     expect(messages).toHaveLength(3);
@@ -597,7 +584,6 @@ describe('message query LIMIT', () => {
     const messages = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
-      'Andy',
       3,
     );
     expect(messages).toHaveLength(3);
@@ -610,7 +596,6 @@ describe('message query LIMIT', () => {
     const { messages } = getNewMessages(
       ['group@g.us'],
       '2024-01-01T00:00:00.000Z',
-      'Andy',
       50,
     );
     expect(messages).toHaveLength(10);

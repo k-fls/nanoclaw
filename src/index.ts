@@ -4,7 +4,6 @@ import path from 'path';
 import { OneCLI } from '@onecli-sh/sdk';
 
 import {
-  ASSISTANT_NAME,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
@@ -12,6 +11,7 @@ import {
   ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
+  triggerToName,
 } from './config.js';
 import './channels/index.js';
 import {
@@ -123,7 +123,7 @@ function getOrRecoverCursor(chatJid: string): string {
   const existing = lastAgentTimestamp[chatJid];
   if (existing) return existing;
 
-  const botTs = getLastBotMessageTimestamp(chatJid, ASSISTANT_NAME);
+  const botTs = getLastBotMessageTimestamp(chatJid);
   if (botTs) {
     logger.info(
       { chatJid, recoveredFrom: botTs },
@@ -170,9 +170,10 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     );
     if (fs.existsSync(templateFile)) {
       let content = fs.readFileSync(templateFile, 'utf-8');
-      if (ASSISTANT_NAME !== 'Andy') {
-        content = content.replace(/^# Andy$/m, `# ${ASSISTANT_NAME}`);
-        content = content.replace(/You are Andy/g, `You are ${ASSISTANT_NAME}`);
+      const groupName = triggerToName(group.trigger);
+      if (groupName !== 'Andy') {
+        content = content.replace(/^# Andy$/m, `# ${groupName}`);
+        content = content.replace(/You are Andy/g, `You are ${groupName}`);
       }
       fs.writeFileSync(groupMdFile, content);
       logger.info({ folder: group.folder }, 'Created CLAUDE.md from template');
@@ -232,7 +233,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const missedMessages = getMessagesSince(
     chatJid,
     getOrRecoverCursor(chatJid),
-    ASSISTANT_NAME,
     MAX_MESSAGES_PER_PROMPT,
   );
 
@@ -373,7 +373,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
-        assistantName: ASSISTANT_NAME,
+        assistantName: triggerToName(group.trigger),
       },
       (proc, containerName, controls) =>
         queue.registerProcess(
@@ -442,7 +442,6 @@ async function startMessageLoop(): Promise<void> {
       const { messages, newTimestamp } = getNewMessages(
         jids,
         lastTimestamp,
-        ASSISTANT_NAME,
       );
 
       if (messages.length > 0) {
@@ -496,7 +495,6 @@ async function startMessageLoop(): Promise<void> {
           const allPending = getMessagesSince(
             chatJid,
             getOrRecoverCursor(chatJid),
-            ASSISTANT_NAME,
             MAX_MESSAGES_PER_PROMPT,
           );
           const messagesToSend =
@@ -539,7 +537,6 @@ function recoverPendingMessages(): void {
     const pending = getMessagesSince(
       chatJid,
       getOrRecoverCursor(chatJid),
-      ASSISTANT_NAME,
       MAX_MESSAGES_PER_PROMPT,
     );
     if (pending.length > 0) {
