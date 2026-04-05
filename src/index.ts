@@ -64,13 +64,14 @@ import {
   formatMessages,
   formatOutbound,
 } from './router.js';
+import { executeCommand, type CommandContext } from './commands/index.js';
+import { restoreRemoteControl } from './remote-control.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
-import { executeCommand, type CommandContext } from './commands.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup, scopeOf } from './types.js';
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
@@ -234,39 +235,11 @@ function commandContext(
 ): CommandContext {
   return {
     group,
-    tokenEngine: getTokenEngine(),
     chatJid,
     sender: '',
+    chat: createChatIO(chatIODeps(channel, chatJid, group)),
     getContainerName: () => queue.getContainerName(chatJid),
-    hideMessage: (id) => hideMessage(chatJid, id, HIDE_REASON.COMMAND),
-    advanceCursor: (ts) => {
-      lastAgentTimestamp[chatJid] = ts;
-      saveState();
-    },
     stopContainer: () => queue.softStop(chatJid),
-    sendMessage: (text) => channel.sendMessage(chatJid, text),
-    sendRawMessage: (text) => channel.sendMessage(chatJid, text),
-    runReauth: async (providerId: string) => {
-      const chat = createChatIO(chatIODeps(channel, chatJid, group));
-      await runReauth(
-        scopeOf(group),
-        chat,
-        'User requested auth',
-        providerId,
-        getTokenEngine(),
-      );
-    },
-    runKeySetup: async (providerId: string) => {
-      const chat = createChatIO(chatIODeps(channel, chatJid, group));
-      const { runInteractiveKeySetup } =
-        await import('./auth/key-management.js');
-      await runInteractiveKeySetup(
-        providerId,
-        scopeOf(group),
-        getTokenEngine(),
-        chat,
-      );
-    },
   };
 }
 
@@ -313,6 +286,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Decode channel-specific encoding (e.g. Slack entities) for processing
   const decoded = decodeMessages(missedMessages, channel);
 
+  // Check for /command before trigger check — commands work without trigger
+  const cmdCtx = commandContext(channel, chatJid, group);
+  if (await executeCommand(decoded, cmdCtx)) {
+    lastAgentTimestamp[chatJid] =
+      missedMessages[missedMessages.length - 1].timestamp;
+    saveState();
+    return true;
+  }
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
@@ -324,10 +306,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     );
     if (!hasTrigger) return true;
   }
-
-  // Check for /command before invoking the agent
-  const cmdCtx = commandContext(channel, chatJid, group);
-  if (await executeCommand(decoded, cmdCtx)) return true;
 
   const prompt = formatMessages(decoded, TIMEZONE);
 
@@ -613,7 +591,12 @@ async function startMessageLoop(): Promise<void> {
 
           // Check for /command before piping to container
           const cmdCtx = commandContext(channel, chatJid, group);
-          if (await executeCommand(decodedGroup, cmdCtx)) continue;
+          if (await executeCommand(decodedGroup, cmdCtx)) {
+            lastAgentTimestamp[chatJid] =
+              decodedGroup[decodedGroup.length - 1].timestamp;
+            saveState();
+            continue;
+          }
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
@@ -692,6 +675,8 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+
+  restoreRemoteControl();
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
