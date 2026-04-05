@@ -109,3 +109,38 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+// ── Claude CLI update ──────────────────────────────────────────────
+// CLAUDE_CLI_UPDATE controls container-side CLI updates:
+//   unset / empty  → no updates, use image-baked version
+//   duration (24h) → check for latest at startup, repeat at interval
+//   semver (2.1.92)→ pin to that version, install once at startup
+
+export const CLAUDE_CLI_UPDATE = process.env.CLAUDE_CLI_UPDATE?.trim() || '';
+export const CLAUDE_CLI_DIR = path.join(DATA_DIR, 'claude-cli');
+
+/** Parse CLAUDE_CLI_UPDATE into a typed config. */
+export function parseClaudeCliUpdate(raw: string): {
+  mode: 'off' | 'latest' | 'pinned';
+  intervalMs: number;
+  version: string;
+} {
+  if (!raw) return { mode: 'off', intervalMs: 0, version: '' };
+
+  // Duration: digits followed by h/d/m
+  const durationMatch = raw.match(/^(\d+)\s*(h|d|m)$/i);
+  if (durationMatch) {
+    const n = parseInt(durationMatch[1], 10);
+    const unit = durationMatch[2].toLowerCase();
+    const multiplier = unit === 'h' ? 3600000 : unit === 'd' ? 86400000 : 60000;
+    return { mode: 'latest', intervalMs: n * multiplier, version: '' };
+  }
+
+  // Semver-like: digits and dots
+  if (/^\d+\.\d+(\.\d+)?$/.test(raw)) {
+    return { mode: 'pinned', intervalMs: 0, version: raw };
+  }
+
+  // Unrecognized — treat as off
+  return { mode: 'off', intervalMs: 0, version: '' };
+}

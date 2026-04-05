@@ -7,6 +7,7 @@
 
 // Side-effect: register built-in commands
 import './builtins.js';
+import './claude-update.js';
 
 export type {
   Command,

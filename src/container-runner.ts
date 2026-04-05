@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  CLAUDE_CLI_DIR,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   DATA_DIR,
@@ -16,6 +17,7 @@ import {
   ONECLI_URL,
   TIMEZONE,
 } from './config.js';
+import { cliLock, getClaudeCliPath } from './claude-updater/updater.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -248,6 +250,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount updated Claude CLI if available (managed by claude-updater)
+  const claudeCliPath = getClaudeCliPath();
+  if (claudeCliPath) {
+    mounts.push({
+      hostPath: CLAUDE_CLI_DIR,
+      containerPath: '/opt/claude-cli',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -367,25 +379,32 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
-  return new Promise((resolve) => {
-    const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+  // Shared lock: prevent CLI directory swap while Docker resolves bind mounts.
+  // Released immediately after spawn — running containers are safe after that.
+  await cliLock.acquireShared();
+  let container: ChildProcess;
+  try {
+    container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-
+  } finally {
+    cliLock.releaseShared();
+  }
+  return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
+    container.stdin!.write(JSON.stringify(input));
+    container.stdin!.end();
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
 
-    container.stdout.on('data', (data) => {
+    container.stdout!.on('data', (data) => {
       const chunk = data.toString();
 
       // Always accumulate for logging
@@ -437,7 +456,7 @@ export async function runContainerAgent(
       }
     });
 
-    container.stderr.on('data', (data) => {
+    container.stderr!.on('data', (data) => {
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
