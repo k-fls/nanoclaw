@@ -77,7 +77,7 @@ vi.mock('./claude-updater/updater.js', () => ({
     acquireShared: vi.fn(async () => {}),
     releaseShared: vi.fn(),
   },
-  getClaudeCliPath: vi.fn(() => null),
+  getClaudeCliPackageDir: vi.fn(() => null),
 }));
 
 // Mock OneCLI SDK

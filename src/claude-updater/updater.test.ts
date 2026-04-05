@@ -32,35 +32,32 @@ vi.mock('../logger.js', () => ({
   },
 }));
 
-import { getClaudeCliPath } from './updater.js';
+import { getClaudeCliPackageDir } from './updater.js';
 import { CLAUDE_CLI_DIR } from '../config.js';
 
-describe('getClaudeCliPath', () => {
+describe('getClaudeCliPackageDir', () => {
+  const pkgDir = path.join(
+    CLAUDE_CLI_DIR,
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code',
+  );
+
   beforeEach(() => {
-    fs.mkdirSync(
-      path.join(CLAUDE_CLI_DIR, 'node_modules', '@anthropic-ai', 'claude-code'),
-      { recursive: true },
-    );
+    fs.mkdirSync(pkgDir, { recursive: true });
   });
 
   afterEach(() => {
     fs.rmSync(CLAUDE_CLI_DIR, { recursive: true, force: true });
   });
 
-  it('returns path when cli.js exists', () => {
-    const cliJs = path.join(
-      CLAUDE_CLI_DIR,
-      'node_modules',
-      '@anthropic-ai',
-      'claude-code',
-      'cli.js',
-    );
-    fs.writeFileSync(cliJs, '#!/usr/bin/env node\n');
-    expect(getClaudeCliPath()).toBe(cliJs);
+  it('returns package dir when package.json exists', () => {
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), '{}');
+    expect(getClaudeCliPackageDir()).toBe(pkgDir);
   });
 
-  it('returns null when cli.js does not exist', () => {
-    expect(getClaudeCliPath()).toBeNull();
+  it('returns null when package.json does not exist', () => {
+    expect(getClaudeCliPackageDir()).toBeNull();
   });
 });
 
