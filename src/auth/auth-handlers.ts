@@ -19,10 +19,7 @@ import { logger } from '../logger.js';
  * Keeps the newest entry and emits 'removed' for the current entry and
  * all older duplicates. Returns the entry to process (unchanged if no dupes).
  */
-function dedup(
-  entry: InteractionEntry,
-  ctx: HandlerContext,
-): InteractionEntry {
+function dedup(entry: InteractionEntry, ctx: HandlerContext): InteractionEntry {
   const { eventType, sourceId } = entry;
   const dupes = ctx.queue.extract(
     (e) => e.eventType === eventType && e.sourceId === sourceId,
@@ -32,9 +29,19 @@ function dedup(
 
   const newest = dupes[dupes.length - 1];
   const reason = `superseded by ${newest.interactionId}`;
-  ctx.statusRegistry.emit(entry.interactionId, entry.eventType, 'removed', reason);
+  ctx.statusRegistry.emit(
+    entry.interactionId,
+    entry.eventType,
+    'removed',
+    reason,
+  );
   for (let i = 0; i < dupes.length - 1; i++) {
-    ctx.statusRegistry.emit(dupes[i].interactionId, dupes[i].eventType, 'removed', reason);
+    ctx.statusRegistry.emit(
+      dupes[i].interactionId,
+      dupes[i].eventType,
+      'removed',
+      reason,
+    );
   }
   return newest;
 }
