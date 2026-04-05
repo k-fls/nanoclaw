@@ -4,13 +4,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockInstalledVersion = vi.fn(() => '2.1.74');
 const mockGetActiveSetting = vi.fn(() => '24h');
 const mockReconfigure = vi.fn();
-const mockRunUpdate = vi.fn(async () => true);
+const mockRunUpdate = vi.fn<(updateNow?: boolean) => Promise<boolean>>(async () => true);
 
 vi.mock('../claude-updater/updater.js', () => ({
   installedVersion: () => mockInstalledVersion(),
   getActiveSetting: () => mockGetActiveSetting(),
   reconfigure: (s: string) => mockReconfigure(s),
-  runUpdate: () => mockRunUpdate(),
+  runUpdate: (updateNow?: boolean) => mockRunUpdate(updateNow),
 }));
 
 vi.mock('../remote-control.js', () => ({
@@ -99,29 +99,29 @@ describe('/claude-version', () => {
     expect(msgs[0]).toContain('not installed');
   });
 
-  it('update — triggers update (same as now)', async () => {
+  it('update — triggers update to latest', async () => {
     const result = handleCommand('claude-version', 'update', ctx());
     const msgs = await runAsync(result);
-    expect(mockRunUpdate).toHaveBeenCalled();
+    expect(mockRunUpdate).toHaveBeenCalledWith(true);
     expect(msgs[1]).toContain('Update complete');
   });
 
-  it('update now — triggers update', async () => {
+  it('update now — triggers update to latest', async () => {
     const result = handleCommand('claude-version', 'update now', ctx());
     const msgs = await runAsync(result);
-    expect(mockRunUpdate).toHaveBeenCalled();
+    expect(mockRunUpdate).toHaveBeenCalledWith(true);
     expect(msgs[1]).toContain('Update complete');
   });
 
-  it('update now — rejects when no setting', async () => {
+  it('update works even with no setting configured', async () => {
     mockGetActiveSetting.mockReturnValue('');
-    const result = handleCommand('claude-version', 'update now', ctx());
+    const result = handleCommand('claude-version', 'update', ctx());
     const msgs = await runAsync(result);
-    expect(msgs[0]).toContain('No update setting configured');
-    expect(mockRunUpdate).not.toHaveBeenCalled();
+    expect(mockRunUpdate).toHaveBeenCalledWith(true);
+    expect(msgs[1]).toContain('Update complete');
   });
 
-  it('update now — reports failure', async () => {
+  it('update — reports failure', async () => {
     mockRunUpdate.mockResolvedValue(false);
     const result = handleCommand('claude-version', 'update now', ctx());
     const msgs = await runAsync(result);
