@@ -17,7 +17,7 @@ import {
   ONECLI_URL,
   TIMEZONE,
 } from './config.js';
-import { cliLock, getClaudeCliPath } from './claude-updater/updater.js';
+import { cliLock, getClaudeCliPackageDir } from './claude-updater/updater.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -253,9 +253,10 @@ function buildVolumeMounts(
   // Mount updated Claude CLI over the image-baked package (managed by claude-updater).
   // The image symlinks /usr/local/bin/claude → ../lib/node_modules/@anthropic-ai/claude-code/cli.js
   // so mounting here makes everything (SDK, status skill, claude --version) use the updated binary.
-  if (getClaudeCliPath()) {
+  const claudeCliPkgDir = getClaudeCliPackageDir();
+  if (claudeCliPkgDir) {
     mounts.push({
-      hostPath: path.join(CLAUDE_CLI_DIR, 'node_modules', '@anthropic-ai', 'claude-code'),
+      hostPath: claudeCliPkgDir,
       containerPath: '/usr/local/lib/node_modules/@anthropic-ai/claude-code',
       readonly: true,
     });
