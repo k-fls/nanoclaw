@@ -437,9 +437,16 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const CLAUDE_HOST_CLI = '/opt/claude-cli/node_modules/@anthropic-ai/claude-code/cli.js';
+  const customCliPath = fs.existsSync(CLAUDE_HOST_CLI) ? CLAUDE_HOST_CLI : undefined;
+  if (customCliPath) {
+    log(`Using mounted Claude CLI: ${customCliPath}`);
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
+      pathToClaudeCodeExecutable: customCliPath,
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,

@@ -30,6 +30,10 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
+  startUpdateManager,
+  stopUpdateManager,
+} from './claude-updater/updater.js';
+import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -601,6 +605,7 @@ function ensureContainerSystemRunning(): void {
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
   updateAgentRunnerFingerprint();
+  await startUpdateManager();
   initDatabase();
   logger.info('Database initialized');
   loadState();
@@ -616,6 +621,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    stopUpdateManager();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
