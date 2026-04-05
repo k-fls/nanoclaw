@@ -250,12 +250,13 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Mount updated Claude CLI if available (managed by claude-updater)
-  const claudeCliPath = getClaudeCliPath();
-  if (claudeCliPath) {
+  // Mount updated Claude CLI over the image-baked package (managed by claude-updater).
+  // The image symlinks /usr/local/bin/claude → ../lib/node_modules/@anthropic-ai/claude-code/cli.js
+  // so mounting here makes everything (SDK, status skill, claude --version) use the updated binary.
+  if (getClaudeCliPath()) {
     mounts.push({
-      hostPath: CLAUDE_CLI_DIR,
-      containerPath: '/opt/claude-cli',
+      hostPath: path.join(CLAUDE_CLI_DIR, 'node_modules', '@anthropic-ai', 'claude-code'),
+      containerPath: '/usr/local/lib/node_modules/@anthropic-ai/claude-code',
       readonly: true,
     });
   }
