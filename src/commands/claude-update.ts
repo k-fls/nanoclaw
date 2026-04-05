@@ -89,16 +89,12 @@ registerCommand('claude-version', {
 
     const updateArgs = trimmed.slice('update'.length).trim();
 
-    // /claude-version update OR /claude-version update now — trigger update
+    // /claude-version update OR /claude-version update now — update to latest
     if (!updateArgs || updateArgs === 'now') {
-      const setting = getActiveSetting();
-      if (!setting) {
-        return reply('No update setting configured.\n' + USAGE);
-      }
       return {
         asyncAction: async (io) => {
           await io.send('Updating Claude CLI...');
-          const ok = await runUpdate();
+          const ok = await runUpdate(true);
           const version = installedVersion();
           await io.send(
             ok

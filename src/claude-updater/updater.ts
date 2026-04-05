@@ -107,10 +107,13 @@ function runInstallContainer(targetDir: string, packageSpec: string): boolean {
 
 /**
  * Run the update flow based on the active setting.
+ * @param updateNow — if true, treat as latest regardless of setting (for /claude-version update)
  * Returns true if containers should use the updated CLI.
  */
-export async function runUpdate(): Promise<boolean> {
-  const config = parseClaudeCliUpdate(activeSetting);
+export async function runUpdate(updateNow = false): Promise<boolean> {
+  const config = updateNow
+    ? { mode: 'latest' as const, intervalMs: 0, version: '' }
+    : parseClaudeCliUpdate(activeSetting);
   if (config.mode === 'off') return getClaudeCliPath() !== null;
 
   const current = installedVersion();
