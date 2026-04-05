@@ -17,13 +17,8 @@ export interface ChatIODeps {
 
 /** Create a ChatIO that routes through the normal channel messaging. */
 export function createChatIO(deps: ChatIODeps): ChatIO {
-  const {
-    channel,
-    chatJid,
-    getAgentTimestamp,
-    setAgentTimestamp,
-    saveState,
-  } = deps;
+  const { channel, chatJid, getAgentTimestamp, setAgentTimestamp, saveState } =
+    deps;
 
   let lastReceivedTs: string | null = null;
   let lastReceivedId: string | null = null;
