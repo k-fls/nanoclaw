@@ -367,8 +367,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (authResult === 'reauth-failed') return true;
   if (authResult === 'reauth-ok') {
-    // If reauth consumed messages (advanceCursor moved past original), don't retry
-    if (lastAgentTimestamp[chatJid] !== lastOriginalTs) return true;
+    // Reauth hides scripted messages, so always retry the user's original request
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
     return false;
