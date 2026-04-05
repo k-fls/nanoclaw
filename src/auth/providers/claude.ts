@@ -680,7 +680,7 @@ export const CLAUDE_OAUTH_PROVIDER: import('../oauth-types.js').OAuthProvider =
     ],
     scopeKeys: [],
     substituteConfig: CLAUDE_SUBSTITUTE_CONFIG,
-    refreshStrategy: 'proactive',
+    refreshStrategy: 'redirect',
     tokenFieldCapture: {
       scopeInclude: ['user:file_upload'],
     },

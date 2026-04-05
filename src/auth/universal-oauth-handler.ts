@@ -274,9 +274,9 @@ const BUFFER_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
 
 /**
  * How far ahead of actual expiry to trigger proactive refresh (ms).
- * When the 'proactive' strategy is active, the proxy checks the access
- * token's expires_ts before sending the request. If the token expires
- * within this window, it refreshes first — avoiding a 401 round-trip.
+ * Before sending a request, the proxy checks the access token's expires_ts.
+ * If the token expires within this window, it refreshes first — avoiding a
+ * 401 round-trip. Set to 0 to disable proactive refresh.
  */
 const REFRESH_AHEAD_MS = 60_000; // 60 seconds
 
@@ -430,8 +430,9 @@ function createBearerSwapHandler(
       swappedHeaders.push({ headerName: name, substitute: candidate, prefix });
     }
 
-    // Proactive strategy: check token expiry before sending upstream.
-    if (refreshStrategy === 'proactive' && swappedHeaders.length > 0) {
+    // Proactive refresh: if token expiry is known and within REFRESH_AHEAD_MS,
+    // refresh before sending to avoid a 401 round-trip.
+    if (REFRESH_AHEAD_MS > 0 && swappedHeaders.length > 0) {
       const expiresTs = tokenEngine.getKeyExpiry(
         groupScope,
         provider.id,
@@ -445,7 +446,7 @@ function createBearerSwapHandler(
             scope: groupScope,
             expiresIn: Math.round((expiresTs - Date.now()) / 1000),
           },
-          'Proactive strategy: token expired or expiring soon, refreshing before send',
+          'Token expired or expiring soon, refreshing before send',
         );
 
         const refreshed = await tokenEngine.sharedOp(
@@ -471,7 +472,7 @@ function createBearerSwapHandler(
         } else {
           logger.warn(
             { provider: provider.id, scope: groupScope },
-            'Proactive strategy: refresh failed, sending with existing token',
+            'Proactive refresh failed, sending with existing token',
           );
         }
       }
@@ -529,18 +530,17 @@ function createBearerSwapHandler(
           await new Promise<void>((r) => upRes.on('end', r));
           const upstreamBodyBuf = Buffer.concat(bodyChunks);
 
-          // Proactive strategy never does reactive refresh — whether or not
-          // the pre-request check fired. Refresh only happens before send.
+          // If proactive refresh already attempted and failed, skip reactive
+          // refresh — retrying immediately would be wasteful.
           let refreshed: boolean;
-          if (refreshStrategy === 'proactive') {
+          if (proactiveRefreshAttempted) {
             logger.info(
               {
                 provider: provider.id,
                 scope: groupScope,
                 status: statusCode,
-                proactiveRefreshAttempted,
               },
-              'Proactive strategy: forwarding 401 (no reactive refresh)',
+              'Proactive refresh already attempted, skipping reactive refresh',
             );
             refreshed = false;
           } else {

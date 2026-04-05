@@ -566,7 +566,7 @@ describe('universal-oauth-handler', () => {
       expect(allowed!.realToken).toBe(realToken);
     });
 
-    it('proactive strategy refreshes before send when token is near expiry', async () => {
+    it('proactive refresh triggers before send when token is near expiry', async () => {
       initCredentialStore();
       const spies = muteLogger();
       try {
@@ -584,7 +584,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
-          refreshStrategy: 'proactive',
+          refreshStrategy: 'redirect',
         };
 
         // Generate a substitute first (stores with expires_ts=0 internally)
@@ -651,7 +651,7 @@ describe('universal-oauth-handler', () => {
       }
     });
 
-    it('proactive strategy skips reactive refresh on 401 after proactive attempt', async () => {
+    it('skips reactive refresh on 401 when proactive refresh already attempted', async () => {
       initCredentialStore();
       const spies = muteLogger();
       try {
@@ -669,7 +669,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
-          refreshStrategy: 'proactive',
+          refreshStrategy: 'redirect',
         };
 
         // Generate substitute first, then set expired expiry
@@ -734,7 +734,7 @@ describe('universal-oauth-handler', () => {
       }
     });
 
-    it('proactive strategy forwards 401 without reactive refresh when token is not near expiry', async () => {
+    it('uses reactive refresh on 401 when no proactive refresh was attempted', async () => {
       initCredentialStore();
       const spies = muteLogger();
       try {
@@ -752,7 +752,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
-          refreshStrategy: 'proactive',
+          refreshStrategy: 'redirect',
         };
 
         const realAccess =
@@ -783,11 +783,19 @@ describe('universal-oauth-handler', () => {
         const rule = makeBearerSwapRule();
         const handler = createHandler(provider, rule, engine);
 
-        // Track auth error callbacks
-        let authErrorCalled = false;
-        setAuthErrorResolver(() => () => {
-          authErrorCalled = true;
-        });
+        // Mock refresh to succeed
+        setTokenFetch(
+          async () =>
+            new Response(
+              JSON.stringify({
+                access_token:
+                  'refreshed_access_abcdefghijklmnopqrstuvwxyz123456',
+                refresh_token: 'new_refresh_value',
+                expires_in: 3600,
+              }),
+              { status: 200 },
+            ),
+        );
 
         // Upstream returns 401 (e.g. server-side revocation)
         serverResponseOverride = {
@@ -800,11 +808,10 @@ describe('universal-oauth-handler', () => {
             headers: { authorization: `Bearer ${sub}` },
           });
 
-          // Proactive strategy never does reactive refresh — just forwards 401
-          expect(res.status).toBe(401);
-          expect(authErrorCalled).toBe(true);
+          // No proactive attempt — reactive refresh kicks in (redirect strategy → 307)
+          expect(res.status).toBe(307);
         } finally {
-          setAuthErrorResolver(() => null);
+          setTokenFetch(globalThis.fetch);
           serverResponseOverride = null;
         }
       } finally {
