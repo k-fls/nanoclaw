@@ -8,6 +8,7 @@
 // Side-effect: register built-in commands
 import './builtins.js';
 import './auth-commands.js';
+import './claude-update.js';
 
 export type {
   Command,

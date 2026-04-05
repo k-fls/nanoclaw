@@ -30,7 +30,9 @@ registerCommand('help', {
 registerCommand('remote-control', {
   description: 'Start a Claude Code remote control session',
   access: (ctx) =>
-    ctx.group.isMain ? null : '/remote-control is only available in the main group.',
+    ctx.group.isMain
+      ? null
+      : '/remote-control is only available in the main group.',
   run(_args, ctx) {
     return {
       asyncAction: async (io) => {
@@ -52,7 +54,9 @@ registerCommand('remote-control', {
 registerCommand('remote-control-end', {
   description: 'End the active remote control session',
   access: (ctx) =>
-    ctx.group.isMain ? null : '/remote-control-end is only available in the main group.',
+    ctx.group.isMain
+      ? null
+      : '/remote-control-end is only available in the main group.',
   run() {
     return {
       asyncAction: async (io) => {

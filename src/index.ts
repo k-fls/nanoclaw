@@ -37,6 +37,10 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
+  startUpdateManager,
+  stopUpdateManager,
+} from './claude-updater/updater.js';
+import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -58,7 +62,12 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { decodeMessages, findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  decodeMessages,
+  findChannel,
+  formatMessages,
+  formatOutbound,
+} from './router.js';
 import { executeCommand, type CommandContext } from './commands/index.js';
 import { restoreRemoteControl } from './remote-control.js';
 import {
@@ -284,7 +293,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Check for /command before trigger check — commands work without trigger
   const cmdCtx = commandContext(channel, chatJid, group);
   if (await executeCommand(decoded, cmdCtx)) {
-    lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+    lastAgentTimestamp[chatJid] =
+      missedMessages[missedMessages.length - 1].timestamp;
     saveState();
     return true;
   }
@@ -528,10 +538,7 @@ async function startMessageLoop(): Promise<void> {
   while (true) {
     try {
       const jids = Object.keys(registeredGroups);
-      const { messages, newTimestamp } = getNewMessages(
-        jids,
-        lastTimestamp,
-      );
+      const { messages, newTimestamp } = getNewMessages(jids, lastTimestamp);
 
       if (messages.length > 0) {
         logger.info({ count: messages.length }, 'New messages');
@@ -585,7 +592,8 @@ async function startMessageLoop(): Promise<void> {
           // Check for /command before piping to container
           const cmdCtx = commandContext(channel, chatJid, group);
           if (await executeCommand(decodedGroup, cmdCtx)) {
-            lastAgentTimestamp[chatJid] = decodedGroup[decodedGroup.length - 1].timestamp;
+            lastAgentTimestamp[chatJid] =
+              decodedGroup[decodedGroup.length - 1].timestamp;
             saveState();
             continue;
           }
@@ -664,6 +672,7 @@ async function main(): Promise<void> {
   const auth = await initAuthSystem(() => registeredGroups);
   tokenEngine = auth.tokenEngine;
 
+  await startUpdateManager();
   initDatabase();
   logger.info('Database initialized');
   loadState();
@@ -674,6 +683,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     auth.shutdown();
+    stopUpdateManager();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

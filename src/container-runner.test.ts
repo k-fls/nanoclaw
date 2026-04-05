@@ -8,6 +8,7 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 // Mock config
 vi.mock('./config.js', () => ({
+  CLAUDE_CLI_DIR: '/tmp/nanoclaw-test-cli',
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000, // 30min
@@ -68,6 +69,26 @@ vi.mock('./auth/credential-proxy.js', () => ({
     registerContainerIP: vi.fn(),
     unregisterContainerIP: vi.fn(),
   })),
+}));
+
+// Mock claude-updater
+vi.mock('./claude-updater/updater.js', () => ({
+  cliLock: {
+    acquireShared: vi.fn(async () => {}),
+    releaseShared: vi.fn(),
+  },
+  getClaudeCliPath: vi.fn(() => null),
+}));
+
+// Mock OneCLI SDK
+vi.mock('@onecli-sh/sdk', () => ({
+  OneCLI: class {
+    applyContainerConfig = vi.fn().mockResolvedValue(true);
+    createAgent = vi.fn().mockResolvedValue({ id: 'test' });
+    ensureAgent = vi
+      .fn()
+      .mockResolvedValue({ name: 'test', identifier: 'test', created: true });
+  },
 }));
 
 // Create a controllable fake ChildProcess

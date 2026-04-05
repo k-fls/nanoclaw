@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  CLAUDE_CLI_DIR,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   DATA_DIR,
@@ -15,6 +16,7 @@ import {
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
+import { cliLock, getClaudeCliPath } from './claude-updater/updater.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -326,6 +328,16 @@ export function buildVolumeMounts(
     });
   }
 
+  // Mount updated Claude CLI if available (managed by claude-updater)
+  const claudeCliPath = getClaudeCliPath();
+  if (claudeCliPath) {
+    mounts.push({
+      hostPath: CLAUDE_CLI_DIR,
+      containerPath: '/opt/claude-cli',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -434,6 +446,9 @@ export async function runContainerAgent(
     'Spawning container agent',
   );
 
+  // Shared lock: prevent CLI directory swap while Docker resolves bind mounts.
+  // Released immediately after spawn — running containers are safe after that.
+  await cliLock.acquireShared();
   let container: ChildProcess;
   try {
     container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
@@ -443,6 +458,8 @@ export async function runContainerAgent(
     // Release the pre-allocated IP if spawn fails before event handlers take over.
     releaseIP();
     throw err;
+  } finally {
+    cliLock.releaseShared();
   }
 
   return new Promise((resolve) => {
