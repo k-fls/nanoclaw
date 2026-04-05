@@ -9,7 +9,6 @@ import { getMessagesSince, HIDE_REASON, hideMessage } from '../db.js';
 export interface ChatIODeps {
   channel: Channel;
   chatJid: string;
-  assistantName: string;
   /** Read/write the per-group agent cursor — used by advanceCursor(). */
   getAgentTimestamp: () => string;
   setAgentTimestamp: (ts: string) => void;
@@ -21,7 +20,6 @@ export function createChatIO(deps: ChatIODeps): ChatIO {
   const {
     channel,
     chatJid,
-    assistantName,
     getAgentTimestamp,
     setAgentTimestamp,
     saveState,
@@ -38,12 +36,12 @@ export function createChatIO(deps: ChatIODeps): ChatIO {
     },
     async receive(timeoutMs = 120_000): Promise<string | null> {
       const start = Date.now();
-      const cursor = getMessagesSince(chatJid, '', assistantName);
+      const cursor = getMessagesSince(chatJid, '');
       const lastTs =
         cursor.length > 0 ? cursor[cursor.length - 1].timestamp : '';
       while (Date.now() - start < timeoutMs) {
         await new Promise((r) => setTimeout(r, 2000));
-        const newer = getMessagesSince(chatJid, lastTs, assistantName);
+        const newer = getMessagesSince(chatJid, lastTs);
         if (newer.length > 0) {
           lastReceivedTs = newer[0].timestamp;
           lastReceivedId = newer[0].id;

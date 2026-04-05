@@ -2,13 +2,13 @@ import fs from 'fs';
 import path from 'path';
 
 import {
-  ASSISTANT_NAME,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
   MAX_MESSAGES_PER_PROMPT,
   POLL_INTERVAL,
   TIMEZONE,
+  triggerToName,
 } from './config.js';
 import {
   initAuthSystem,
@@ -116,7 +116,7 @@ function getOrRecoverCursor(chatJid: string): string {
   const existing = lastAgentTimestamp[chatJid];
   if (existing) return existing;
 
-  const botTs = getLastBotMessageTimestamp(chatJid, ASSISTANT_NAME);
+  const botTs = getLastBotMessageTimestamp(chatJid);
   if (botTs) {
     logger.info(
       { chatJid, recoveredFrom: botTs },
@@ -171,9 +171,10 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     );
     if (fs.existsSync(templateFile)) {
       let content = fs.readFileSync(templateFile, 'utf-8');
-      if (ASSISTANT_NAME !== 'Andy') {
-        content = content.replace(/^# Andy$/m, `# ${ASSISTANT_NAME}`);
-        content = content.replace(/You are Andy/g, `You are ${ASSISTANT_NAME}`);
+      const groupName = triggerToName(group.trigger);
+      if (groupName !== 'Andy') {
+        content = content.replace(/^# Andy$/m, `# ${groupName}`);
+        content = content.replace(/You are Andy/g, `You are ${groupName}`);
       }
       fs.writeFileSync(groupMdFile, content);
       logger.info({ folder: group.folder }, 'Created CLAUDE.md from template');
@@ -212,11 +213,11 @@ export function _setRegisteredGroups(
 }
 
 /** Build ChatIO deps for auth guard — bridges module state to the auth layer. */
-function chatIODeps(channel: Channel, chatJid: string) {
+function chatIODeps(channel: Channel, chatJid: string, group: RegisteredGroup) {
   return {
     channel,
     chatJid,
-    assistantName: ASSISTANT_NAME,
+    assistantName: triggerToName(group.trigger),
     getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
     setAgentTimestamp: (ts: string) => {
       lastAgentTimestamp[chatJid] = ts;
@@ -246,7 +247,7 @@ function commandContext(
     sendMessage: (text) => channel.sendMessage(chatJid, text),
     sendRawMessage: (text) => channel.sendMessage(chatJid, text),
     runReauth: async (providerId: string) => {
-      const chat = createChatIO(chatIODeps(channel, chatJid));
+      const chat = createChatIO(chatIODeps(channel, chatJid, group));
       await runReauth(
         scopeOf(group),
         chat,
@@ -256,7 +257,7 @@ function commandContext(
       );
     },
     runKeySetup: async (providerId: string) => {
-      const chat = createChatIO(chatIODeps(channel, chatJid));
+      const chat = createChatIO(chatIODeps(channel, chatJid, group));
       const { runInteractiveKeySetup } =
         await import('./auth/key-management.js');
       await runInteractiveKeySetup(
@@ -288,7 +289,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const guard = createAuthGuard(
     group,
     getProxy(),
-    () => createChatIO(chatIODeps(channel, chatJid)),
+    () => createChatIO(chatIODeps(channel, chatJid, group)),
     () => queue.softStop(chatJid),
   );
   const credentialsOk = await guard.start();
@@ -296,7 +297,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const missedMessages = getMessagesSince(
     chatJid,
     getOrRecoverCursor(chatJid),
-    ASSISTANT_NAME,
     MAX_MESSAGES_PER_PROMPT,
   );
 
@@ -485,7 +485,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
-        assistantName: ASSISTANT_NAME,
+        assistantName: triggerToName(group.trigger),
       },
       (proc, containerName, controls) => {
         onContainerName?.(containerName);
@@ -560,7 +560,6 @@ async function startMessageLoop(): Promise<void> {
       const { messages, newTimestamp } = getNewMessages(
         jids,
         lastTimestamp,
-        ASSISTANT_NAME,
       );
 
       if (messages.length > 0) {
@@ -621,7 +620,6 @@ async function startMessageLoop(): Promise<void> {
           const allPending = getMessagesSince(
             chatJid,
             getOrRecoverCursor(chatJid),
-            ASSISTANT_NAME,
             MAX_MESSAGES_PER_PROMPT,
           );
           const decodedPending = decodeMessages(allPending, channel);
@@ -665,7 +663,6 @@ function recoverPendingMessages(): void {
     const pending = getMessagesSince(
       chatJid,
       getOrRecoverCursor(chatJid),
-      ASSISTANT_NAME,
       MAX_MESSAGES_PER_PROMPT,
     );
     if (pending.length > 0) {
