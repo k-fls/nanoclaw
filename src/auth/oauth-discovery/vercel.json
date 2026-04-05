@@ -53,5 +53,6 @@
     "urn:ietf:params:oauth:grant-type:device_code"
   ],
   "introspection_endpoint": "https://api.vercel.com/login/oauth/token/introspect",
-  "registration_endpoint": "https://api.vercel.com/login/oauth/register"
+  "registration_endpoint": "https://api.vercel.com/login/oauth/register",
+  "_well_known_url": "https://vercel.com/.well-known/openid-configuration"
 }

@@ -9,5 +9,6 @@
     "authorization_endpoint": "https://{project_ref}.supabase.co/auth/v1/authorize",
     "token_endpoint": "https://{project_ref}.supabase.co/auth/v1/token",
     "_note": "Per-project Supabase Auth OAuth 2.1 server (public beta as of Nov 2025). This makes YOUR app an OAuth provider using Supabase Auth."
-  }
+  },
+  "_well_known_url": false
 }

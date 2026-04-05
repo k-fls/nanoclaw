@@ -64,5 +64,6 @@
     "HS256",
     "HS384",
     "HS512"
-  ]
+  ],
+  "_well_known_url": "https://login.okta.com/.well-known/openid-configuration"
 }
