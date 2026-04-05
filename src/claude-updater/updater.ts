@@ -31,15 +31,10 @@ const CLI_PACKAGE = '@anthropic-ai/claude-code';
 /** Runtime setting — initialized from env, can be changed via reconfigure(). */
 let activeSetting = CLAUDE_CLI_UPDATE;
 
-/** Path to cli.js inside the mounted directory, or null if not available. */
-export function getClaudeCliPath(): string | null {
-  const cliJs = path.join(
-    CLAUDE_CLI_DIR,
-    'node_modules',
-    CLI_PACKAGE,
-    'cli.js',
-  );
-  return fs.existsSync(cliJs) ? cliJs : null;
+/** Path to the installed claude-code package directory, or null if not installed. */
+export function getClaudeCliPackageDir(): string | null {
+  const pkgDir = path.join(CLAUDE_CLI_DIR, 'node_modules', CLI_PACKAGE);
+  return fs.existsSync(path.join(pkgDir, 'package.json')) ? pkgDir : null;
 }
 
 /** Read installed version from package.json, or null if not installed. */
@@ -114,7 +109,7 @@ export async function runUpdate(updateNow = false): Promise<boolean> {
   const config = updateNow
     ? { mode: 'latest' as const, intervalMs: 0, version: '' }
     : parseClaudeCliUpdate(activeSetting);
-  if (config.mode === 'off') return getClaudeCliPath() !== null;
+  if (config.mode === 'off') return getClaudeCliPackageDir() !== null;
 
   const current = installedVersion();
 
