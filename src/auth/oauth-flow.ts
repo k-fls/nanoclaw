@@ -123,7 +123,7 @@ export function wireAuthCallbacks(proxy: CredentialProxy): void {
     return (providerId, userCode, verificationUri) => {
       ctx.interactionQueue.push(
         {
-          interactionId: `${providerId}:device:${Date.now()}`,
+          interactionId: `${providerId}:device:${userCode}`,
           eventType: 'device-code',
           sourceId: providerId,
           eventParam: userCode,
