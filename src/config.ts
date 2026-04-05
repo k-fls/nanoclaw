@@ -83,6 +83,11 @@ export function buildTriggerPattern(trigger: string): RegExp {
 
 export const DEFAULT_TRIGGER = `@${ASSISTANT_NAME}`;
 
+/** Strip the leading "@" from a trigger to get the bot name (e.g. "@Claw" → "Claw"). */
+export function triggerToName(trigger: string): string {
+  return trigger.replace(/^@/, '').trim() || ASSISTANT_NAME;
+}
+
 export function getTriggerPattern(trigger?: string): RegExp {
   const normalizedTrigger = trigger?.trim();
   return buildTriggerPattern(normalizedTrigger || DEFAULT_TRIGGER);
