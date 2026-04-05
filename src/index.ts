@@ -49,7 +49,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { decodeMessages, findChannel, formatMessages, formatOutbound } from './router.js';
 import { executeCommand, type CommandContext } from './commands/index.js';
 import { createChatIO } from './interaction/chat-io.js';
 import { restoreRemoteControl } from './remote-control.js';
@@ -259,9 +259,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // Decode channel-specific encoding (e.g. Slack entities) for processing
+  const decoded = decodeMessages(missedMessages, channel);
+
   // Check for /command before invoking the agent
   const cmdCtx = commandContext(channel, chatJid, group);
-  if (await executeCommand(missedMessages, cmdCtx)) {
+  if (await executeCommand(decoded, cmdCtx)) {
     lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
     saveState();
     return true;
@@ -271,7 +274,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
-    const hasTrigger = missedMessages.some(
+    const hasTrigger = decoded.some(
       (m) =>
         triggerPattern.test(m.content.trim()) &&
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
@@ -279,7 +282,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const prompt = formatMessages(decoded, TIMEZONE);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -505,13 +508,16 @@ async function startMessageLoop(): Promise<void> {
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
+          // Decode channel-specific encoding (e.g. Slack entities)
+          const decodedGroup = decodeMessages(groupMessages, channel);
+
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
             const triggerPattern = getTriggerPattern(group.trigger);
             const allowlistCfg = loadSenderAllowlist();
-            const hasTrigger = groupMessages.some(
+            const hasTrigger = decodedGroup.some(
               (m) =>
                 triggerPattern.test(m.content.trim()) &&
                 (m.is_from_me ||
@@ -520,10 +526,10 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
-          // Check for /command before invoking the agent
+          // Check for /command before piping to container
           const cmdCtx = commandContext(channel, chatJid, group);
-          if (await executeCommand(groupMessages, cmdCtx)) {
-            lastAgentTimestamp[chatJid] = groupMessages[groupMessages.length - 1].timestamp;
+          if (await executeCommand(decodedGroup, cmdCtx)) {
+            lastAgentTimestamp[chatJid] = decodedGroup[decodedGroup.length - 1].timestamp;
             saveState();
             continue;
           }
@@ -536,8 +542,9 @@ async function startMessageLoop(): Promise<void> {
             ASSISTANT_NAME,
             MAX_MESSAGES_PER_PROMPT,
           );
+          const decodedPending = decodeMessages(allPending, channel);
           const messagesToSend =
-            allPending.length > 0 ? allPending : groupMessages;
+            decodedPending.length > 0 ? decodedPending : decodedGroup;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {
