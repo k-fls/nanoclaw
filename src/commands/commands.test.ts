@@ -53,8 +53,12 @@ function runCtx(
 function mockIO(): ChatIO {
   return {
     send: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
-    sendRaw: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
-    receive: vi.fn<(timeoutMs?: number) => Promise<string | null>>().mockResolvedValue(null),
+    sendRaw: vi
+      .fn<(text: string) => Promise<void>>()
+      .mockResolvedValue(undefined),
+    receive: vi
+      .fn<(timeoutMs?: number) => Promise<string | null>>()
+      .mockResolvedValue(null),
     hideMessage: vi.fn(),
     advanceCursor: vi.fn(),
   };
@@ -227,7 +231,11 @@ describe('handleCommand', () => {
     });
 
     it('rejects from non-main group', async () => {
-      const result = handleCommand('remote-control', '', runCtx(false, otherGroup));
+      const result = handleCommand(
+        'remote-control',
+        '',
+        runCtx(false, otherGroup),
+      );
       const text = await replyText(result);
       expect(text).toMatch(/main group/i);
     });
@@ -292,9 +300,7 @@ describe('handleCommand', () => {
       const result = handleCommand('remote-control-end', '', runCtx(false));
       const io = mockIO();
       await result.asyncAction!(io);
-      expect(io.send).toHaveBeenCalledWith(
-        'No active Remote Control session',
-      );
+      expect(io.send).toHaveBeenCalledWith('No active Remote Control session');
     });
   });
 

@@ -408,9 +408,7 @@ export function getMessagesSince(
       LIMIT ?
     ) ORDER BY timestamp
   `;
-  return db
-    .prepare(sql)
-    .all(chatJid, sinceTimestamp, limit) as NewMessage[];
+  return db.prepare(sql).all(chatJid, sinceTimestamp, limit) as NewMessage[];
 }
 
 export function getLastBotMessageTimestamp(

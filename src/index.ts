@@ -53,7 +53,12 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { decodeMessages, findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  decodeMessages,
+  findChannel,
+  formatMessages,
+  formatOutbound,
+} from './router.js';
 import { executeCommand, type CommandContext } from './commands/index.js';
 import { createChatIO } from './interaction/chat-io.js';
 import { restoreRemoteControl } from './remote-control.js';
@@ -231,7 +236,9 @@ function commandContext(
       chatJid,
       assistantName: ASSISTANT_NAME,
       getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
-      setAgentTimestamp: (ts) => { lastAgentTimestamp[chatJid] = ts; },
+      setAgentTimestamp: (ts) => {
+        lastAgentTimestamp[chatJid] = ts;
+      },
       saveState,
     }),
     getContainerName: () => queue.getContainerName(chatJid),
@@ -269,7 +276,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Check for /command before invoking the agent
   const cmdCtx = commandContext(channel, chatJid, group);
   if (await executeCommand(decoded, cmdCtx)) {
-    lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+    lastAgentTimestamp[chatJid] =
+      missedMessages[missedMessages.length - 1].timestamp;
     saveState();
     return true;
   }
@@ -475,10 +483,7 @@ async function startMessageLoop(): Promise<void> {
   while (true) {
     try {
       const jids = Object.keys(registeredGroups);
-      const { messages, newTimestamp } = getNewMessages(
-        jids,
-        lastTimestamp,
-      );
+      const { messages, newTimestamp } = getNewMessages(jids, lastTimestamp);
 
       if (messages.length > 0) {
         logger.info({ count: messages.length }, 'New messages');
@@ -532,7 +537,8 @@ async function startMessageLoop(): Promise<void> {
           // Check for /command before piping to container
           const cmdCtx = commandContext(channel, chatJid, group);
           if (await executeCommand(decodedGroup, cmdCtx)) {
-            lastAgentTimestamp[chatJid] = decodedGroup[decodedGroup.length - 1].timestamp;
+            lastAgentTimestamp[chatJid] =
+              decodedGroup[decodedGroup.length - 1].timestamp;
             saveState();
             continue;
           }
