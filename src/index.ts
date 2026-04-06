@@ -13,6 +13,11 @@ import {
   TIMEZONE,
   triggerToName,
 } from './config.js';
+import {
+  createChatIO,
+  startInteractionSession,
+  type ChatIODeps,
+} from './interaction/index.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -60,7 +65,6 @@ import {
   formatOutbound,
 } from './router.js';
 import { executeCommand, type CommandContext } from './commands/index.js';
-import { createChatIO } from './interaction/chat-io.js';
 import { restoreRemoteControl } from './remote-control.js';
 import {
   isSenderAllowed,
@@ -221,6 +225,22 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+/** Bridge index.ts state into ChatIODeps for the interaction module. */
+function chatIODeps(
+  channel: Channel,
+  chatJid: string,
+): ChatIODeps {
+  return {
+    channel,
+    chatJid,
+    getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
+    setAgentTimestamp: (ts: string) => {
+      lastAgentTimestamp[chatJid] = ts;
+    },
+    saveState,
+  };
+}
+
 /** Build a CommandContext for a group — reusable across interception points. */
 function commandContext(
   channel: Channel,
@@ -231,16 +251,7 @@ function commandContext(
     group,
     chatJid,
     sender: '',
-    chat: createChatIO({
-      channel,
-      chatJid,
-      assistantName: ASSISTANT_NAME,
-      getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
-      setAgentTimestamp: (ts) => {
-        lastAgentTimestamp[chatJid] = ts;
-      },
-      saveState,
-    }),
+    chat: createChatIO(chatIODeps(channel, chatJid)),
     getContainerName: () => queue.getContainerName(chatJid),
     stopContainer: () => queue.softStop(chatJid),
   };
@@ -308,6 +319,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
+  // Start interaction session so queued interactions reach the user
+  const session = startInteractionSession(chatJid, chatIODeps(channel, chatJid));
+
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
@@ -323,7 +337,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        await session.chatLock.acquire();
+        try {
+          await channel.sendMessage(chatJid, text);
+        } finally {
+          session.chatLock.release();
+        }
         outputSentToUser = true;
       }
     }
@@ -338,6 +357,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   });
 
   await channel.setTyping?.(chatJid, false);
+  await session.stop();
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -746,6 +766,13 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
+  queue.setOnGroupQueued((chatJid, position) => {
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    channel
+      .sendMessage(chatJid, `Your request is queued (position ${position}).`)
+      .catch(() => {});
+  });
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

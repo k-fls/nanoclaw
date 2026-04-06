@@ -10,7 +10,9 @@ export { AsyncMutex } from './async-mutex.js';
 export { createChatIO, type ChatIODeps } from './chat-io.js';
 export {
   consumeInteractions,
+  createHandlerContext,
   defaultHandler,
+  InteractionAbortedError,
   registerInteractionHandler,
   type HandlerContext,
   type InteractionHandler,
@@ -33,3 +35,8 @@ export {
   setInteractionPrefix,
   getInteractionPrefix,
 } from './types.js';
+export {
+  getInteractionSession,
+  startInteractionSession,
+  type InteractionSession,
+} from './session.js';
