@@ -14,15 +14,65 @@ import type { ChatIO } from './types.js';
 import { getInteractionPrefix } from './types.js';
 import { logger } from '../logger.js';
 
-// ── Handler registry ────────────────────────────────────────────────
+// ── InteractionAbortedError ─────────────────────────────────────────
 
-/** Context passed to every interaction handler. */
-export interface HandlerContext {
-  chat: ChatIO;
-  queue: InteractionQueue;
-  statusRegistry: InteractionStatusRegistry;
-  signal?: AbortSignal;
+/** Thrown when handler code accesses a revoked context (container stopped). */
+export class InteractionAbortedError extends Error {
+  constructor() {
+    super('Interaction session stopped');
+    this.name = 'InteractionAbortedError';
+  }
 }
+
+// ── Handler context ─────────────────────────────────────────────────
+
+/**
+ * Context passed to every interaction handler.
+ *
+ * Handlers MUST access properties at each step (no destructuring) so
+ * that revocation is detected immediately.
+ */
+export interface HandlerContext {
+  readonly chat: ChatIO;
+  readonly queue: InteractionQueue;
+  readonly statusRegistry: InteractionStatusRegistry;
+}
+
+/**
+ * Create a revocable HandlerContext. Accessing any property after
+ * `revoke()` throws InteractionAbortedError.
+ */
+export function createHandlerContext(
+  chat: ChatIO,
+  queue: InteractionQueue,
+  statusRegistry: InteractionStatusRegistry,
+): { ctx: HandlerContext; revoke: () => void } {
+  let revoked = false;
+  const check = () => {
+    if (revoked) throw new InteractionAbortedError();
+  };
+  return {
+    ctx: {
+      get chat() {
+        check();
+        return chat;
+      },
+      get queue() {
+        check();
+        return queue;
+      },
+      get statusRegistry() {
+        check();
+        return statusRegistry;
+      },
+    },
+    revoke() {
+      revoked = true;
+    },
+  };
+}
+
+// ── Handler registry ────────────────────────────────────────────────
 
 /** Per-event-type handler. Runs inside the chatLock — must not acquire it. */
 export type InteractionHandler = (
@@ -47,12 +97,14 @@ export function registerInteractionHandler(
  *
  * Pops entries one at a time, acquires chatLock, dispatches to the
  * registered handler (or defaultHandler), releases lock.
+ *
+ * @param queue   Direct ref for loop mechanics (waitForEntry) — not through ctx.
+ * @param ctx     Revocable context passed to handlers.
  */
 export async function consumeInteractions(
   queue: InteractionQueue,
   chatLock: AsyncMutex,
-  chat: ChatIO,
-  statusRegistry: InteractionStatusRegistry,
+  ctx: HandlerContext,
   signal: AbortSignal,
 ): Promise<void> {
   while (!signal.aborted) {
@@ -62,18 +114,24 @@ export async function consumeInteractions(
     await chatLock.acquire();
     try {
       const handler = handlers.get(entry.eventType) ?? defaultHandler;
-      await handler(entry, { chat, queue, statusRegistry, signal });
+      await handler(entry, ctx);
     } catch (err) {
-      statusRegistry.emit(
-        entry.interactionId,
-        entry.eventType,
-        'failed',
-        `error: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      logger.error(
-        { interactionId: entry.interactionId, err },
-        'Interaction processing error',
-      );
+      if (!(err instanceof InteractionAbortedError)) {
+        try {
+          ctx.statusRegistry.emit(
+            entry.interactionId,
+            entry.eventType,
+            'failed',
+            `error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        } catch {
+          /* ctx revoked between throw and here — skip status update */
+        }
+        logger.error(
+          { interactionId: entry.interactionId, err },
+          'Interaction processing error',
+        );
+      }
     } finally {
       chatLock.release();
     }
@@ -93,10 +151,9 @@ export async function defaultHandler(
   entry: InteractionEntry,
   ctx: HandlerContext,
 ): Promise<void> {
-  const { chat, statusRegistry, signal } = ctx;
   const prefix = getInteractionPrefix();
 
-  statusRegistry.emit(
+  ctx.statusRegistry.emit(
     entry.interactionId,
     entry.eventType,
     'active',
@@ -105,11 +162,11 @@ export async function defaultHandler(
 
   // Notification-only: no reply expected
   if (!entry.replyFn) {
-    await chat.send(
+    await ctx.chat.send(
       `${prefix}*${entry.sourceId}* ${entry.eventType}\n${entry.eventParam}` +
         (entry.eventUrl ? `\n${entry.eventUrl}` : ''),
     );
-    statusRegistry.emit(
+    ctx.statusRegistry.emit(
       entry.interactionId,
       entry.eventType,
       'completed',
@@ -129,27 +186,17 @@ export async function defaultHandler(
     entry.eventUrl,
     'Reply when ready, or "cancel" to stop.',
   ].filter(Boolean);
-  await chat.send(parts.join('\n'));
+  await ctx.chat.send(parts.join('\n'));
 
   let done = false;
   while (!done) {
     const timeoutMs = 10 * 60 * 1000; // 10 minutes
-    const reply = await chat.receive(timeoutMs);
-
-    if (signal?.aborted) {
-      statusRegistry.emit(
-        entry.interactionId,
-        entry.eventType,
-        'failed',
-        'consumer cancelled (container exited)',
-      );
-      return;
-    }
+    const reply = await ctx.chat.receive(timeoutMs);
 
     if (!reply || reply.trim().toLowerCase() === 'cancel') {
-      chat.hideMessage();
-      chat.advanceCursor();
-      statusRegistry.emit(
+      ctx.chat.hideMessage();
+      ctx.chat.advanceCursor();
+      ctx.statusRegistry.emit(
         entry.interactionId,
         entry.eventType,
         'failed',
@@ -162,20 +209,20 @@ export async function defaultHandler(
       return;
     }
 
-    chat.hideMessage();
-    chat.advanceCursor();
+    ctx.chat.hideMessage();
+    ctx.chat.advanceCursor();
 
     const result = await entry.replyFn(reply.trim());
     done = result.done;
 
     if (done) {
-      statusRegistry.emit(
+      ctx.statusRegistry.emit(
         entry.interactionId,
         entry.eventType,
         'completed',
         result.response ?? 'done',
       );
-      await chat.send(
+      await ctx.chat.send(
         `${prefix}*${entry.sourceId}* completed.` +
           (result.response ? ` ${result.response}` : ''),
       );
@@ -185,7 +232,7 @@ export async function defaultHandler(
       );
     } else {
       // Not done — show response and prompt again
-      await chat.send(`${prefix}${result.response ?? 'Please try again.'}`);
+      await ctx.chat.send(`${prefix}${result.response ?? 'Please try again.'}`);
     }
   }
 }

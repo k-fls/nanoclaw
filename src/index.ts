@@ -13,6 +13,10 @@ import {
   POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
+import {
+  startInteractionSession,
+  type ChatIODeps,
+} from './interaction/index.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -213,6 +217,23 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+/** Bridge index.ts state into ChatIODeps for the interaction module. */
+function chatIODeps(
+  channel: Channel,
+  chatJid: string,
+): ChatIODeps {
+  return {
+    channel,
+    chatJid,
+    assistantName: ASSISTANT_NAME,
+    getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
+    setAgentTimestamp: (ts: string) => {
+      lastAgentTimestamp[chatJid] = ts;
+    },
+    saveState,
+  };
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -264,6 +285,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
+  // Start interaction session so queued interactions reach the user
+  const session = startInteractionSession(chatJid, chatIODeps(channel, chatJid));
+
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
@@ -279,7 +303,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        await session.chatLock.acquire();
+        try {
+          await channel.sendMessage(chatJid, text);
+        } finally {
+          session.chatLock.release();
+        }
         outputSentToUser = true;
       }
     }
@@ -294,6 +323,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   });
 
   await channel.setTyping?.(chatJid, false);
+  await session.stop();
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -744,6 +774,13 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
+  queue.setOnGroupQueued((chatJid, position) => {
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    channel
+      .sendMessage(chatJid, `Your request is queued (position ${position}).`)
+      .catch(() => {});
+  });
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

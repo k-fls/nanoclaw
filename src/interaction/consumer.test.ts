@@ -10,7 +10,9 @@ import {
 import { InteractionStatusRegistry } from './status.js';
 import {
   consumeInteractions,
+  createHandlerContext,
   defaultHandler,
+  InteractionAbortedError,
   registerInteractionHandler,
   type HandlerContext,
 } from './consumer.js';
@@ -160,13 +162,14 @@ describe('consumeInteractions', () => {
     chat.replies.push('CODE1', 'CODE2');
     const reg = new InteractionStatusRegistry();
     const abort = new AbortController();
+    const ctx = handlerCtx({ chat, queue: q, statusRegistry: reg });
 
     const fn1 = vi.fn(async () => ({ done: true }));
     const fn2 = vi.fn(async () => ({ done: true }));
     q.push(entry('github', fn1), 'test');
     q.push(entry('google', fn2), 'test');
 
-    const consumerDone = consumeInteractions(q, mutex, chat, reg, abort.signal);
+    const consumerDone = consumeInteractions(q, mutex, ctx, abort.signal);
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -180,11 +183,11 @@ describe('consumeInteractions', () => {
   it('exits cleanly on abort while waiting for entry', async () => {
     const q = new InteractionQueue();
     const mutex = new AsyncMutex();
-    const chat = mockChat();
     const reg = new InteractionStatusRegistry();
     const abort = new AbortController();
+    const ctx = handlerCtx({ queue: q, statusRegistry: reg });
 
-    const consumerDone = consumeInteractions(q, mutex, chat, reg, abort.signal);
+    const consumerDone = consumeInteractions(q, mutex, ctx, abort.signal);
 
     await new Promise((r) => setTimeout(r, 10));
 
@@ -202,6 +205,7 @@ describe('consumeInteractions', () => {
       const chat = mockChat();
       const reg = new InteractionStatusRegistry();
       const abort = new AbortController();
+      const ctx = handlerCtx({ chat, queue: q, statusRegistry: reg });
 
       // Push an entry whose replyFn throws
       const e = entry(
@@ -213,13 +217,7 @@ describe('consumeInteractions', () => {
       chat.replies.push('CODE');
       q.push(e, 'test');
 
-      const consumerDone = consumeInteractions(
-        q,
-        mutex,
-        chat,
-        reg,
-        abort.signal,
-      );
+      const consumerDone = consumeInteractions(q, mutex, ctx, abort.signal);
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -247,33 +245,77 @@ describe('consumeInteractions', () => {
       const chat = mockChat();
       const reg = new InteractionStatusRegistry();
       const abort = new AbortController();
+      const ctx = handlerCtx({ chat, queue: q, statusRegistry: reg });
 
       q.push(entry('github', null), 'test');
 
-      const consumerDone = consumeInteractions(
-        q,
-        mutex,
-        chat,
-        reg,
-        abort.signal,
-      );
+      const consumerDone = consumeInteractions(q, mutex, ctx, abort.signal);
 
       await new Promise((r) => setTimeout(r, 50));
 
       expect(customHandler).toHaveBeenCalledTimes(1);
-      const [handledEntry, ctx] = customHandler.mock.calls[0] as unknown as [
+      const [handledEntry, hCtx] = customHandler.mock.calls[0] as unknown as [
         InteractionEntry,
         HandlerContext,
       ];
       expect(handledEntry.sourceId).toBe('github');
-      expect(ctx.chat).toBe(chat);
-      expect(ctx.queue).toBe(q);
-      expect(ctx.statusRegistry).toBe(reg);
+      expect(hCtx.chat).toBe(chat);
+      expect(hCtx.queue).toBe(q);
+      expect(hCtx.statusRegistry).toBe(reg);
 
       abort.abort();
       await consumerDone;
     } finally {
       // Clean up — deregister by re-registering with default
+      registerInteractionHandler(
+        'notification' as InteractionEventKind,
+        defaultHandler,
+      );
+    }
+  });
+
+  it('revoked context throws InteractionAbortedError in handler', async () => {
+    const q = new InteractionQueue();
+    const mutex = new AsyncMutex();
+    const chat = mockChat();
+    const reg = new InteractionStatusRegistry();
+    const abort = new AbortController();
+
+    const { ctx, revoke } = createHandlerContext(chat, q, reg);
+
+    // Register a handler that accesses ctx.chat after revoke
+    let caughtError: unknown = null;
+    registerInteractionHandler(
+      'notification' as InteractionEventKind,
+      async (_entry, handlerCtx) => {
+        // First access works
+        await handlerCtx.chat.send('step 1');
+        // Simulate container stop
+        revoke();
+        // Next access should throw
+        try {
+          await handlerCtx.chat.send('step 2');
+        } catch (err) {
+          caughtError = err;
+          throw err;
+        }
+      },
+    );
+
+    try {
+      q.push(entry('github', null), 'test');
+
+      const consumerDone = consumeInteractions(q, mutex, ctx, abort.signal);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(caughtError).toBeInstanceOf(InteractionAbortedError);
+      expect(chat.sent).toEqual(['step 1']);
+      // Status should NOT be 'failed' — aborted errors are swallowed
+      expect(reg.currentState('github:12345')).toBeNull();
+
+      abort.abort();
+      await consumerDone;
+    } finally {
       registerInteractionHandler(
         'notification' as InteractionEventKind,
         defaultHandler,
