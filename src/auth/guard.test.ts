@@ -93,6 +93,15 @@ function mockProvider(
   };
 }
 
+function mockSession() {
+  return {
+    chatLock: { acquire: vi.fn(), release: vi.fn(), locked: false },
+    queue: { push: vi.fn(), onMutation: vi.fn() },
+    statusRegistry: { emit: vi.fn(), destroy: vi.fn() },
+    stop: vi.fn(async () => {}),
+  } as any;
+}
+
 const group = {
   name: 'test-group',
   folder: 'test-group',
@@ -123,6 +132,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         mockChat,
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
 
@@ -137,6 +147,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
 
@@ -153,6 +164,7 @@ describe('createAuthGuard', () => {
         proxy,
         mockChat,
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
 
@@ -170,6 +182,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         mockChat,
         stopContainer,
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -188,6 +201,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         mockChat,
         stopContainer,
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -205,6 +219,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -218,6 +233,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -235,6 +251,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -254,6 +271,7 @@ describe('createAuthGuard', () => {
         proxy,
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
       await guard.start();

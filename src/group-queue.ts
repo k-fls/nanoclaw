@@ -48,6 +48,9 @@ export class GroupQueue {
   private waitingGroups: string[] = [];
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
+  private onGroupQueuedFn:
+    | ((groupJid: string, position: number) => void)
+    | null = null;
   private shuttingDown = false;
 
   private getGroup(groupJid: string): GroupState {
@@ -81,6 +84,11 @@ export class GroupQueue {
     this.processMessagesFn = fn;
   }
 
+  /** Called when a group enters the waiting list due to concurrency limit. */
+  setOnGroupQueued(fn: (groupJid: string, position: number) => void): void {
+    this.onGroupQueuedFn = fn;
+  }
+
   enqueueMessageCheck(groupJid: string): void {
     if (this.shuttingDown) return;
 
@@ -96,6 +104,7 @@ export class GroupQueue {
       state.pendingMessages = true;
       if (!this.waitingGroups.includes(groupJid)) {
         this.waitingGroups.push(groupJid);
+        this.onGroupQueuedFn?.(groupJid, this.waitingGroups.length);
       }
       logger.debug(
         { groupJid, activeCount: this.activeCount },

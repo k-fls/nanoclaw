@@ -15,10 +15,14 @@ import {
   NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
 } from './auth/init.js';
 import { createAuthGuard } from './auth/guard.js';
-import { createChatIO } from './interaction/index.js';
 import { runReauth } from './auth/reauth.js';
 import { getProxy } from './auth/credential-proxy.js';
 import { getTokenEngine } from './auth/registry.js';
+import {
+  createChatIO,
+  startInteractionSession,
+  type ChatIODeps,
+} from './interaction/index.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -217,12 +221,14 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
-/** Build ChatIO deps for auth guard — bridges module state to the auth layer. */
-function chatIODeps(channel: Channel, chatJid: string, group: RegisteredGroup) {
+/** Bridge index.ts state into ChatIODeps for the interaction module. */
+function chatIODeps(
+  channel: Channel,
+  chatJid: string,
+): ChatIODeps {
   return {
     channel,
     chatJid,
-    assistantName: triggerToName(group.trigger),
     getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
     setAgentTimestamp: (ts: string) => {
       lastAgentTimestamp[chatJid] = ts;
@@ -241,7 +247,7 @@ function commandContext(
     group,
     chatJid,
     sender: '',
-    chat: createChatIO(chatIODeps(channel, chatJid, group)),
+    chat: createChatIO(chatIODeps(channel, chatJid)),
     getContainerName: () => queue.getContainerName(chatJid),
     stopContainer: () => queue.softStop(chatJid),
   };
@@ -263,11 +269,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
+  // Start interaction session — must be up before auth guard so the
+  // proxy can push auth interactions to the shared queue/consumer.
+  const session = startInteractionSession(chatJid, chatIODeps(channel, chatJid));
+  try {
+
   const guard = createAuthGuard(
     group,
     getProxy(),
-    () => createChatIO(chatIODeps(channel, chatJid, group)),
+    () => createChatIO(chatIODeps(channel, chatJid)),
     () => queue.softStop(chatJid),
+    session,
   );
   const credentialsOk = await guard.start();
 
@@ -345,11 +357,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
-          await guard.chatLock.acquire();
+          await session.chatLock.acquire();
           try {
             await channel.sendMessage(chatJid, text);
           } finally {
-            guard.chatLock.release();
+            session.chatLock.release();
           }
           outputSentToUser = true;
         }
@@ -370,7 +382,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, false);
 
-  // Stop flow consumer, handle auth errors, clean up session context
+  // Handle auth errors, clean up session context
   const authResult = await guard.finish(
     agentResult.status === 'error' || hadError ? agentResult.error : undefined,
   );
@@ -408,6 +420,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   return true;
+
+  } finally {
+    await session.stop();
+  }
 }
 
 async function runAgent(
@@ -803,6 +819,13 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
+  queue.setOnGroupQueued((chatJid, position) => {
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    channel
+      .sendMessage(chatJid, `Your request is queued (position ${position}).`)
+      .catch(() => {});
+  });
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

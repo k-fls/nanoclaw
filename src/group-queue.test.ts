@@ -286,6 +286,60 @@ describe('GroupQueue', () => {
     expect(taskCallCount).toBe(1);
   });
 
+  // --- Queue notification ---
+
+  it('does not fire onGroupQueued when capacity is available', async () => {
+    const onQueued = vi.fn();
+    const completionCallbacks: Array<() => void> = [];
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.setOnGroupQueued(onQueued);
+
+    // Enqueue 2 groups (exactly at limit — both start immediately)
+    queue.enqueueMessageCheck('group1@g.us');
+    queue.enqueueMessageCheck('group2@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(onQueued).not.toHaveBeenCalled();
+
+    completionCallbacks.forEach((cb) => cb());
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
+  it('fires onGroupQueued with position when capacity is exceeded', async () => {
+    const onQueued = vi.fn();
+    const completionCallbacks: Array<() => void> = [];
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.setOnGroupQueued(onQueued);
+
+    // Fill both slots
+    queue.enqueueMessageCheck('group1@g.us');
+    queue.enqueueMessageCheck('group2@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Exceed capacity
+    queue.enqueueMessageCheck('group3@g.us');
+    queue.enqueueMessageCheck('group4@g.us');
+
+    expect(onQueued).toHaveBeenCalledTimes(2);
+    expect(onQueued).toHaveBeenCalledWith('group3@g.us', 1);
+    expect(onQueued).toHaveBeenCalledWith('group4@g.us', 2);
+
+    completionCallbacks.forEach((cb) => cb());
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
   // --- Idle preemption ---
 
   it('does NOT preempt active container when not idle', async () => {
