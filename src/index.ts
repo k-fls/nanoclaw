@@ -381,6 +381,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   await channel.setTyping?.(chatJid, false);
+  await session.stop();
 
   // Handle auth errors, clean up session context
   const authResult = await guard.finish(
