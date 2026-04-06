@@ -16,6 +16,8 @@ export interface InteractionSession {
   chatLock: AsyncMutex;
   /** Push entries here to trigger user-facing interactions. */
   queue: InteractionQueue;
+  /** Tracks interaction state; shared with modules that need observability. */
+  statusRegistry: InteractionStatusRegistry;
   /** Stop the consumer loop and clean up. */
   stop(): Promise<void>;
 }
@@ -58,6 +60,7 @@ export function startInteractionSession(
   const session: InteractionSession = {
     chatLock,
     queue,
+    statusRegistry,
     async stop() {
       revoke();
       abort.abort();
