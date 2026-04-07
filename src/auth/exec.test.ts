@@ -12,6 +12,10 @@ vi.mock('../config.js', () => ({
   TIMEZONE: 'UTC',
 }));
 
+vi.mock('../container-runner.js', () => ({
+  getSnapshotDir: () => '/mock/snapshot',
+}));
+
 vi.mock('../container-runtime.js', () => ({
   CONTAINER_RUNTIME_BIN: 'docker',
   stopContainer: vi.fn(() => 'docker stop'),

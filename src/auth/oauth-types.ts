@@ -122,7 +122,8 @@ export const MIN_RANDOM_CHARS = 16;
  * Does not carry providerId or scope — those are the map keys above it.
  */
 export interface SubstituteEntry {
-  role: string;
+  /** Path to the token within the keys file, e.g. 'oauth', 'api_key', 'oauth/refresh'. */
+  credentialPath: string;
   scopeAttrs: Record<string, string>;
 }
 
@@ -155,7 +156,8 @@ export type ScopeAccessCheck = (
  */
 export interface SubstituteMapping {
   providerId: string;
-  role: string;
+  /** Path to the token: 'oauth', 'api_key', 'oauth/refresh', etc. */
+  credentialPath: string;
   scopeAttrs: Record<string, string>;
   credentialScope: CredentialScope;
 }
@@ -163,7 +165,12 @@ export interface SubstituteMapping {
 /**
  * Pluggable credential store interface. The engine delegates real-token
  * storage and retrieval to this — it never holds credentials itself.
- * Credentials are keyed by (credentialScope, providerId, role).
+ * Credentials are keyed by (credentialScope, providerId, credentialPath).
+ *
+ * credentialPath is a slash-delimited path into the keys file:
+ *   'oauth'         → keys['oauth'].value
+ *   'oauth/refresh' → keys['oauth'].refresh.value
+ *   'api_key'       → keys['api_key'].value
  */
 export interface TokenResolver {
   /** Store (or update) a real token. */
@@ -171,7 +178,7 @@ export interface TokenResolver {
     realToken: string,
     providerId: string,
     credentialScope: CredentialScope,
-    role?: string,
+    credentialPath?: string,
     expiresTs?: number,
     authFields?: Record<string, string>,
   ): void;
@@ -179,7 +186,7 @@ export interface TokenResolver {
   resolve(
     credentialScope: CredentialScope,
     providerId: string,
-    role: string,
+    credentialPath: string,
   ): string | null;
   /** Remove all tokens for a scope (and optionally a provider). */
   revoke(credentialScope: CredentialScope, providerId?: string): void;
@@ -190,9 +197,3 @@ export interface TokenResolver {
 // ---------------------------------------------------------------------------
 
 export type RefreshStrategy = 'redirect' | 'buffer' | 'passthrough';
-
-/**
- * Token roles allowed in bearer-swap header resolution and env var provisioning.
- * Refresh tokens are excluded — they only appear in token-exchange requests.
- */
-export const BEARER_SWAP_ROLES = new Set(['access', 'api_key']);

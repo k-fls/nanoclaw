@@ -5,9 +5,9 @@
  * and credential deletion for any bearer-swap-capable provider.
  */
 import type { GroupScope, CredentialScope } from './oauth-types.js';
-import { asCredentialScope, BEARER_SWAP_ROLES } from './oauth-types.js';
+import { asCredentialScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
-import { readKeysFile, type TokenRole } from './token-substitute.js';
+import { readKeysFile, type Credential } from './token-substitute.js';
 import type { ChatIO } from './types.js';
 import {
   getDiscoveryProvider,
@@ -38,39 +38,39 @@ export function isKeyEligibleProvider(providerId: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Role detection
+// Credential ID detection
 // ---------------------------------------------------------------------------
 
-type SettableRole = 'access' | 'api_key';
-
 /**
- * Collect known roles from additive sources (excluding 'refresh').
- * 1. Existing keys on disk for this provider/scope
+ * Collect known credential IDs from additive sources.
+ * 1. Existing keys on disk for this provider/scope (top-level entries)
  * 2. envVars values declared on the OAuthProvider
  */
-export function getProviderRoles(
+export function getProviderCredentialIds(
   providerId: string,
   groupScope: GroupScope,
   tokenEngine: TokenSubstituteEngine,
-): Set<SettableRole> {
-  const roles = new Set<SettableRole>();
+): Set<string> {
+  const ids = new Set<string>();
 
   // Source 1: existing keys on disk
   const credScope = tokenEngine.resolveCredentialScope(groupScope, providerId);
   const keys = readKeysFile(credScope, providerId);
-  for (const role of BEARER_SWAP_ROLES) {
-    if (keys[role]) roles.add(role as SettableRole);
+  for (const [id, entry] of Object.entries(keys)) {
+    if (id === 'v') continue;
+    if (entry && typeof entry === 'object' && 'value' in entry) ids.add(id);
   }
 
   // Source 2: envVars from discovery provider
   const provider = getDiscoveryProvider(providerId);
   if (provider?.envVars) {
-    for (const role of Object.values(provider.envVars)) {
-      if (role === 'access' || role === 'api_key') roles.add(role);
+    for (const credPath of Object.values(provider.envVars)) {
+      // Only add top-level credential IDs (not nested paths like 'oauth/refresh')
+      if (!credPath.includes('/')) ids.add(credPath);
     }
   }
 
-  return roles;
+  return ids;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,8 +79,7 @@ export function getProviderRoles(
 
 /**
  * Store a key for a discovery provider.
- * Clears old credentials first (access/api_key are mutually exclusive),
- * then stores the new key, then prunes stale refs.
+ * Clears old credentials first, then stores the new key, then prunes stale refs.
  *
  * Returns whether the user should restart the container (env var was
  * never populated because no substitute existed before).
@@ -88,7 +87,7 @@ export function getProviderRoles(
 export function storeProviderKey(
   providerId: string,
   groupScope: GroupScope,
-  role: SettableRole,
+  credentialId: string,
   token: string,
   expiresTs: number,
   tokenEngine: TokenSubstituteEngine,
@@ -96,16 +95,16 @@ export function storeProviderKey(
   const credScope = asCredentialScope(String(groupScope));
   const resolver = tokenEngine.getResolver();
 
-  // Check if any env var for this role had no substitute yet
+  // Check if any env var for this credential had no substitute yet
   let needsRestart = false;
   const provider = getDiscoveryProvider(providerId);
   if (provider?.envVars) {
-    for (const [_envVar, envRole] of Object.entries(provider.envVars)) {
-      if (envRole === role) {
+    for (const [_envVar, envCredPath] of Object.entries(provider.envVars)) {
+      if (envCredPath === credentialId) {
         const existing = tokenEngine.getSubstitute(
           providerId,
           groupScope,
-          role,
+          credentialId,
         );
         if (!existing) needsRestart = true;
         break;
@@ -113,9 +112,9 @@ export function storeProviderKey(
     }
   }
 
-  // Clear → store → prune (mutual exclusivity of access/api_key)
+  // Clear → store → prune
   tokenEngine.clearCredentials(groupScope, providerId);
-  resolver.store(token, providerId, credScope, role, expiresTs);
+  resolver.store(token, providerId, credScope, credentialId, expiresTs);
   tokenEngine.pruneStaleRefs(groupScope, providerId);
 
   return { needsRestart };
@@ -139,24 +138,24 @@ export async function runInteractiveKeySetup(
     return false;
   }
 
-  // Determine role
-  const roles = getProviderRoles(providerId, groupScope, tokenEngine);
-  let role: SettableRole;
+  // Determine credential ID
+  const credIds = getProviderCredentialIds(providerId, groupScope, tokenEngine);
+  let credentialId: string;
 
-  if (roles.size === 0) {
+  if (credIds.size === 0) {
     await chat.send(
       `${KEY_SETUP_PREFIX} Provider *${providerId}* is not configured for manual key setup ` +
-        `(no known roles from existing credentials or env var declarations).`,
+        `(no known credentials from existing keys or env var declarations).`,
     );
     return false;
-  } else if (roles.size === 1) {
-    role = [...roles][0];
+  } else if (credIds.size === 1) {
+    credentialId = [...credIds][0];
   } else {
-    // Multiple roles — ask user to choose
-    const roleList = [...roles];
-    const menu = roleList.map((r, i) => `${i + 1}. ${r}`).join('\n');
+    // Multiple credentials — ask user to choose
+    const credList = [...credIds];
+    const menu = credList.map((r, i) => `${i + 1}. ${r}`).join('\n');
     await chat.send(
-      `${KEY_SETUP_PREFIX} Multiple roles available for *${providerId}*:\n\n` +
+      `${KEY_SETUP_PREFIX} Multiple credentials available for *${providerId}*:\n\n` +
         `${menu}\n\nReply with a number.`,
     );
     const reply = await chat.receive(IDLE_TIMEOUT);
@@ -167,11 +166,11 @@ export async function runInteractiveKeySetup(
     chat.hideMessage();
     chat.advanceCursor();
     const choice = parseInt(reply.trim(), 10);
-    if (isNaN(choice) || choice < 1 || choice > roleList.length) {
+    if (isNaN(choice) || choice < 1 || choice > credList.length) {
       await chat.send(`${KEY_SETUP_PREFIX} Cancelled.`);
       return false;
     }
-    role = roleList[choice - 1];
+    credentialId = credList[choice - 1];
   }
 
   // GPG setup
@@ -197,7 +196,7 @@ export async function runInteractiveKeySetup(
   const pubKey = exportPublicKey(scope);
   await chat.sendRaw(pubKey);
   await chat.send(
-    `Paste a GPG-encrypted key for *${providerId}* (role: *${role}*).\n\n` +
+    `Paste a GPG-encrypted key for *${providerId}* (*${credentialId}*).\n\n` +
       `*Step 1.* Import the public key above.\n` +
       '```\n' +
       "gpg --import <<'EOF'\n" +
@@ -242,20 +241,20 @@ export async function runInteractiveKeySetup(
   const { needsRestart } = storeProviderKey(
     providerId,
     groupScope,
-    role,
+    credentialId,
     plaintext.trim(),
     0,
     tokenEngine,
   );
 
-  let msg = `${KEY_SETUP_PREFIX} Key stored for *${providerId}* (role: *${role}*).`;
+  let msg = `${KEY_SETUP_PREFIX} Key stored for *${providerId}* (*${credentialId}*).`;
   if (needsRestart) {
     msg +=
       '\n⚠️ Container restart may be needed for the new key to take effect.';
   }
   await chat.send(msg);
   logger.info(
-    { groupScope, providerId, role },
+    { groupScope, providerId, credentialId },
     'Key stored via interactive setup',
   );
   return true;
@@ -280,31 +279,31 @@ export function handleSetKey(
   if (pgpIdx < 0 || !isPgpMessage(argsAfterSetKey.slice(pgpIdx))) {
     return (
       `Expected a GPG-encrypted message.\n` +
-      `Usage: /auth ${providerId} set-key [access|api_key] [expiry=<seconds>] <pgp block>`
+      `Usage: /auth ${providerId} set-key [credential-id] [expiry=<seconds>] <pgp block>`
     );
   }
 
   const pgpBlock = argsAfterSetKey.slice(pgpIdx);
   const prefix = argsAfterSetKey.slice(0, pgpIdx).trim();
 
-  // Parse optional role and expiry from tokens before the PGP block
+  // Parse optional credential ID and expiry from tokens before the PGP block
   const tokens = prefix.split(/\s+/).filter(Boolean);
-  let role: SettableRole | undefined;
+  let credentialId: string | undefined;
   let expiry = 0;
 
+  const knownIds = getProviderCredentialIds(providerId, groupScope, tokenEngine);
   for (const tok of tokens) {
-    if (tok === 'access' || tok === 'api_key') {
-      role = tok;
+    if (knownIds.has(tok)) {
+      credentialId = tok;
     } else if (tok.startsWith('expiry=')) {
       const val = parseInt(tok.slice(7), 10);
       if (!isNaN(val)) expiry = val;
     }
   }
 
-  // Default role from provider roles
-  if (!role) {
-    const roles = getProviderRoles(providerId, groupScope, tokenEngine);
-    role = roles.size === 1 ? [...roles][0] : 'access';
+  // Default credential ID from provider
+  if (!credentialId) {
+    credentialId = knownIds.size === 1 ? [...knownIds][0] : 'oauth';
   }
 
   // Decrypt
@@ -325,18 +324,18 @@ export function handleSetKey(
   const { needsRestart } = storeProviderKey(
     providerId,
     groupScope,
-    role,
+    credentialId,
     plaintext.trim(),
     expiry,
     tokenEngine,
   );
 
-  let msg = `Key stored for *${providerId}* (role: *${role}*).`;
+  let msg = `Key stored for *${providerId}* (*${credentialId}*).`;
   if (needsRestart) {
     msg +=
       '\n⚠️ Container restart may be needed for the new key to take effect.';
   }
-  logger.info({ groupScope, providerId, role }, 'Key stored via set-key');
+  logger.info({ groupScope, providerId, credentialId }, 'Key stored via set-key');
   return msg;
 }
 

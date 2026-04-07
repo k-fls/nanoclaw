@@ -70,16 +70,35 @@ function randomCharSameClass(ch: string, delimiters: string): string {
 // Default in-memory token resolver
 // ---------------------------------------------------------------------------
 
-/** Token role — used as part of the credential store service key. */
-export type TokenRole = 'access' | 'refresh' | 'api_key';
+/**
+ * @deprecated Use credentialPath (free-form string) instead.
+ * Kept temporarily so external callers compile during migration.
+ */
+export type TokenRole = string;
+
+// ---------------------------------------------------------------------------
+// Credential path helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a credentialPath into its identity (top-level key) and optional
+ * nested sub-token name.
+ *   'oauth'         → { id: 'oauth' }
+ *   'oauth/refresh' → { id: 'oauth', nested: 'refresh' }
+ */
+function parsePath(credentialPath: string): { id: string; nested?: string } {
+  const slash = credentialPath.indexOf('/');
+  if (slash === -1) return { id: credentialPath };
+  return { id: credentialPath.slice(0, slash), nested: credentialPath.slice(slash + 1) };
+}
 
 /** Cache key for in-memory hot tokens. */
 function cacheKey(
   credentialScope: CredentialScope,
   providerId: string,
-  role: string,
+  credentialPath: string,
 ): string {
-  return `${credentialScope}\0${providerId}\0${role}`;
+  return `${credentialScope}\0${providerId}\0${credentialPath}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,11 +179,22 @@ export interface AuthToken {
   authFields?: Record<string, string>; // captured fields for refresh (client_id, scope, etc.)
 }
 
-export interface KeyEntry extends AuthToken {
-  updated_ts: number; // epoch ms — per role
+/** A stored credential with optional nested refresh token. */
+export interface Credential extends AuthToken {
+  updated_ts: number; // epoch ms
+  /** Nested refresh token — only present for OAuth credentials. */
+  refresh?: {
+    value: string; // encrypted
+    expires_ts: number;
+    updated_ts: number;
+  };
 }
 
-export type KeysFile = Record<string, KeyEntry>;
+/** @deprecated Alias for Credential during migration. */
+export type KeyEntry = Credential;
+
+/** Keys file format: credentialId → Credential. V3 includes a version marker. */
+export type KeysFile = Record<string, Credential> & { v?: number };
 
 export function keysPath(
   credentialScope: CredentialScope,
@@ -173,11 +203,77 @@ export function keysPath(
   return path.join(CREDENTIALS_DIR, credentialScope, `${providerId}.keys.json`);
 }
 
+/** Current keys file version. */
+const KEYS_FILE_VERSION = 3;
+
+/**
+ * Legacy credential ID mapping: old role names → new credential IDs.
+ * Applied during migration of pre-V3 keys files.
+ */
+const LEGACY_ROLE_MAP: Record<string, string> = {
+  access: 'oauth',
+};
+
 export function readKeysFile(
   credentialScope: CredentialScope,
   providerId: string,
 ): KeysFile {
-  return readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
+  const keys = readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
+  if (keys.v && keys.v >= KEYS_FILE_VERSION) return keys;
+  return migrateKeysFile(keys, credentialScope, providerId);
+}
+
+/**
+ * Migrate a pre-V3 keys file:
+ * 1. Move sibling 'refresh' into its parent credential's .refresh field
+ * 2. Rename 'access' → 'oauth'
+ * Writes back to disk so migration only runs once.
+ */
+function migrateKeysFile(
+  keys: KeysFile,
+  credentialScope: CredentialScope,
+  providerId: string,
+): KeysFile {
+  const refreshEntry = keys['refresh'];
+  const hasLegacy =
+    refreshEntry || keys['access'] || !keys.v;
+
+  if (!hasLegacy && Object.keys(keys).length === 0) return keys;
+
+  // Move sibling 'refresh' into its parent
+  if (refreshEntry) {
+    // Find parent: 'access' (or 'oauth' if already renamed)
+    const parentId = keys['access'] ? 'access' : keys['oauth'] ? 'oauth' : null;
+    if (parentId) {
+      keys[parentId].refresh = {
+        value: refreshEntry.value,
+        expires_ts: refreshEntry.expires_ts,
+        updated_ts: refreshEntry.updated_ts,
+      };
+      // Copy authFields from refresh to parent if parent lacks them
+      if (refreshEntry.authFields && !keys[parentId].authFields) {
+        keys[parentId].authFields = refreshEntry.authFields;
+      }
+    }
+    delete keys['refresh'];
+  }
+
+  // Rename 'access' → 'oauth'
+  if (keys['access']) {
+    keys['oauth'] = keys['access'];
+    delete keys['access'];
+  }
+
+  keys.v = KEYS_FILE_VERSION;
+
+  // Persist migration
+  try {
+    writeKeysFile(credentialScope, providerId, keys);
+  } catch {
+    /* best effort */
+  }
+
+  return keys;
 }
 
 export function writeKeysFile(
@@ -185,6 +281,7 @@ export function writeKeysFile(
   providerId: string,
   keys: KeysFile,
 ): void {
+  keys.v = KEYS_FILE_VERSION;
   const p = keysPath(credentialScope, providerId);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
@@ -195,12 +292,22 @@ export function writeKeysFile(
 // Per-provider substitute mappings with optional sourceScope. No secrets.
 // ---------------------------------------------------------------------------
 
-/** V2 refs file format. */
+/** V2 refs file format (legacy). */
 interface RefsFileV2 {
   sourceScope?: string;
   substitutes: Record<
     string,
-    { role: TokenRole; scopeAttrs: Record<string, string> }
+    { role: string; scopeAttrs: Record<string, string> }
+  >;
+}
+
+/** V3 refs file format. */
+interface RefsFileV3 {
+  v: 3;
+  sourceScope?: string;
+  substitutes: Record<
+    string,
+    { credentialPath: string; scopeAttrs: Record<string, string> }
   >;
 }
 
@@ -215,66 +322,89 @@ function refsPath(groupScope: GroupScope, providerId: string): string {
 /**
  * Persistent token resolver.
  *
- * - Access tokens / API keys: cached in memory (hot path, every request)
- *   AND persisted to keys file.
- * - Refresh tokens: persisted only, read from disk on demand (cold path,
- *   only used during token refresh).
+ * Caches whole Credential objects in memory, indexed by
+ * (credentialScope, providerId, credentialId). The cache holds decrypted
+ * token values and expiry for the hot path. Nested sub-tokens (e.g.
+ * refresh) live on the cached Credential object.
  *
  * Keys file: credentials/{credentialScope}/{providerId}.keys.json
- *   { role: { value: encrypted, updated_ts, expires_ts } }
+ *   { credentialId: { value: encrypted, updated_ts, expires_ts, refresh?: {...} } }
  */
 export class PersistentTokenResolver implements TokenResolver {
-  /** Hot cache: cacheKey → real token. Refresh tokens are NOT cached. */
-  private hotCache = new Map<string, string>();
-  /** Auth fields cache: cacheKey → authFields. Mirrors hot cache lifetime. */
-  private authFieldsCache = new Map<string, Record<string, string>>();
+  /**
+   * Hot cache: cacheKey(scope, provider, credentialId) → decrypted Credential.
+   * Token values in cached entries are decrypted (not encrypted like on disk).
+   */
+  private cache = new Map<string, Credential>();
 
   store(
     realToken: string,
     providerId: string,
     credentialScope: CredentialScope,
-    role: TokenRole = 'access',
+    credentialPath: string = 'oauth',
     expiresTs = 0,
     authFields?: Record<string, string>,
   ): void {
-    const persisted = this.persistToKeys(
+    this.persistToKeys(
       credentialScope,
       providerId,
-      role,
+      credentialPath,
       realToken,
       expiresTs,
       authFields,
     );
-    // Refresh tokens are cold (disk-only) when persistence works.
-    // Fall back to in-memory cache if persistence is unavailable.
-    const ck = cacheKey(credentialScope, providerId, role);
-    if (role !== 'refresh' || !persisted) {
-      this.hotCache.set(ck, realToken);
-    }
-    if (authFields) {
-      this.authFieldsCache.set(ck, authFields);
+    // Update cache — only for top-level credentials, not nested sub-tokens
+    const { nested } = parsePath(credentialPath);
+    if (!nested) {
+      const ck = cacheKey(credentialScope, providerId, credentialPath);
+      this.cache.set(ck, {
+        value: realToken,
+        expires_ts: expiresTs,
+        updated_ts: Date.now(),
+        ...(authFields && { authFields }),
+      });
     }
   }
 
   resolve(
     credentialScope: CredentialScope,
     providerId: string,
-    role: string,
+    credentialPath: string,
   ): string | null {
-    // Hot path: cached access/api_key tokens
-    const cached = this.hotCache.get(
-      cacheKey(credentialScope, providerId, role),
-    );
-    if (cached !== undefined) return cached;
-    // Cold path: read from disk (refresh tokens, or after restart)
-    return this.loadFromKeys(credentialScope, providerId, role as TokenRole);
+    const { id, nested } = parsePath(credentialPath);
+
+    if (nested) {
+      // Nested sub-tokens (e.g. oauth/refresh) are cold — always read from disk
+      try {
+        const keys = readKeysFile(credentialScope, providerId);
+        const entry = keys[id];
+        if (!entry) return null;
+        const sub = (entry as unknown as Record<string, unknown>)[nested];
+        if (!sub || typeof sub !== 'object' || !('value' in sub)) return null;
+        return decrypt((sub as { value: string }).value);
+      } catch {
+        return null;
+      }
+    }
+
+    // Top-level: use cache
+    const ck = cacheKey(credentialScope, providerId, id);
+    if (!this.cache.has(ck)) {
+      try {
+        this.warmCache(credentialScope, providerId, id);
+      } catch {
+        /* encryption not initialized or file not found */
+      }
+    }
+    const cached = this.cache.get(ck);
+    return cached?.value || null;
   }
 
   /** Update a real token in place (e.g. after refresh). */
   update(
     credentialScope: CredentialScope,
     providerId: string,
-    role: TokenRole,
+    credentialPath: string,
     newRealToken: string,
     expiresTs = 0,
     authFields?: Record<string, string>,
@@ -282,28 +412,62 @@ export class PersistentTokenResolver implements TokenResolver {
     this.persistToKeys(
       credentialScope,
       providerId,
-      role,
+      credentialPath,
       newRealToken,
       expiresTs,
       authFields,
     );
-    const ck = cacheKey(credentialScope, providerId, role);
-    if (role !== 'refresh') {
-      this.hotCache.set(ck, newRealToken);
-    }
-    if (authFields) {
-      this.authFieldsCache.set(ck, authFields);
+    // Update cache — only for top-level credentials, not nested sub-tokens
+    const { nested } = parsePath(credentialPath);
+    if (!nested) {
+      const ck = cacheKey(credentialScope, providerId, credentialPath);
+      const cached = this.cache.get(ck);
+      if (cached) {
+        cached.value = newRealToken;
+        cached.expires_ts = expiresTs;
+        cached.updated_ts = Date.now();
+        if (authFields) cached.authFields = authFields;
+      } else {
+        this.cache.set(ck, {
+          value: newRealToken,
+          expires_ts: expiresTs,
+          updated_ts: Date.now(),
+          ...(authFields && { authFields }),
+        });
+      }
     }
   }
 
   revoke(credentialScope: CredentialScope, providerId?: string): void {
     const prefix = credentialScope + '\0' + (providerId ?? '');
-    for (const key of this.hotCache.keys()) {
+    for (const key of this.cache.keys()) {
       if (key.startsWith(prefix)) {
-        this.hotCache.delete(key);
-        this.authFieldsCache.delete(key);
+        this.cache.delete(key);
       }
     }
+  }
+
+  /**
+   * Load a credential from disk and populate the cache.
+   * Called on cold-path cache miss.
+   * Note: refresh sub-tokens are NOT cached — they're read from disk on demand.
+   */
+  private warmCache(
+    credentialScope: CredentialScope,
+    providerId: string,
+    credentialId: string,
+  ): void {
+    const keys = readKeysFile(credentialScope, providerId);
+    const entry = keys[credentialId];
+    if (!entry) return;
+    const ck = cacheKey(credentialScope, providerId, credentialId);
+    this.cache.set(ck, {
+      value: entry.value ? decrypt(entry.value) : '',
+      expires_ts: entry.expires_ts,
+      updated_ts: entry.updated_ts,
+      ...(entry.authFields && { authFields: entry.authFields }),
+      // refresh intentionally omitted — cold path, disk only
+    });
   }
 
   /** Delete the on-disk keys file for a (scope, provider). */
@@ -315,69 +479,108 @@ export class PersistentTokenResolver implements TokenResolver {
     }
   }
 
-  /** Number of hot-cached tokens (for testing). */
+  /** Number of cached credentials (for testing). */
   get size(): number {
-    return this.hotCache.size;
+    return this.cache.size;
   }
 
-  /** Read the full KeyEntry for a role (includes authFields). Checks disk first, falls back to memory. */
+  /**
+   * Read the full Credential for a credentialPath.
+   * Checks cache first, falls back to disk.
+   * For nested paths ('oauth/refresh'), returns a synthetic Credential
+   * wrapping the nested sub-token.
+   */
+  resolveCredential(
+    credentialScope: CredentialScope,
+    providerId: string,
+    credentialPath: string,
+  ): Credential | null {
+    const { id, nested } = parsePath(credentialPath);
+
+    if (nested) {
+      // Nested sub-tokens are always read from disk (cold path)
+      const keys = readKeysFile(credentialScope, providerId);
+      const entry = keys[id];
+      if (!entry) return null;
+      const sub = (entry as unknown as Record<string, unknown>)[nested];
+      if (!sub || typeof sub !== 'object') return null;
+      const subToken = sub as { value: string; expires_ts: number; updated_ts: number };
+      return {
+        value: subToken.value,
+        expires_ts: subToken.expires_ts,
+        updated_ts: subToken.updated_ts,
+        authFields: entry.authFields,
+      };
+    }
+
+    // Top-level: use cache
+    const ck = cacheKey(credentialScope, providerId, id);
+    if (!this.cache.has(ck)) {
+      this.warmCache(credentialScope, providerId, id);
+    }
+    return this.cache.get(ck) ?? null;
+  }
+
+  /** @deprecated Alias for resolveCredential. */
   resolveKeyEntry(
     credentialScope: CredentialScope,
     providerId: string,
-    role: TokenRole,
-  ): KeyEntry | null {
-    const keys = readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
-    if (keys[role]) return keys[role];
-    // Fall back to in-memory authFields (e.g. when credential store isn't initialized)
-    const ck = cacheKey(credentialScope, providerId, role);
-    const cached = this.authFieldsCache.get(ck);
-    if (cached)
-      return { value: '', updated_ts: 0, expires_ts: 0, authFields: cached };
-    return null;
+    credentialPath: string,
+  ): Credential | null {
+    return this.resolveCredential(credentialScope, providerId, credentialPath);
   }
 
-  /** Locked read-merge-write one role into the provider's keys file. */
+  /**
+   * Locked read-merge-write one credential path into the provider's keys file.
+   * Handles both top-level ('oauth') and nested ('oauth/refresh') paths.
+   */
   private persistToKeys(
     credentialScope: CredentialScope,
     providerId: string,
-    role: TokenRole,
+    credentialPath: string,
     realToken: string,
     expiresTs = 0,
     authFields?: Record<string, string>,
   ): boolean {
+    const { id, nested } = parsePath(credentialPath);
     try {
       updateJsonFile<KeysFile>(
         keysPath(credentialScope, providerId),
         (keys) => {
-          keys[role] = {
-            value: encrypt(realToken),
-            updated_ts: Date.now(),
-            expires_ts: expiresTs,
-            ...(authFields && { authFields }),
-          };
+          if (nested) {
+            // Nested path (e.g. 'oauth/refresh') — write sub-token
+            if (!keys[id]) {
+              keys[id] = { value: '', updated_ts: Date.now(), expires_ts: 0 };
+            }
+            (keys[id] as unknown as Record<string, unknown>)[nested] = {
+              value: encrypt(realToken),
+              expires_ts: expiresTs,
+              updated_ts: Date.now(),
+            };
+          } else {
+            // Top-level path — write credential, preserve nested sub-tokens
+            const existing = keys[id];
+            keys[id] = {
+              value: encrypt(realToken),
+              updated_ts: Date.now(),
+              expires_ts: expiresTs,
+              ...(authFields && { authFields }),
+              ...(existing?.refresh && { refresh: existing.refresh }),
+            };
+          }
+          keys.v = KEYS_FILE_VERSION;
         },
       );
       return true;
     } catch (err) {
       logger.warn(
-        { err, credentialScope, providerId, role },
+        { err, credentialScope, providerId, credentialPath },
         'Token persistence failed',
       );
       return false;
     }
   }
 
-  /** Read one role from the provider's keys file. */
-  private loadFromKeys(
-    credentialScope: CredentialScope,
-    providerId: string,
-    role: TokenRole,
-  ): string | null {
-    const keys = readJsonFile<KeysFile>(keysPath(credentialScope, providerId));
-    const entry = keys[role];
-    if (!entry) return null;
-    return decrypt(entry.value);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -556,20 +759,20 @@ export class TokenSubstituteEngine {
   // ── Public query methods ─────────────────────────────────────────
 
   /**
-   * Get existing substitute for (providerId, groupScope, role).
+   * Get existing substitute for (providerId, groupScope, credentialPath).
    * Returns null if none exists. When multiple exist (from token refreshes),
    * returns the first when sorted — stable and deterministic.
    */
   getSubstitute(
     providerId: string,
     groupScope: GroupScope,
-    role: TokenRole = 'access',
+    credentialPath: string = 'oauth',
   ): string | null {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     if (!ps) return null;
     const matches: string[] = [];
     for (const [sub, entry] of ps.substitutes) {
-      if (entry.role === role) matches.push(sub);
+      if (entry.credentialPath === credentialPath) matches.push(sub);
     }
     if (matches.length === 0) return null;
     return matches.sort()[0];
@@ -587,9 +790,9 @@ export class TokenSubstituteEngine {
     scopeAttrs: Record<string, string>,
     groupScope: GroupScope,
     config: SubstituteConfig,
-    role: TokenRole = 'access',
+    credentialPath: string = 'oauth',
   ): string | null {
-    const existing = this.getSubstitute(providerId, groupScope, role);
+    const existing = this.getSubstitute(providerId, groupScope, credentialPath);
     if (existing) return existing;
 
     // Resolve which scope holds the real credentials
@@ -597,7 +800,7 @@ export class TokenSubstituteEngine {
     const ownCredScope = toCredentialScope(groupScope);
     const sourceScope = credScope !== ownCredScope ? credScope : undefined;
 
-    const realToken = this.resolver.resolve(credScope, providerId, role);
+    const realToken = this.resolver.resolve(credScope, providerId, credentialPath);
     if (!realToken) return null;
 
     return this.generateSubstitute(
@@ -606,7 +809,7 @@ export class TokenSubstituteEngine {
       scopeAttrs,
       groupScope,
       config,
-      role,
+      credentialPath,
       sourceScope,
     );
   }
@@ -627,7 +830,7 @@ export class TokenSubstituteEngine {
     scopeAttrs: Record<string, string>,
     groupScope: GroupScope,
     config: SubstituteConfig,
-    role: TokenRole = 'access',
+    credentialPath: string = 'oauth',
     sourceScope?: CredentialScope,
     authFields?: Record<string, string>,
   ): string | null {
@@ -673,13 +876,13 @@ export class TokenSubstituteEngine {
         realToken,
         providerId,
         effCredScope,
-        role,
+        credentialPath,
         0,
         authFields,
       );
 
       // Store in the engine
-      const entry: SubstituteEntry = { role, scopeAttrs };
+      const entry: SubstituteEntry = { credentialPath, scopeAttrs };
       this.insertSub(groupScope, providerId, substitute, entry, sourceScope);
 
       // Persist substitute → role mapping (no secrets)
@@ -724,7 +927,7 @@ export class TokenSubstituteEngine {
     const realToken = this.resolver.resolve(
       effCredScope,
       ref.providerId,
-      entry.role,
+      entry.credentialPath,
     );
     if (!realToken) return null;
 
@@ -732,7 +935,7 @@ export class TokenSubstituteEngine {
       realToken,
       mapping: {
         providerId: ref.providerId,
-        role: entry.role,
+        credentialPath: entry.credentialPath,
         scopeAttrs: entry.scopeAttrs,
         credentialScope: effCredScope,
       },
@@ -766,8 +969,8 @@ export class TokenSubstituteEngine {
   // ── Credential operations ────────────────────────────────────────
 
   /**
-   * Resolve a real token for a (group, provider, role) without going
-   * through a substitute. Used by refresh flows that need the real
+   * Resolve a real token for a (group, provider, credentialPath) without
+   * going through a substitute. Used by refresh flows that need the real
    * refresh token to call a token endpoint.
    *
    * Handles sourceScope indirection internally.
@@ -775,47 +978,43 @@ export class TokenSubstituteEngine {
   resolveRealToken(
     groupScope: GroupScope,
     providerId: string,
-    role: TokenRole,
+    credentialPath: string,
   ): string | null {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     const effCredScope = ps
       ? this.effectiveScope(groupScope, ps)
       : toCredentialScope(groupScope);
-    return this.resolver.resolve(effCredScope, providerId, role);
+    return this.resolver.resolve(effCredScope, providerId, credentialPath);
   }
 
-  /** Get the full KeyEntry for a role, resolving source scope. */
+  /** Get the full Credential for a credentialPath, resolving source scope. */
   getKeyEntry(
     groupScope: GroupScope,
     providerId: string,
-    role: TokenRole,
-  ): KeyEntry | null {
+    credentialPath: string,
+  ): Credential | null {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     const effCredScope = ps
       ? this.effectiveScope(groupScope, ps)
       : toCredentialScope(groupScope);
-    return (this.resolver as PersistentTokenResolver).resolveKeyEntry(
+    return (this.resolver as PersistentTokenResolver).resolveCredential(
       effCredScope,
       providerId,
-      role,
+      credentialPath,
     );
   }
 
   /**
-   * Get the expiry timestamp for a credential role, resolving source scope.
+   * Get the expiry timestamp for a credential path, resolving source scope.
    * Returns 0 if not found or no expiry set.
    */
   getKeyExpiry(
     groupScope: GroupScope,
     providerId: string,
-    role: TokenRole,
+    credentialPath: string,
   ): number {
-    const ps = this.scopes.get(groupScope)?.get(providerId);
-    const effCredScope = ps
-      ? this.effectiveScope(groupScope, ps)
-      : toCredentialScope(groupScope);
-    const keys = readKeysFile(effCredScope, providerId);
-    return keys[role]?.expires_ts ?? 0;
+    const entry = this.getKeyEntry(groupScope, providerId, credentialPath);
+    return entry?.expires_ts ?? 0;
   }
 
   /**
@@ -825,7 +1024,7 @@ export class TokenSubstituteEngine {
   refreshCredential(
     groupScope: GroupScope,
     providerId: string,
-    role: TokenRole,
+    credentialPath: string,
     newToken: string,
     expiresTs = 0,
     authFields?: Record<string, string>,
@@ -836,7 +1035,7 @@ export class TokenSubstituteEngine {
       (this.resolver as PersistentTokenResolver).update(
         ownScope,
         providerId,
-        role,
+        credentialPath,
         newToken,
         expiresTs,
         authFields,
@@ -849,7 +1048,7 @@ export class TokenSubstituteEngine {
         (this.resolver as PersistentTokenResolver).update(
           ownScope,
           providerId,
-          role,
+          credentialPath,
           newToken,
           expiresTs,
           authFields,
@@ -865,7 +1064,7 @@ export class TokenSubstituteEngine {
       (this.resolver as PersistentTokenResolver).update(
         ps.sourceScope,
         providerId,
-        role,
+        credentialPath,
         newToken,
         expiresTs,
         authFields,
@@ -874,7 +1073,7 @@ export class TokenSubstituteEngine {
       (this.resolver as PersistentTokenResolver).update(
         ownScope,
         providerId,
-        role,
+        credentialPath,
         newToken,
         expiresTs,
         authFields,
@@ -890,7 +1089,7 @@ export class TokenSubstituteEngine {
   addOrUpdateCredential(
     groupScope: GroupScope,
     providerId: string,
-    role: TokenRole,
+    credentialPath: string,
     newToken: string,
     config: SubstituteConfig,
     scopeAttrs: Record<string, string> = {},
@@ -907,7 +1106,7 @@ export class TokenSubstituteEngine {
     (this.resolver as PersistentTokenResolver).update(
       toCredentialScope(groupScope),
       providerId,
-      role,
+      credentialPath,
       newToken,
       expiresTs,
     );
@@ -919,7 +1118,7 @@ export class TokenSubstituteEngine {
       scopeAttrs,
       groupScope,
       config,
-      role,
+      credentialPath,
     );
   }
 
@@ -940,6 +1139,7 @@ export class TokenSubstituteEngine {
   /**
    * Raw check: does this credential scope have stored keys for the provider?
    * No scope resolution — takes CredentialScope directly.
+   * Checks all top-level credentials (skips version marker).
    */
   private hasKeysInScope(
     credentialScope: CredentialScope,
@@ -947,10 +1147,11 @@ export class TokenSubstituteEngine {
     nonExpired = false,
   ): boolean {
     const keys = readKeysFile(credentialScope, providerId);
-    for (const role of ['access', 'api_key'] as const) {
-      const entry = keys[role];
-      if (!entry) continue;
-      if (nonExpired && entry.expires_ts > 0 && entry.expires_ts < Date.now())
+    for (const [id, entry] of Object.entries(keys)) {
+      if (id === 'v') continue;
+      if (!entry || typeof entry !== 'object' || !('value' in entry)) continue;
+      const cred = entry as Credential;
+      if (nonExpired && cred.expires_ts > 0 && cred.expires_ts < Date.now())
         continue;
       return true;
     }
@@ -1059,7 +1260,7 @@ export class TokenSubstituteEngine {
       const realToken = this.resolver.resolve(
         effCredScope,
         providerId,
-        entry.role,
+        entry.credentialPath,
       );
       if (!realToken) toRemove.push(sub);
     }
@@ -1101,13 +1302,14 @@ export class TokenSubstituteEngine {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     if (!ps) return;
 
-    const data: RefsFileV2 = {
+    const data: RefsFileV3 = {
+      v: 3,
       substitutes: {},
     };
     if (ps.sourceScope) data.sourceScope = ps.sourceScope;
     for (const [sub, entry] of ps.substitutes) {
       data.substitutes[sub] = {
-        role: entry.role as TokenRole,
+        credentialPath: entry.credentialPath,
         scopeAttrs: entry.scopeAttrs,
       };
     }
@@ -1134,45 +1336,64 @@ export class TokenSubstituteEngine {
 
   /**
    * Load persisted refs for a given scope and provider.
-   * Supports only V2 format (has `substitutes` key). Old V1 files are discarded.
+   * Supports V2 (legacy role-based) and V3 (credentialPath) formats.
+   * Old V1 files are discarded.
    */
   loadPersistedRefs(groupScope: GroupScope, providerId: string): number {
     const raw = readJsonFile<Record<string, unknown>>(
       refsPath(groupScope, providerId),
     );
 
-    // V2 format: has `substitutes` key
     if (!raw.substitutes || typeof raw.substitutes !== 'object') {
       // V1 or empty — discard, will be regenerated on next provision
       return 0;
     }
 
-    const data = raw as unknown as RefsFileV2;
-    const entries = Object.entries(data.substitutes);
-    if (entries.length === 0) return 0;
-
-    const sourceScope = data.sourceScope
-      ? asCredentialScope(data.sourceScope)
+    const isV3 = raw.v === 3;
+    const sourceScope = (raw.sourceScope as string | undefined)
+      ? asCredentialScope(raw.sourceScope as string)
       : undefined;
 
-    for (const [substitute, entry] of entries) {
+    const subs = raw.substitutes as Record<string, Record<string, unknown>>;
+    const entries = Object.entries(subs);
+    if (entries.length === 0) return 0;
+
+    let needsRepersist = false;
+    for (const [substitute, entryRaw] of entries) {
+      let credentialPath: string;
+      if (isV3) {
+        credentialPath = entryRaw.credentialPath as string;
+      } else {
+        // V2 migration: role → credentialPath, skip standalone refresh refs
+        const role = entryRaw.role as string;
+        if (role === 'refresh') continue; // drop — refresh is nested now
+        credentialPath = LEGACY_ROLE_MAP[role] ?? role;
+        needsRepersist = true;
+      }
+
       this.insertSub(
         groupScope,
         providerId,
         substitute,
         {
-          role: entry.role,
-          scopeAttrs: entry.scopeAttrs,
+          credentialPath,
+          scopeAttrs: (entryRaw.scopeAttrs as Record<string, string>) ?? {},
         },
         sourceScope,
       );
     }
 
+    // Re-persist as V3 if we migrated from V2
+    if (needsRepersist) {
+      this.persistRefs(groupScope, providerId);
+    }
+
+    const loadedCount = this.scopes.get(groupScope)?.get(providerId)?.substitutes.size ?? 0;
     logger.debug(
-      { groupScope, providerId, count: entries.length, sourceScope },
+      { groupScope, providerId, count: loadedCount, sourceScope },
       'Loaded persisted substitute refs',
     );
-    return entries.length;
+    return loadedCount;
   }
 
   /**

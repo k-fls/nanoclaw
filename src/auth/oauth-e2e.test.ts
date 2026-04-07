@@ -134,7 +134,7 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
       'test-claude',
       SCOPE,
       TEST_SUBSTITUTE_CONFIG,
-      'refresh',
+      'oauth/refresh',
     );
 
     const NEW_ACCESS = 'sk-ant-api03-freshAccessTokenAfterRefresh1234567890xyz';
@@ -214,7 +214,7 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
       'test-claude',
       SCOPE,
       TEST_SUBSTITUTE_CONFIG,
-      'refresh',
+      'oauth/refresh',
     );
 
     const NEW_ACCESS = 'sk-ant-api03-freshAccessTokenAfterRefresh1234567890xyz';
@@ -332,7 +332,7 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
       'test-claude',
       SCOPE,
       TEST_SUBSTITUTE_CONFIG,
-      'refresh',
+      'oauth/refresh',
     );
 
     const NEW_ACCESS = 'sk-ant-api03-brandNewAccessFromTokenExchange1234567890';
@@ -564,7 +564,7 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
     const accessEntry = h.tokenEngine.getKeyEntry(
       groupScope,
       'test-claude',
-      'access',
+      'oauth',
     );
     expect(accessEntry).not.toBeNull();
     expect(accessEntry!.authFields).toBeDefined();

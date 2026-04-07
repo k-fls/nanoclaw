@@ -410,7 +410,7 @@ export class OAuthE2EHarness {
     providerId: string,
     scope: string,
     config: SubstituteConfig,
-    role: TokenRole = 'access',
+    credentialPath: string = 'oauth',
   ): string {
     const substitute = this.tokenEngine.generateSubstitute(
       realToken,
@@ -418,7 +418,7 @@ export class OAuthE2EHarness {
       {},
       asGroupScope(scope),
       config,
-      role,
+      credentialPath,
     );
     if (!substitute)
       throw new Error(

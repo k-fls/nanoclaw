@@ -593,7 +593,7 @@ export function migrateClaudeCredentials(scope: string): void {
 
     case 'setup_token':
       writeKeysFile(credScope, PROVIDER_ID, {
-        access: {
+        oauth: {
           value: encrypt(plaintext),
           updated_ts: Date.now(),
           expires_ts: 0,
@@ -604,33 +604,22 @@ export function migrateClaudeCredentials(scope: string): void {
     case 'auth_login': {
       const parsed = parseCredentialsJson(plaintext);
       if (!parsed) return;
-      const keys: Record<
-        string,
-        {
-          value: string;
-          updated_ts: number;
-          expires_ts: number;
-          authFields?: Record<string, string>;
-        }
-      > = {
-        access: {
-          value: encrypt(parsed.accessToken),
-          updated_ts: Date.now(),
-          expires_ts: parsed.expiresAt
-            ? new Date(parsed.expiresAt).getTime()
-            : 0,
-          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
-        },
+      const oauth: import('../token-substitute.js').Credential = {
+        value: encrypt(parsed.accessToken),
+        updated_ts: Date.now(),
+        expires_ts: parsed.expiresAt
+          ? new Date(parsed.expiresAt).getTime()
+          : 0,
+        authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
       };
       if (parsed.refreshToken) {
-        keys.refresh = {
+        oauth.refresh = {
           value: encrypt(parsed.refreshToken),
           updated_ts: Date.now(),
           expires_ts: 0,
-          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
         };
       }
-      writeKeysFile(credScope, PROVIDER_ID, keys);
+      writeKeysFile(credScope, PROVIDER_ID, { oauth });
       break;
     }
   }
@@ -732,7 +721,7 @@ export function registerClaudeBaseUrl(
  */
 export function hasSubscriptionCredential(scope: CredentialScope): boolean {
   const keys = readKeysFile(scope, PROVIDER_ID);
-  return !!keys.access;
+  return !!keys.oauth;
 }
 
 // ── Provider ────────────────────────────────────────────────────────
@@ -764,7 +753,7 @@ export const claudeProvider: CredentialProvider = {
           envVars.CLAUDE_CODE_OAUTH_TOKEN,
           PROVIDER_ID,
           credScope,
-          'access',
+          'oauth',
           0,
           CLAUDE_DEFAULT_AUTH_FIELDS,
         );
@@ -775,7 +764,7 @@ export const claudeProvider: CredentialProvider = {
           envVars.ANTHROPIC_AUTH_TOKEN,
           PROVIDER_ID,
           credScope,
-          'access',
+          'oauth',
           0,
           CLAUDE_DEFAULT_AUTH_FIELDS,
         );
@@ -814,7 +803,7 @@ export const claudeProvider: CredentialProvider = {
       {},
       scope,
       CLAUDE_SUBSTITUTE_CONFIG,
-      'access',
+      'oauth',
     );
     if (!subAccess) return { env };
 
@@ -824,12 +813,12 @@ export const claudeProvider: CredentialProvider = {
       {},
       scope,
       CLAUDE_SUBSTITUTE_CONFIG,
-      'refresh',
+      'oauth/refresh',
     );
 
     // Write .credentials.json with substitute tokens + real expiresAt
     // Engine resolves the source scope (own or borrowed from default)
-    const expiresAt = tokenEngine.getKeyExpiry(scope, PROVIDER_ID, 'access');
+    const expiresAt = tokenEngine.getKeyExpiry(scope, PROVIDER_ID, 'oauth');
     const credentialsJson = JSON.stringify({
       claudeAiOauth: {
         accessToken: subAccess,
@@ -860,7 +849,7 @@ export const claudeProvider: CredentialProvider = {
         break;
       case 'setup_token':
         tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
-        resolver.store(result.token, PROVIDER_ID, credScope, 'access');
+        resolver.store(result.token, PROVIDER_ID, credScope, 'oauth');
         break;
       case 'auth_login': {
         const parsed = parseCredentialsJson(result.token);

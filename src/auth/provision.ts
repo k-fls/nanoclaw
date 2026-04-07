@@ -15,12 +15,10 @@ import type {
 } from './oauth-types.js';
 import {
   asGroupScope,
-  BEARER_SWAP_ROLES,
   DEFAULT_CREDENTIAL_SCOPE,
 } from './oauth-types.js';
 import type {
   TokenSubstituteEngine,
-  TokenRole,
   GroupResolver,
 } from './token-substitute.js';
 
@@ -42,8 +40,8 @@ export function importEnvToDefault(engine: TokenSubstituteEngine): void {
  */
 /**
  * Provision env vars from an OAuthProvider's envVars mapping.
- * Only populates vars for bearer-swap roles (access, api_key).
- * Skips absent roles silently — no env var emitted if no token exists.
+ * Each env var maps to a credentialPath (e.g. 'oauth', 'api_key').
+ * Skips absent credentials silently — no env var emitted if no token exists.
  */
 export function provisionEnvVars(
   oauthProvider: OAuthProvider,
@@ -55,14 +53,13 @@ export function provisionEnvVars(
   const scope = scopeOf(group);
   const env: Record<string, string> = {};
 
-  for (const [envName, role] of Object.entries(oauthProvider.envVars)) {
-    if (!BEARER_SWAP_ROLES.has(role)) continue;
+  for (const [envName, credentialPath] of Object.entries(oauthProvider.envVars)) {
     const sub = tokenEngine.getOrCreateSubstitute(
       oauthProvider.id,
       {},
       scope,
       oauthProvider.substituteConfig,
-      role as TokenRole,
+      credentialPath,
     );
     if (sub) env[envName] = sub;
   }

@@ -36,7 +36,7 @@ function generateSubstitute(
   engine: TokenSubstituteEngine,
   scope: string,
   realToken: string,
-  role: TokenRole = 'access',
+  credentialPath: string = 'oauth',
 ): { env: Record<string, string> } {
   engine.generateSubstitute(
     realToken,
@@ -44,7 +44,7 @@ function generateSubstitute(
     {},
     asGroupScope(scope),
     CLAUDE_SUBSTITUTE_CONFIG,
-    role,
+    credentialPath,
   );
   return claudeProvider.provision(makeGroup(scope), engine);
 }
@@ -123,7 +123,7 @@ describe('provision with token engine', () => {
       'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
     generateSubstitute(engine, 'scope', realAccess);
-    generateSubstitute(engine, 'scope', realRefresh, 'refresh');
+    generateSubstitute(engine, 'scope', realRefresh, 'oauth/refresh');
 
     const { env } = claudeProvider.provision(makeGroup('scope'), engine);
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();

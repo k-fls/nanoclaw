@@ -59,7 +59,7 @@ vi.mock('./registry.js', () => ({
 // Import after mocks
 const {
   isKeyEligibleProvider,
-  getProviderRoles,
+  getProviderCredentialIds,
   storeProviderKey,
   runInteractiveKeySetup,
   handleSetKey,
@@ -217,51 +217,51 @@ describe('isKeyEligibleProvider', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getProviderRoles
+// getProviderCredentialIds
 // ---------------------------------------------------------------------------
 
-describe('getProviderRoles', () => {
+describe('getProviderCredentialIds', () => {
   beforeEach(() => mockProviders.clear());
 
-  it('returns roles from existing keys on disk', () => {
+  it('returns credential IDs from existing keys on disk', () => {
     mockProviders.set('test-provider', makeProvider('test-provider'));
     const { engine } = mockTokenEngine({
-      existingRoles: ['access', 'api_key'],
+      existingRoles: ['oauth', 'api_key'],
     });
-    const roles = getProviderRoles('test-provider', TEST_GROUP_SCOPE, engine);
-    expect(roles.has('access')).toBe(true);
-    expect(roles.has('api_key')).toBe(true);
+    const ids = getProviderCredentialIds('test-provider', TEST_GROUP_SCOPE, engine);
+    expect(ids.has('oauth')).toBe(true);
+    expect(ids.has('api_key')).toBe(true);
   });
 
-  it('returns roles from envVars', () => {
+  it('returns credential IDs from envVars', () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
-        envVars: { GH_TOKEN: 'access', GITHUB_TOKEN: 'access' },
+        envVars: { GH_TOKEN: 'oauth', GITHUB_TOKEN: 'oauth' },
       }),
     );
     const { engine } = mockTokenEngine();
-    const roles = getProviderRoles('github', TEST_GROUP_SCOPE, engine);
-    expect(roles.has('access')).toBe(true);
-    expect(roles.has('api_key')).toBe(false);
+    const ids = getProviderCredentialIds('github', TEST_GROUP_SCOPE, engine);
+    expect(ids.has('oauth')).toBe(true);
+    expect(ids.has('api_key')).toBe(false);
   });
 
-  it('excludes refresh from envVars', () => {
+  it('excludes nested paths from envVars', () => {
     mockProviders.set(
       'test',
       makeProvider('test', {
-        envVars: { TOKEN: 'access', REFRESH: 'refresh' },
+        envVars: { TOKEN: 'oauth', REFRESH: 'oauth/refresh' },
       }),
     );
     const { engine } = mockTokenEngine();
-    const roles = getProviderRoles('test', TEST_GROUP_SCOPE, engine);
-    expect(roles.has('access')).toBe(true);
-    expect(roles.size).toBe(1);
+    const ids = getProviderCredentialIds('test', TEST_GROUP_SCOPE, engine);
+    expect(ids.has('oauth')).toBe(true);
+    expect(ids.size).toBe(1);
   });
 
   it('returns empty set for unknown provider', () => {
     const { engine } = mockTokenEngine();
-    const roles = getProviderRoles('unknown', TEST_GROUP_SCOPE, engine);
+    const roles = getProviderCredentialIds('unknown', TEST_GROUP_SCOPE, engine);
     expect(roles.size).toBe(0);
   });
 });
@@ -280,7 +280,7 @@ describe('storeProviderKey', () => {
     storeProviderKey(
       'github',
       TEST_GROUP_SCOPE,
-      'access',
+      'oauth',
       'my-token',
       0,
       engine,
@@ -294,7 +294,7 @@ describe('storeProviderKey', () => {
       'my-token',
       'github',
       TEST_CRED_SCOPE,
-      'access',
+      'oauth',
       0,
     );
     expect(engine.pruneStaleRefs).toHaveBeenCalledWith(
@@ -307,7 +307,7 @@ describe('storeProviderKey', () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
-        envVars: { GH_TOKEN: 'access' },
+        envVars: { GH_TOKEN: 'oauth' },
       }),
     );
     const { engine } = mockTokenEngine({ existingSubstitute: null });
@@ -315,7 +315,7 @@ describe('storeProviderKey', () => {
     const result = storeProviderKey(
       'github',
       TEST_GROUP_SCOPE,
-      'access',
+      'oauth',
       'tok',
       0,
       engine,
@@ -327,7 +327,7 @@ describe('storeProviderKey', () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
-        envVars: { GH_TOKEN: 'access' },
+        envVars: { GH_TOKEN: 'oauth' },
       }),
     );
     const { engine } = mockTokenEngine({ existingSubstitute: 'sub-existing' });
@@ -335,7 +335,7 @@ describe('storeProviderKey', () => {
     const result = storeProviderKey(
       'github',
       TEST_GROUP_SCOPE,
-      'access',
+      'oauth',
       'tok',
       0,
       engine,
@@ -350,7 +350,7 @@ describe('storeProviderKey', () => {
     const result = storeProviderKey(
       'github',
       TEST_GROUP_SCOPE,
-      'access',
+      'oauth',
       'tok',
       0,
       engine,
@@ -369,7 +369,7 @@ describe('handleSetKey', () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
-        envVars: { GH_TOKEN: 'access' },
+        envVars: { GH_TOKEN: 'oauth' },
       }),
     );
     mockGpgAvailable.mockReturnValue(true);
@@ -392,12 +392,18 @@ describe('handleSetKey', () => {
       'decrypted-key',
       'github',
       TEST_CRED_SCOPE,
-      'access',
+      'oauth',
       0,
     );
   });
 
-  it('parses explicit role and expiry', () => {
+  it('parses explicit credential ID and expiry', () => {
+    mockProviders.set(
+      'github',
+      makeProvider('github', {
+        envVars: { GH_TOKEN: 'oauth', GH_API_KEY: 'api_key' },
+      }),
+    );
     const { engine, resolver } = mockTokenEngine();
     const args = `api_key expiry=3600\n${PGP_ENCRYPTED}`;
     handleSetKey('github', args, TEST_GROUP_SCOPE, engine);
@@ -413,14 +419,14 @@ describe('handleSetKey', () => {
 
   it('handles PGP block on the same line', () => {
     const { engine, resolver } = mockTokenEngine();
-    const args = `access ${PGP_ENCRYPTED}`;
+    const args = `oauth ${PGP_ENCRYPTED}`;
     handleSetKey('github', args, TEST_GROUP_SCOPE, engine);
 
     expect(resolver.store).toHaveBeenCalledWith(
       'decrypted-key',
       'github',
       TEST_CRED_SCOPE,
-      'access',
+      'oauth',
       0,
     );
   });
@@ -478,7 +484,7 @@ describe('handleSetKey', () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
-        envVars: { GH_TOKEN: 'access' },
+        envVars: { GH_TOKEN: 'oauth' },
       }),
     );
     const { engine } = mockTokenEngine({ existingSubstitute: null });
@@ -528,7 +534,7 @@ describe('runInteractiveKeySetup', () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
-        envVars: { GH_TOKEN: 'access' },
+        envVars: { GH_TOKEN: 'oauth' },
       }),
     );
     mockGpgAvailable.mockReturnValue(true);
@@ -554,7 +560,7 @@ describe('runInteractiveKeySetup', () => {
       'decrypted-key',
       'github',
       TEST_CRED_SCOPE,
-      'access',
+      'oauth',
       0,
     );
   });
@@ -596,7 +602,7 @@ describe('runInteractiveKeySetup', () => {
     mockProviders.set(
       'multi',
       makeProvider('multi', {
-        envVars: { KEY: 'api_key', TOKEN: 'access' },
+        envVars: { KEY: 'api_key', TOKEN: 'oauth' },
       }),
     );
     const { engine, resolver } = mockTokenEngine();
@@ -611,7 +617,7 @@ describe('runInteractiveKeySetup', () => {
     );
     expect(result).toBe(true);
     // Menu should have been shown
-    expect(chat.sent.some((m) => m.includes('Multiple roles'))).toBe(true);
+    expect(chat.sent.some((m) => m.includes('Multiple credentials'))).toBe(true);
   });
 
   it('returns false on cancel reply', async () => {

@@ -5,6 +5,7 @@ import {
   TokenSubstituteEngine,
   PersistentTokenResolver,
 } from './token-substitute.js';
+import { initCredentialStore } from './store.js';
 import type { SubstituteConfig } from './oauth-types.js';
 import {
   DEFAULT_SUBSTITUTE_CONFIG,
@@ -401,6 +402,37 @@ describe('TokenSubstituteEngine', () => {
     });
   });
 
+  // ── Cache behavior ────────────────────────────────────────────────
+
+  describe('cache behavior', () => {
+    it('does not cache refresh sub-tokens in memory', () => {
+      initCredentialStore();
+      const r = new PersistentTokenResolver();
+      const scope = asCredentialScope('cache-no-refresh');
+
+      r.store('real_access', 'prov', scope, 'oauth');
+      r.store('real_refresh', 'prov', scope, 'oauth/refresh');
+
+      // The cached Credential must not contain a refresh field
+      const cred = r.resolveCredential(scope, 'prov', 'oauth');
+      expect(cred).not.toBeNull();
+      expect(cred!.value).toBe('real_access');
+      expect(cred!.refresh).toBeUndefined();
+    });
+
+    it('caches expiry on the credential object', () => {
+      const r = new PersistentTokenResolver();
+      const scope = asCredentialScope('expiry-test');
+      const expiresTs = Date.now() + 60_000;
+
+      r.store('tok', 'prov', scope, 'oauth', expiresTs);
+
+      const cred = r.resolveCredential(scope, 'prov', 'oauth');
+      expect(cred).not.toBeNull();
+      expect(cred!.expires_ts).toBe(expiresTs);
+    });
+  });
+
   // ── generateSubstitute with role ──────────────────────────────────
 
   describe('generateSubstitute with role', () => {
@@ -423,7 +455,7 @@ describe('TokenSubstituteEngine', () => {
       // Second call overwrites — engine still works
     });
 
-    it('defaults role to access', () => {
+    it('defaults credentialPath to oauth', () => {
       const config = DEFAULT_SUBSTITUTE_CONFIG;
       const real = 'sk-ant-oat01-abcdefghijklmnopqrstuvwxyz1234567890ab';
 
@@ -433,7 +465,7 @@ describe('TokenSubstituteEngine', () => {
         resolver.resolve(
           asCredentialScope(scope as string),
           'claude',
-          'access',
+          'oauth',
         ),
       ).toBe(real);
     });
@@ -459,7 +491,7 @@ describe('TokenSubstituteEngine', () => {
 
       // Update via resolver using mapping identity
       const m = resolved.mapping;
-      resolver.update(m.credentialScope, m.providerId, m.role as any, newReal);
+      resolver.update(m.credentialScope, m.providerId, m.credentialPath, newReal);
 
       // Engine now resolves to new token
       expect(engine.resolveSubstitute(sub, scope)!.realToken).toBe(newReal);
@@ -486,7 +518,7 @@ describe('TokenSubstituteEngine', () => {
       )!;
 
       // Update only scope-A's token
-      resolver.update(asCredentialScope('scope-A'), 'test', 'access', newReal);
+      resolver.update(asCredentialScope('scope-A'), 'test', 'oauth', newReal);
 
       expect(
         engine.resolveSubstitute(subA, asGroupScope('scope-A'))!.realToken,
@@ -552,7 +584,7 @@ describe('TokenSubstituteEngine', () => {
         real,
         'multi',
         asCredentialScope(scope as string),
-        'access',
+        'oauth',
       );
       const engine2 = new TokenSubstituteEngine(resolver2);
       engine2.loadPersistedRefs(scope, 'multi');

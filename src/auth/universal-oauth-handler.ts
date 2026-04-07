@@ -18,7 +18,7 @@ import { join } from 'path';
 
 import type { InterceptRule, OAuthProvider } from './oauth-types.js';
 import type { GroupScope } from './oauth-types.js';
-import { BEARER_SWAP_ROLES } from './oauth-types.js';
+// BEARER_SWAP_ROLES removed — all substitutes are swappable (refresh is nested)
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { HostHandler } from './credential-proxy.js';
 import { proxyBuffered } from './credential-proxy.js';
@@ -172,17 +172,17 @@ async function refreshViaTokenEndpoint(
   const realRefreshToken = tokenEngine.resolveRealToken(
     groupScope,
     provider.id,
-    'refresh',
+    'oauth/refresh',
   );
   if (!realRefreshToken) return false;
 
-  // Read captured authFields (client_id, scope, etc.) from the refresh token entry
-  const refreshEntry = tokenEngine.getKeyEntry(
+  // Read captured authFields (client_id, scope, etc.) from the oauth credential
+  const oauthEntry = tokenEngine.getKeyEntry(
     groupScope,
     provider.id,
-    'refresh',
+    'oauth',
   );
-  const authFields = refreshEntry?.authFields ?? {};
+  const authFields = oauthEntry?.authFields ?? {};
 
   try {
     const response = await _tokenFetch(tokenEndpoint, {
@@ -219,7 +219,7 @@ async function refreshViaTokenEndpoint(
     tokenEngine.refreshCredential(
       groupScope,
       provider.id,
-      'access',
+      'oauth',
       tokens.access_token,
       expiresTs,
       authFields,
@@ -229,10 +229,8 @@ async function refreshViaTokenEndpoint(
       tokenEngine.refreshCredential(
         groupScope,
         provider.id,
-        'refresh',
+        'oauth/refresh',
         tokens.refresh_token,
-        0,
-        authFields,
       );
     }
 
@@ -401,6 +399,7 @@ function createBearerSwapHandler(
       headerName: string;
       substitute: string;
       prefix: string; // e.g. "Bearer " — text before the token in the header value
+      credentialPath: string;
     }> = [];
     let proactiveRefreshAttempted = false;
 
@@ -424,55 +423,83 @@ function createBearerSwapHandler(
         groupScope,
         scopeAttrs,
       );
-      if (!entry || !BEARER_SWAP_ROLES.has(entry.mapping.role)) continue;
+      // Skip nested sub-tokens (e.g. oauth/refresh) — they should not
+      // appear in headers, only in token-exchange request bodies.
+      if (!entry || entry.mapping.credentialPath.includes('/')) continue;
 
       headers[name] = `${prefix}${entry.realToken}`;
-      swappedHeaders.push({ headerName: name, substitute: candidate, prefix });
+      swappedHeaders.push({
+        headerName: name,
+        substitute: candidate,
+        prefix,
+        credentialPath: entry.mapping.credentialPath,
+      });
     }
 
-    // Proactive refresh: if token expiry is known and within REFRESH_AHEAD_MS,
-    // refresh before sending to avoid a 401 round-trip.
-    if (REFRESH_AHEAD_MS > 0 && swappedHeaders.length > 0) {
-      const expiresTs = tokenEngine.getKeyExpiry(
-        groupScope,
-        provider.id,
-        'access',
+    // Identify which swapped credentials have a refresh sub-token.
+    // Computed once, used by both proactive and reactive refresh paths.
+    const refreshable = new Set<string>();
+    for (const swap of swappedHeaders) {
+      const hasRefresh = tokenEngine.resolveRealToken(
+        groupScope, provider.id, `${swap.credentialPath}/refresh`,
       );
-      if (expiresTs > 0 && expiresTs < Date.now() + REFRESH_AHEAD_MS) {
+      if (hasRefresh) refreshable.add(swap.credentialPath);
+    }
+
+    /** Refresh a set of credentials in parallel. Returns which ones succeeded. */
+    const refreshCredentials = async (paths: string[]): Promise<{ succeeded: string[]; failed: string[] }> => {
+      const results = await Promise.all(
+        paths.map((cp) =>
+          tokenEngine.sharedOp(
+            groupScope,
+            provider.id,
+            `refresh:${cp}`,
+            () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
+          ),
+        ),
+      );
+      return {
+        succeeded: paths.filter((_, i) => results[i]),
+        failed: paths.filter((_, i) => !results[i]),
+      };
+    };
+
+    /** Re-resolve all swapped headers to pick up fresh real tokens. */
+    const reResolveHeaders = () => {
+      for (const swap of swappedHeaders) {
+        const freshEntry = tokenEngine.resolveWithRestriction(
+          swap.substitute,
+          groupScope,
+          scopeAttrs,
+        );
+        if (freshEntry) {
+          headers[swap.headerName] = `${swap.prefix}${freshEntry.realToken}`;
+        }
+      }
+    };
+
+    // Proactive refresh: for refreshable credentials near expiry,
+    // refresh before sending to avoid a 401 round-trip.
+    if (REFRESH_AHEAD_MS > 0 && refreshable.size > 0) {
+      const nearExpiry: string[] = [];
+      for (const cp of refreshable) {
+        const ts = tokenEngine.getKeyExpiry(groupScope, provider.id, cp);
+        if (ts > 0 && ts < Date.now() + REFRESH_AHEAD_MS) nearExpiry.push(cp);
+      }
+
+      if (nearExpiry.length > 0) {
         proactiveRefreshAttempted = true;
         logger.info(
-          {
-            provider: provider.id,
-            scope: groupScope,
-            expiresIn: Math.round((expiresTs - Date.now()) / 1000),
-          },
-          'Token expired or expiring soon, refreshing before send',
+          { provider: provider.id, scope: groupScope, credentials: nearExpiry },
+          'Credentials expired or expiring soon, refreshing before send',
         );
 
-        const refreshed = await tokenEngine.sharedOp(
-          groupScope,
-          provider.id,
-          'refresh',
-          () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
-        );
-
-        if (refreshed) {
-          // Re-resolve all swapped substitutes to pick up fresh real tokens
-          for (const swap of swappedHeaders) {
-            const freshEntry = tokenEngine.resolveWithRestriction(
-              swap.substitute,
-              groupScope,
-              scopeAttrs,
-            );
-            if (freshEntry) {
-              headers[swap.headerName] =
-                `${swap.prefix}${freshEntry.realToken}`;
-            }
-          }
-        } else {
+        const { succeeded, failed } = await refreshCredentials(nearExpiry);
+        if (succeeded.length > 0) reResolveHeaders();
+        if (failed.length > 0) {
           logger.warn(
-            { provider: provider.id, scope: groupScope },
-            'Proactive refresh failed, sending with existing token',
+            { provider: provider.id, scope: groupScope, credentials: failed },
+            'Proactive refresh failed for credentials, sending with existing tokens',
           );
         }
       }
@@ -543,22 +570,22 @@ function createBearerSwapHandler(
               'Proactive refresh already attempted, skipping reactive refresh',
             );
             refreshed = false;
+          } else if (refreshable.size === 0) {
+            refreshed = false;
           } else {
+            const paths = [...refreshable];
             logger.info(
               {
                 provider: provider.id,
                 scope: groupScope,
                 status: statusCode,
                 strategy: effectiveStrategy,
+                credentials: paths,
               },
               'Bearer-swap: auth error, attempting refresh',
             );
-            refreshed = await tokenEngine.sharedOp(
-              groupScope,
-              provider.id,
-              'refresh',
-              () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
-            );
+            const { succeeded } = await refreshCredentials(paths);
+            refreshed = succeeded.length > 0;
           }
 
           // Decode body text for error callbacks (may be gzip-compressed)
@@ -838,7 +865,7 @@ function createTokenExchangeHandler(
             scopeAttrs,
             groupScope,
             provider.substituteConfig,
-            'access',
+            'oauth',
             undefined,
             authFields,
           );
@@ -860,7 +887,7 @@ function createTokenExchangeHandler(
               scopeAttrs,
               groupScope,
               provider.substituteConfig,
-              'refresh',
+              'oauth/refresh',
               undefined,
               authFields,
             );

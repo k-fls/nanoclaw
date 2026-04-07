@@ -155,7 +155,7 @@ describe('claudeProvider', () => {
         {},
         groupScope,
         CLAUDE_SUBSTITUTE_CONFIG,
-        'access',
+        'oauth',
       )!;
       const subRefresh = engine.generateSubstitute(
         realRefresh,
@@ -163,7 +163,7 @@ describe('claudeProvider', () => {
         {},
         groupScope,
         CLAUDE_SUBSTITUTE_CONFIG,
-        'refresh',
+        'oauth/refresh',
       )!;
 
       const credsJson = JSON.stringify({
