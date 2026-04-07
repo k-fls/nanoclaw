@@ -147,7 +147,6 @@ describe('token engine singletons', () => {
       CREDENTIALS_DIR: '/nonexistent/credentials',
     }));
     vi.doMock('./providers/claude.js', () => ({
-      migrateClaudeCredentials: vi.fn(),
       CLAUDE_OAUTH_PROVIDER: { rules: [] },
     }));
     vi.doMock('./universal-oauth-handler.js', () => ({
@@ -162,7 +161,7 @@ describe('token engine singletons', () => {
         rawData: new Map(),
       })),
     }));
-    // Mock fs so migrateAllScopes and loadAllPersistedRefs don't hit disk
+    // Mock fs so loadAllPersistedRefs doesn't hit disk
     vi.doMock('fs', async (importOriginal) => {
       const actual = await importOriginal<typeof import('fs')>();
       return {

@@ -54,7 +54,6 @@ vi.mock('../exec.js', () => ({
 const {
   claudeProvider,
   CLAUDE_SUBSTITUTE_CONFIG,
-  migrateClaudeCredentials,
   isAuthError,
   classifyAuthError,
   waitForPattern,
@@ -100,7 +99,6 @@ describe('claudeProvider', () => {
     ) {
       const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       claudeProvider.storeResult(scope, result, engine);
-      migrateClaudeCredentials(scope);
       engine.loadAllPersistedRefs();
       return claudeProvider.provision(makeGroup(scope), engine);
     }
@@ -190,7 +188,6 @@ describe('claudeProvider', () => {
         },
         engine,
       );
-      migrateClaudeCredentials(TEST_CRED_SCOPE);
       engine.loadAllPersistedRefs();
       const result = claudeProvider.provision(
         makeGroup(TEST_CRED_SCOPE),

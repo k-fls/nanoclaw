@@ -10,7 +10,6 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 
-import { decrypt, encrypt, loadCredential } from '../store.js';
 import { readKeysFile, writeKeysFile } from '../token-substitute.js';
 import { asCredentialScope, asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
@@ -559,76 +558,8 @@ async function runOAuthFlow(
   return { handle, output, sessionDir };
 }
 
-// ── Migration: claude_auth.json → claude.keys.json ──────────────────
-
 /** Provider ID used as the keys file name and engine key. */
 export const PROVIDER_ID = 'claude';
-
-/**
- * If claude.keys.json doesn't exist for a scope but claude_auth.json does,
- * extract the access/refresh tokens and write them to claude.keys.json.
- * Called once at startup per scope.
- */
-export function migrateClaudeCredentials(scope: string): void {
-  const credScope = asCredentialScope(scope);
-  // Already migrated?
-  const existing = readKeysFile(credScope, PROVIDER_ID);
-  if (Object.keys(existing).length > 0) return;
-
-  const cred = loadCredential(scope, 'claude_auth');
-  if (!cred) return;
-
-  const plaintext = decrypt(cred.token);
-
-  switch (cred.auth_type) {
-    case 'api_key':
-      writeKeysFile(credScope, PROVIDER_ID, {
-        api_key: {
-          value: encrypt(plaintext),
-          updated_ts: Date.now(),
-          expires_ts: 0,
-        },
-      });
-      break;
-
-    case 'setup_token':
-      writeKeysFile(credScope, PROVIDER_ID, {
-        oauth: {
-          value: encrypt(plaintext),
-          updated_ts: Date.now(),
-          expires_ts: 0,
-        },
-      });
-      break;
-
-    case 'auth_login': {
-      const parsed = parseCredentialsJson(plaintext);
-      if (!parsed) return;
-      const oauth: import('../token-substitute.js').Credential = {
-        value: encrypt(parsed.accessToken),
-        updated_ts: Date.now(),
-        expires_ts: parsed.expiresAt
-          ? new Date(parsed.expiresAt).getTime()
-          : 0,
-        authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
-      };
-      if (parsed.refreshToken) {
-        oauth.refresh = {
-          value: encrypt(parsed.refreshToken),
-          updated_ts: Date.now(),
-          expires_ts: 0,
-        };
-      }
-      writeKeysFile(credScope, PROVIDER_ID, { oauth });
-      break;
-    }
-  }
-
-  logger.info(
-    { scope, authType: cred.auth_type },
-    'Migrated claude_auth.json → claude.keys.json',
-  );
-}
 
 // ── Host handlers ────────────────────────────────────────────────────
 
