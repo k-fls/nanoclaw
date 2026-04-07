@@ -114,6 +114,16 @@ export const DEFAULT_SUBSTITUTE_CONFIG: SubstituteConfig = {
 export const MIN_RANDOM_CHARS = 16;
 
 // ---------------------------------------------------------------------------
+// Well-known credential path constants
+// ---------------------------------------------------------------------------
+
+/** Credential path for OAuth access tokens. */
+export const CRED_OAUTH = 'oauth';
+
+/** Credential path for OAuth refresh tokens (nested under 'oauth'). */
+export const CRED_OAUTH_REFRESH = 'oauth/refresh';
+
+// ---------------------------------------------------------------------------
 // Token substitute mapping (stored by the engine — no credentials)
 // ---------------------------------------------------------------------------
 
@@ -162,35 +172,68 @@ export interface SubstituteMapping {
   credentialScope: CredentialScope;
 }
 
+// ---------------------------------------------------------------------------
+// Credential types
+// ---------------------------------------------------------------------------
+
+export interface AuthToken {
+  value: string; // encrypted on disk and in cache; resolve() decrypts, store() accepts plaintext
+  expires_ts: number; // epoch ms, 0 = no expiry
+  authFields?: Record<string, string>; // captured fields for refresh (client_id, scope, etc.)
+}
+
+/** A stored credential with optional nested refresh token. */
+export interface Credential extends AuthToken {
+  updated_ts: number; // epoch ms
+  /** Nested refresh token — only present for OAuth credentials. */
+  refresh?: {
+    value: string; // encrypted on disk and in cache; resolve() decrypts, store() accepts plaintext
+    expires_ts: number;
+    updated_ts: number;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Credential resolver interface
+// ---------------------------------------------------------------------------
+
 /**
- * Pluggable credential store interface. The engine delegates real-token
- * storage and retrieval to this — it never holds credentials itself.
- * Credentials are keyed by (credentialScope, providerId, credentialPath).
- *
- * credentialPath is a slash-delimited path into the keys file:
- *   'oauth'         → keys['oauth'].value
- *   'oauth/refresh' → keys['oauth'].refresh.value
- *   'api_key'       → keys['api_key'].value
+ * Pluggable credential store. Keyed by (credentialScope, providerId, credentialId).
+ * credentialId is a top-level identity ('oauth', 'api_key') — never a path.
+ * The engine handles credentialPath parsing (e.g. 'oauth/refresh') above this layer.
  */
-export interface TokenResolver {
-  /** Store (or update) a real token. */
+export interface CredentialResolver {
+  /** Store or update a credential (hot cache + disk). Accepts plaintext values. */
   store(
-    realToken: string,
     providerId: string,
     credentialScope: CredentialScope,
-    credentialPath?: string,
-    expiresTs?: number,
-    authFields?: Record<string, string>,
+    credentialId: string,
+    credential: Credential,
   ): void;
-  /** Retrieve the current real token. Returns null if not found or revoked. */
+
+  /**
+   * Resolve from cache. Returns a Credential with decrypted plaintext values.
+   * Safe to read fields directly or pass back to store() without double-encryption.
+   */
   resolve(
     credentialScope: CredentialScope,
     providerId: string,
-    credentialPath: string,
-  ): string | null;
-  /** Remove all tokens for a scope (and optionally a provider). */
-  revoke(credentialScope: CredentialScope, providerId?: string): void;
+    credentialId: string,
+  ): Credential | null;
+
+  /**
+   * Extract a token value from a resolved (plaintext) Credential.
+   * Without subPath: returns credential.value.
+   * With subPath (e.g. 'refresh'): returns the nested sub-token's value.
+   */
+  extractToken(credential: Credential, subPath?: string): string | null;
+
+  /** Delete credential from both cache and disk. */
+  delete(credentialScope: CredentialScope, providerId?: string): void;
 }
+
+/** @deprecated Use CredentialResolver. */
+export type TokenResolver = CredentialResolver;
 
 // ---------------------------------------------------------------------------
 // Refresh strategy for bearer-swap 401/403 handling

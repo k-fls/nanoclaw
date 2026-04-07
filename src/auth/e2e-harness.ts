@@ -26,7 +26,7 @@ import {
 } from './universal-oauth-handler.js';
 import {
   TokenSubstituteEngine,
-  PersistentTokenResolver,
+  PersistentCredentialResolver,
 } from './token-substitute.js';
 import { setTokenEngine } from './registry.js';
 import { createHandler } from './universal-oauth-handler.js';
@@ -38,7 +38,7 @@ import {
   type BrowserOpenEvent,
 } from './browser-open-handler.js';
 import type { OAuthProvider, SubstituteConfig } from './oauth-types.js';
-import { asGroupScope } from './oauth-types.js';
+import { asGroupScope, asCredentialScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
 import type { TokenRole } from './token-substitute.js';
 import {
   buildContainerArgs,
@@ -245,7 +245,7 @@ export class OAuthE2EHarness {
   mockUpstream: MockUpstream;
   proxy: CredentialProxy;
   tokenEngine: TokenSubstituteEngine;
-  resolver: PersistentTokenResolver;
+  resolver: PersistentCredentialResolver;
   flowQueue: InteractionQueue;
   browserOpenEvents: BrowserOpenEvent[] = [];
 
@@ -257,7 +257,7 @@ export class OAuthE2EHarness {
   constructor() {
     this.proxyBind = detectProxyBind();
     this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-e2e-'));
-    this.resolver = new PersistentTokenResolver();
+    this.resolver = new PersistentCredentialResolver();
     this.tokenEngine = new TokenSubstituteEngine(this.resolver);
     this.proxy = new CredentialProxy();
     this.mockUpstream = new MockUpstream(this.proxyBind);
@@ -410,8 +410,30 @@ export class OAuthE2EHarness {
     providerId: string,
     scope: string,
     config: SubstituteConfig,
-    credentialPath: string = 'oauth',
+    credentialPath: string = CRED_OAUTH,
   ): string {
+    // Store credential in the group's own scope
+    const credScope = asCredentialScope(scope);
+    const { id, nested } = credentialPath.includes('/')
+      ? { id: credentialPath.split('/')[0], nested: credentialPath.split('/')[1] }
+      : { id: credentialPath, nested: undefined };
+
+    if (nested) {
+      // Nested path (e.g. 'oauth/refresh'): read existing credential, add sub-token
+      const existing = this.resolver.resolve(credScope, providerId, id);
+      const cred = existing
+        ? { ...existing }
+        : { value: '', expires_ts: 0, updated_ts: Date.now() };
+      (cred as Record<string, unknown>)[nested] = {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      };
+      this.resolver.store(providerId, credScope, id, cred);
+    } else {
+      this.resolver.store(providerId, credScope, id, {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      });
+    }
+
     const substitute = this.tokenEngine.generateSubstitute(
       realToken,
       providerId,

@@ -15,6 +15,7 @@ import {
   isImageAvailable,
 } from './e2e-harness.js';
 import type { OAuthProvider, SubstituteConfig } from './oauth-types.js';
+import { CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
 
 // ---------------------------------------------------------------------------
 // Test provider definition
@@ -134,7 +135,7 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
       'test-claude',
       SCOPE,
       TEST_SUBSTITUTE_CONFIG,
-      'oauth/refresh',
+      CRED_OAUTH_REFRESH,
     );
 
     const NEW_ACCESS = 'sk-ant-api03-freshAccessTokenAfterRefresh1234567890xyz';
@@ -214,7 +215,7 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
       'test-claude',
       SCOPE,
       TEST_SUBSTITUTE_CONFIG,
-      'oauth/refresh',
+      CRED_OAUTH_REFRESH,
     );
 
     const NEW_ACCESS = 'sk-ant-api03-freshAccessTokenAfterRefresh1234567890xyz';
@@ -332,7 +333,7 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
       'test-claude',
       SCOPE,
       TEST_SUBSTITUTE_CONFIG,
-      'oauth/refresh',
+      CRED_OAUTH_REFRESH,
     );
 
     const NEW_ACCESS = 'sk-ant-api03-brandNewAccessFromTokenExchange1234567890';
@@ -561,10 +562,10 @@ describe.skipIf(!canRun)('OAuth e2e (Docker)', () => {
     expect(response.refresh_token).not.toBe(REAL_REFRESH);
 
     // Verify the proxy stored real tokens with authFields
-    const accessEntry = h.tokenEngine.getKeyEntry(
+    const accessEntry = h.tokenEngine.resolveCredential(
       groupScope,
       'test-claude',
-      'oauth',
+      CRED_OAUTH,
     );
     expect(accessEntry).not.toBeNull();
     expect(accessEntry!.authFields).toBeDefined();

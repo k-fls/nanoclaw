@@ -63,13 +63,15 @@ const {
   extractStreamRequestId,
   extractUpstreamRequestId,
 } = await import('./claude.js');
-const { TokenSubstituteEngine, PersistentTokenResolver } =
+const { TokenSubstituteEngine, PersistentCredentialResolver } =
   await import('../token-substitute.js');
 import type { RegisteredGroup } from '../../types.js';
 import {
   asCredentialScope,
   asGroupScope,
   DEFAULT_CREDENTIAL_SCOPE,
+  CRED_OAUTH,
+  CRED_OAUTH_REFRESH,
 } from '../oauth-types.js';
 
 const TEST_CRED_SCOPE = asCredentialScope('test-scope');
@@ -96,7 +98,7 @@ describe('claudeProvider', () => {
       scope: import('../oauth-types.js').CredentialScope,
       result: { auth_type: string; token: string; expires_at: string | null },
     ) {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       claudeProvider.storeResult(scope, result, engine);
       migrateClaudeCredentials(scope);
       engine.loadAllPersistedRefs();
@@ -104,7 +106,7 @@ describe('claudeProvider', () => {
     }
 
     it('returns empty env when no credentials exist', () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const result = claudeProvider.provision(makeGroup('nonexistent'), engine);
       expect(result.env).toEqual({});
     });
@@ -145,17 +147,24 @@ describe('claudeProvider', () => {
       const realRefresh =
         'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
-      // Simulate proxy path: generate substitutes first (as the proxy would
-      // during token exchange), then pass them in .credentials.json.
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      // Simulate proxy path: store credential then generate substitutes
+      // (as the token-exchange handler would during OAuth flow).
+      const resolver = new PersistentCredentialResolver();
+      const engine = new TokenSubstituteEngine(resolver);
       const groupScope = asGroupScope(TEST_CRED_SCOPE);
+      resolver.store('claude', asCredentialScope(TEST_CRED_SCOPE), CRED_OAUTH, {
+        value: realAccess,
+        expires_ts: Date.now() + 3600_000,
+        updated_ts: Date.now(),
+        refresh: { value: realRefresh, expires_ts: 0, updated_ts: Date.now() },
+      });
       const subAccess = engine.generateSubstitute(
         realAccess,
         'claude',
         {},
         groupScope,
         CLAUDE_SUBSTITUTE_CONFIG,
-        'oauth',
+        CRED_OAUTH,
       )!;
       const subRefresh = engine.generateSubstitute(
         realRefresh,
@@ -163,7 +172,7 @@ describe('claudeProvider', () => {
         {},
         groupScope,
         CLAUDE_SUBSTITUTE_CONFIG,
-        'oauth/refresh',
+        CRED_OAUTH_REFRESH,
       )!;
 
       const credsJson = JSON.stringify({
@@ -199,7 +208,7 @@ describe('claudeProvider', () => {
 
   describe('storeResult', () => {
     it('encrypts the token in keys file', () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       claudeProvider.storeResult(
         ENC_TEST_SCOPE,
         {
@@ -231,13 +240,13 @@ describe('claudeProvider', () => {
           'sk-ant-api03-from-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
 
-      const resolver = new PersistentTokenResolver();
+      const resolver = new PersistentCredentialResolver();
       claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, resolver);
       // Verify importEnv was called without error (credentials stored via resolver)
     });
 
     it('skips import if credentials already exist', () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       claudeProvider.storeResult(
         DEFAULT_CREDENTIAL_SCOPE,
         {
@@ -252,7 +261,7 @@ describe('claudeProvider', () => {
         ANTHROPIC_API_KEY: 'should-not-overwrite',
       });
 
-      const resolver = new PersistentTokenResolver();
+      const resolver = new PersistentCredentialResolver();
       claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, resolver);
     });
 
@@ -260,7 +269,7 @@ describe('claudeProvider', () => {
       vi.mocked(readEnvFile).mockReset();
       vi.mocked(readEnvFile).mockReturnValue({});
 
-      const resolver = new PersistentTokenResolver();
+      const resolver = new PersistentCredentialResolver();
       claudeProvider.importEnv!(asCredentialScope('empty-env-scope'), resolver);
     });
   });

@@ -16,7 +16,7 @@ import { loadDiscoveryProviders } from './discovery-loader.js';
 import type { OAuthProvider } from './oauth-types.js';
 import {
   TokenSubstituteEngine,
-  PersistentTokenResolver,
+  PersistentCredentialResolver,
 } from './token-substitute.js';
 import { CREDENTIALS_DIR } from './store.js';
 import { createHandler } from './universal-oauth-handler.js';
@@ -109,13 +109,13 @@ export function parseTapExclude(raw: string | undefined): {
 // ---------------------------------------------------------------------------
 
 /** Shared token resolver — owns real token storage with persistence. */
-let _tokenResolver: PersistentTokenResolver | null = null;
+let _tokenResolver: PersistentCredentialResolver | null = null;
 
 /** Shared token substitute engine — one instance for all providers. */
 let _tokenEngine: TokenSubstituteEngine | null = null;
 
-export function getTokenResolver(): PersistentTokenResolver {
-  if (!_tokenResolver) _tokenResolver = new PersistentTokenResolver();
+export function getTokenResolver(): PersistentCredentialResolver {
+  if (!_tokenResolver) _tokenResolver = new PersistentCredentialResolver();
   return _tokenResolver;
 }
 

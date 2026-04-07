@@ -5,7 +5,7 @@
  * and credential deletion for any bearer-swap-capable provider.
  */
 import type { GroupScope, CredentialScope } from './oauth-types.js';
-import { asCredentialScope } from './oauth-types.js';
+import { asCredentialScope, CRED_OAUTH } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import { readKeysFile, type Credential } from './token-substitute.js';
 import type { ChatIO } from './types.js';
@@ -114,7 +114,11 @@ export function storeProviderKey(
 
   // Clear → store → prune
   tokenEngine.clearCredentials(groupScope, providerId);
-  resolver.store(token, providerId, credScope, credentialId, expiresTs);
+  resolver.store(providerId, credScope, credentialId, {
+    value: token,
+    expires_ts: expiresTs,
+    updated_ts: Date.now(),
+  });
   tokenEngine.pruneStaleRefs(groupScope, providerId);
 
   return { needsRestart };
@@ -279,7 +283,7 @@ export function handleSetKey(
   if (pgpIdx < 0 || !isPgpMessage(argsAfterSetKey.slice(pgpIdx))) {
     return (
       `Expected a GPG-encrypted message.\n` +
-      `Usage: /auth ${providerId} set-key [credential-id] [expiry=<seconds>] <pgp block>`
+      `Usage: /auth ${providerId} set-key [credential-id] [expiry=<epoch_ms>] <pgp block>`
     );
   }
 
@@ -303,7 +307,7 @@ export function handleSetKey(
 
   // Default credential ID from provider
   if (!credentialId) {
-    credentialId = knownIds.size === 1 ? [...knownIds][0] : 'oauth';
+    credentialId = knownIds.size === 1 ? [...knownIds][0] : CRED_OAUTH;
   }
 
   // Decrypt

@@ -9,11 +9,9 @@ import os from 'os';
 import path from 'path';
 
 import { initEncryption, encrypt, decrypt } from '../crypto/index.js';
-import { logger } from '../logger.js';
 import type { StoredCredential } from './types.js';
 
 export { encrypt, decrypt } from '../crypto/index.js';
-export { ENC_PREFIX, isEncrypted } from '../crypto/index.js';
 
 const CONFIG_DIR = path.join(
   process.env.HOME || os.homedir(),

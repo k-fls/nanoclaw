@@ -43,10 +43,11 @@ import {
   asCredentialScope,
   DEFAULT_CREDENTIAL_SCOPE,
   DEFAULT_SUBSTITUTE_CONFIG,
+  CRED_OAUTH,
 } from './oauth-types.js';
 import {
   TokenSubstituteEngine,
-  PersistentTokenResolver,
+  PersistentCredentialResolver,
 } from './token-substitute.js';
 
 function makeGroup(
@@ -150,7 +151,7 @@ describe('importEnvToDefault', () => {
     };
     registerProvider(provider);
 
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     importEnvToDefault(engine);
     expect(importEnvMock).toHaveBeenCalledWith('default', expect.anything());
   });
@@ -165,7 +166,7 @@ describe('importEnvToDefault', () => {
     };
     registerProvider(provider);
 
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     // Should not throw
     importEnvToDefault(engine);
   });
@@ -192,8 +193,8 @@ describe('provisionEnvVars', () => {
   });
 
   it('provisions oauth token as env var', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
-    const provider = makeOAuthProvider({ GH_TOKEN: 'oauth' });
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const provider = makeOAuthProvider({ GH_TOKEN: CRED_OAUTH });
     const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
 
     engine.generateSubstitute(
@@ -202,7 +203,7 @@ describe('provisionEnvVars', () => {
       {},
       asGroupScope('my-group'),
       DEFAULT_SUBSTITUTE_CONFIG,
-      'oauth',
+      CRED_OAUTH,
     );
 
     const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
@@ -212,10 +213,10 @@ describe('provisionEnvVars', () => {
   });
 
   it('provisions multiple env vars for the same credential', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     const provider = makeOAuthProvider({
-      GH_TOKEN: 'oauth',
-      GITHUB_TOKEN: 'oauth',
+      GH_TOKEN: CRED_OAUTH,
+      GITHUB_TOKEN: CRED_OAUTH,
     });
     const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
 
@@ -225,7 +226,7 @@ describe('provisionEnvVars', () => {
       {},
       asGroupScope('my-group'),
       DEFAULT_SUBSTITUTE_CONFIG,
-      'oauth',
+      CRED_OAUTH,
     );
 
     const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
@@ -236,8 +237,8 @@ describe('provisionEnvVars', () => {
   });
 
   it('skips env var when no token exists for the credential', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
-    const provider = makeOAuthProvider({ GH_TOKEN: 'oauth' });
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const provider = makeOAuthProvider({ GH_TOKEN: CRED_OAUTH });
 
     // No tokens stored
     const env = provisionEnvVars(provider, makeGroup('empty-group'), engine);
@@ -245,7 +246,7 @@ describe('provisionEnvVars', () => {
   });
 
   it('returns empty when provider has no envVars mapping', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     const provider = makeOAuthProvider(); // no envVars
 
     const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
@@ -253,7 +254,7 @@ describe('provisionEnvVars', () => {
   });
 
   it('provisions api_key role', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     const provider = makeOAuthProvider({ API_KEY: 'api_key' });
     const realKey = 'key_xabcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
 

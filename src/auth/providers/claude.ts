@@ -12,7 +12,7 @@ import path from 'path';
 
 import { decrypt, encrypt, loadCredential } from '../store.js';
 import { readKeysFile, writeKeysFile } from '../token-substitute.js';
-import { asCredentialScope, asGroupScope } from '../oauth-types.js';
+import { asCredentialScope, asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
 import type { CredentialScope, GroupScope } from '../oauth-types.js';
 import { authSessionDir, scopeClaudeDir } from '../exec.js';
@@ -739,35 +739,23 @@ export const claudeProvider: CredentialProvider = {
 
     const credScope = scope;
 
+    const now = Date.now();
     // API key takes priority over OAuth tokens (mode exclusivity)
     if (envVars.ANTHROPIC_API_KEY) {
-      resolver.store(
-        envVars.ANTHROPIC_API_KEY,
-        PROVIDER_ID,
-        credScope,
-        'api_key',
-      );
+      resolver.store(PROVIDER_ID, credScope, 'api_key', {
+        value: envVars.ANTHROPIC_API_KEY,
+        expires_ts: 0,
+        updated_ts: now,
+      });
     } else {
-      if (envVars.CLAUDE_CODE_OAUTH_TOKEN) {
-        resolver.store(
-          envVars.CLAUDE_CODE_OAUTH_TOKEN,
-          PROVIDER_ID,
-          credScope,
-          'oauth',
-          0,
-          CLAUDE_DEFAULT_AUTH_FIELDS,
-        );
-      }
-      // ANTHROPIC_AUTH_TOKEN is a fallback for access token
-      if (!envVars.CLAUDE_CODE_OAUTH_TOKEN && envVars.ANTHROPIC_AUTH_TOKEN) {
-        resolver.store(
-          envVars.ANTHROPIC_AUTH_TOKEN,
-          PROVIDER_ID,
-          credScope,
-          'oauth',
-          0,
-          CLAUDE_DEFAULT_AUTH_FIELDS,
-        );
+      const oauthToken = envVars.CLAUDE_CODE_OAUTH_TOKEN ?? envVars.ANTHROPIC_AUTH_TOKEN;
+      if (oauthToken) {
+        resolver.store(PROVIDER_ID, credScope, CRED_OAUTH, {
+          value: oauthToken,
+          expires_ts: 0,
+          updated_ts: now,
+          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
+        });
       }
     }
 
@@ -803,7 +791,7 @@ export const claudeProvider: CredentialProvider = {
       {},
       scope,
       CLAUDE_SUBSTITUTE_CONFIG,
-      'oauth',
+      CRED_OAUTH,
     );
     if (!subAccess) return { env };
 
@@ -813,12 +801,12 @@ export const claudeProvider: CredentialProvider = {
       {},
       scope,
       CLAUDE_SUBSTITUTE_CONFIG,
-      'oauth/refresh',
+      CRED_OAUTH_REFRESH,
     );
 
     // Write .credentials.json with substitute tokens + real expiresAt
     // Engine resolves the source scope (own or borrowed from default)
-    const expiresAt = tokenEngine.getKeyExpiry(scope, PROVIDER_ID, 'oauth');
+    const expiresAt = tokenEngine.resolveCredential(scope, PROVIDER_ID, CRED_OAUTH)?.expires_ts ?? 0;
     const credentialsJson = JSON.stringify({
       claudeAiOauth: {
         accessToken: subAccess,
@@ -845,11 +833,19 @@ export const claudeProvider: CredentialProvider = {
     switch (result.auth_type) {
       case 'api_key':
         tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
-        resolver.store(result.token, PROVIDER_ID, credScope, 'api_key');
+        resolver.store(PROVIDER_ID, credScope, 'api_key', {
+          value: result.token,
+          expires_ts: 0,
+          updated_ts: Date.now(),
+        });
         break;
       case 'setup_token':
         tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
-        resolver.store(result.token, PROVIDER_ID, credScope, 'oauth');
+        resolver.store(PROVIDER_ID, credScope, CRED_OAUTH, {
+          value: result.token,
+          expires_ts: 0,
+          updated_ts: Date.now(),
+        });
         break;
       case 'auth_login': {
         const parsed = parseCredentialsJson(result.token);

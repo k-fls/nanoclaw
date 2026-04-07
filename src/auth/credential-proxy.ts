@@ -63,8 +63,6 @@ export type HostHandler = (
 /** Pluggable credential resolver. */
 export type CredentialResolver = (scope: string) => Record<string, string>;
 
-export type AuthMode = 'api-key' | 'oauth';
-
 interface HostRule {
   hostPattern: RegExp;
   pathPattern: RegExp;

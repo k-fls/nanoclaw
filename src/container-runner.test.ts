@@ -64,7 +64,6 @@ vi.mock('./container-runtime.js', () => ({
 // Mock credential-proxy — provide a minimal proxy instance
 vi.mock('./auth/credential-proxy.js', () => ({
   getProxy: vi.fn(() => ({
-    detectAuthMode: vi.fn(() => 'api-key'),
     hasContainerIP: vi.fn(() => false),
     registerContainerIP: vi.fn(),
     unregisterContainerIP: vi.fn(),

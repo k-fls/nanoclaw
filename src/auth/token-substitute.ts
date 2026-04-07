@@ -27,13 +27,15 @@ import type {
   SubstituteEntry,
   ProviderSubstitutes,
   ScopeAccessCheck,
-  TokenResolver,
+  CredentialResolver,
+  Credential,
   GroupScope,
   CredentialScope,
 } from './oauth-types.js';
 import {
   MIN_RANDOM_CHARS,
   DEFAULT_CREDENTIAL_SCOPE,
+  CRED_OAUTH,
   asGroupScope,
   asCredentialScope,
 } from './oauth-types.js';
@@ -92,14 +94,23 @@ function parsePath(credentialPath: string): { id: string; nested?: string } {
   return { id: credentialPath.slice(0, slash), nested: credentialPath.slice(slash + 1) };
 }
 
-/** Cache key for in-memory hot tokens. */
-function cacheKey(
+/**
+ * Resolve a credentialPath to a real (decrypted) token value.
+ * Resolves the credential from cache, then uses extractToken
+ * to get the value (decrypting nested sub-tokens on demand).
+ */
+function resolveCredentialPathToRealToken(
+  resolver: CredentialResolver,
   credentialScope: CredentialScope,
   providerId: string,
   credentialPath: string,
-): string {
-  return `${credentialScope}\0${providerId}\0${credentialPath}`;
+): string | null {
+  const { id, nested } = parsePath(credentialPath);
+  const cred = resolver.resolve(credentialScope, providerId, id);
+  if (!cred) return null;
+  return resolver.extractToken(cred, nested);
 }
+
 
 // ---------------------------------------------------------------------------
 // Locked JSON file helpers — fd held open between read and write
@@ -173,22 +184,8 @@ function updateJsonFile<T extends object>(
 // All roles for one provider in one file. No plaintext secrets.
 // ---------------------------------------------------------------------------
 
-export interface AuthToken {
-  value: string; // encrypted token
-  expires_ts: number; // epoch ms, 0 = no expiry
-  authFields?: Record<string, string>; // captured fields for refresh (client_id, scope, etc.)
-}
-
-/** A stored credential with optional nested refresh token. */
-export interface Credential extends AuthToken {
-  updated_ts: number; // epoch ms
-  /** Nested refresh token — only present for OAuth credentials. */
-  refresh?: {
-    value: string; // encrypted
-    expires_ts: number;
-    updated_ts: number;
-  };
-}
+// Credential and AuthToken are defined in oauth-types.ts
+export type { Credential, AuthToken } from './oauth-types.js';
 
 /** @deprecated Alias for Credential during migration. */
 export type KeyEntry = Credential;
@@ -211,7 +208,7 @@ const KEYS_FILE_VERSION = 3;
  * Applied during migration of pre-V3 keys files.
  */
 const LEGACY_ROLE_MAP: Record<string, string> = {
-  access: 'oauth',
+  access: CRED_OAUTH,
 };
 
 export function readKeysFile(
@@ -242,8 +239,8 @@ function migrateKeysFile(
 
   // Move sibling 'refresh' into its parent
   if (refreshEntry) {
-    // Find parent: 'access' (or 'oauth' if already renamed)
-    const parentId = keys['access'] ? 'access' : keys['oauth'] ? 'oauth' : null;
+    // Find parent: 'access' (or CRED_OAUTH if already renamed)
+    const parentId = keys['access'] ? 'access' : keys[CRED_OAUTH] ? CRED_OAUTH : null;
     if (parentId) {
       keys[parentId].refresh = {
         value: refreshEntry.value,
@@ -258,9 +255,9 @@ function migrateKeysFile(
     delete keys['refresh'];
   }
 
-  // Rename 'access' → 'oauth'
+  // Rename 'access' → CRED_OAUTH
   if (keys['access']) {
-    keys['oauth'] = keys['access'];
+    keys[CRED_OAUTH] = keys['access'];
     delete keys['access'];
   }
 
@@ -320,267 +317,193 @@ function refsPath(groupScope: GroupScope, providerId: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Persistent token resolver.
+ * Persistent credential resolver.
  *
- * Caches whole Credential objects in memory, indexed by
- * (credentialScope, providerId, credentialId). The cache holds decrypted
- * token values and expiry for the hot path. Nested sub-tokens (e.g.
- * refresh) live on the cached Credential object.
+ * Hot cache: decrypted Credential objects indexed by (scope, provider, credentialId).
+ * Refresh sub-tokens are never cached — always read from disk via resolveCold().
  *
  * Keys file: credentials/{credentialScope}/{providerId}.keys.json
  *   { credentialId: { value: encrypted, updated_ts, expires_ts, refresh?: {...} } }
  */
-export class PersistentTokenResolver implements TokenResolver {
-  /**
-   * Hot cache: cacheKey(scope, provider, credentialId) → decrypted Credential.
-   * Token values in cached entries are decrypted (not encrypted like on disk).
-   */
-  private cache = new Map<string, Credential>();
+export class PersistentCredentialResolver implements CredentialResolver {
+  /** scope → provider → credentialId → Credential (encrypted values). */
+  private cache = new Map<CredentialScope, Map<string, Map<string, Credential>>>();
+
+  private cacheGet(
+    scope: CredentialScope, provider: string, id: string,
+  ): Credential | undefined {
+    return this.cache.get(scope)?.get(provider)?.get(id);
+  }
+
+  private cacheSet(
+    scope: CredentialScope, provider: string, id: string, cred: Credential,
+  ): void {
+    let scopeMap = this.cache.get(scope);
+    if (!scopeMap) { scopeMap = new Map(); this.cache.set(scope, scopeMap); }
+    let provMap = scopeMap.get(provider);
+    if (!provMap) { provMap = new Map(); scopeMap.set(provider, provMap); }
+    provMap.set(id, cred);
+  }
+
+  // ── CredentialResolver interface ────────────────────────────────
 
   store(
-    realToken: string,
     providerId: string,
     credentialScope: CredentialScope,
-    credentialPath: string = 'oauth',
-    expiresTs = 0,
-    authFields?: Record<string, string>,
+    credentialId: string,
+    credential: Credential,
   ): void {
-    this.persistToKeys(
-      credentialScope,
-      providerId,
-      credentialPath,
-      realToken,
-      expiresTs,
-      authFields,
-    );
-    // Update cache — only for top-level credentials, not nested sub-tokens
-    const { nested } = parsePath(credentialPath);
-    if (!nested) {
-      const ck = cacheKey(credentialScope, providerId, credentialPath);
-      this.cache.set(ck, {
-        value: realToken,
-        expires_ts: expiresTs,
-        updated_ts: Date.now(),
-        ...(authFields && { authFields }),
-      });
-    }
+    const encrypted = this.persistCredential(credentialScope, providerId, credentialId, credential);
+    this.loadCache(credentialScope, providerId, credentialId, encrypted);
   }
 
   resolve(
     credentialScope: CredentialScope,
     providerId: string,
-    credentialPath: string,
-  ): string | null {
-    const { id, nested } = parsePath(credentialPath);
-
-    if (nested) {
-      // Nested sub-tokens (e.g. oauth/refresh) are cold — always read from disk
+    credentialId: string,
+  ): Credential | null {
+    if (!this.cacheGet(credentialScope, providerId, credentialId)) {
       try {
-        const keys = readKeysFile(credentialScope, providerId);
-        const entry = keys[id];
-        if (!entry) return null;
-        const sub = (entry as unknown as Record<string, unknown>)[nested];
-        if (!sub || typeof sub !== 'object' || !('value' in sub)) return null;
-        return decrypt((sub as { value: string }).value);
-      } catch {
-        return null;
-      }
-    }
-
-    // Top-level: use cache
-    const ck = cacheKey(credentialScope, providerId, id);
-    if (!this.cache.has(ck)) {
-      try {
-        this.warmCache(credentialScope, providerId, id);
+        this.loadCache(credentialScope, providerId, credentialId);
       } catch {
         /* encryption not initialized or file not found */
       }
     }
-    const cached = this.cache.get(ck);
-    return cached?.value || null;
+    const cached = this.cacheGet(credentialScope, providerId, credentialId);
+    if (!cached) return null;
+    return {
+      value: cached.value ? decrypt(cached.value) : '',
+      expires_ts: cached.expires_ts,
+      updated_ts: cached.updated_ts,
+      ...(cached.authFields && { authFields: cached.authFields }),
+      ...(cached.refresh && {
+        refresh: {
+          value: cached.refresh.value ? decrypt(cached.refresh.value) : '',
+          expires_ts: cached.refresh.expires_ts,
+          updated_ts: cached.refresh.updated_ts,
+        },
+      }),
+    };
   }
 
-  /** Update a real token in place (e.g. after refresh). */
-  update(
-    credentialScope: CredentialScope,
-    providerId: string,
-    credentialPath: string,
-    newRealToken: string,
-    expiresTs = 0,
-    authFields?: Record<string, string>,
-  ): void {
-    this.persistToKeys(
-      credentialScope,
-      providerId,
-      credentialPath,
-      newRealToken,
-      expiresTs,
-      authFields,
-    );
-    // Update cache — only for top-level credentials, not nested sub-tokens
-    const { nested } = parsePath(credentialPath);
-    if (!nested) {
-      const ck = cacheKey(credentialScope, providerId, credentialPath);
-      const cached = this.cache.get(ck);
-      if (cached) {
-        cached.value = newRealToken;
-        cached.expires_ts = expiresTs;
-        cached.updated_ts = Date.now();
-        if (authFields) cached.authFields = authFields;
-      } else {
-        this.cache.set(ck, {
-          value: newRealToken,
-          expires_ts: expiresTs,
-          updated_ts: Date.now(),
-          ...(authFields && { authFields }),
-        });
-      }
+  extractToken(credential: Credential, subPath?: string): string | null {
+    if (!subPath) return credential.value || null;
+    const sub = (credential as unknown as Record<string, unknown>)[subPath];
+    if (!sub || typeof sub !== 'object' || !('value' in sub)) return null;
+    const { value } = sub as { value: string };
+    return value || null;
+  }
+
+  delete(credentialScope: CredentialScope, providerId?: string): void {
+    if (providerId) {
+      this.cache.get(credentialScope)?.delete(providerId);
+      try {
+        fs.unlinkSync(keysPath(credentialScope, providerId));
+      } catch { /* already gone */ }
+    } else {
+      this.cache.delete(credentialScope);
+      const scopeDir = path.join(CREDENTIALS_DIR, credentialScope);
+      try {
+        fs.rmSync(scopeDir, { recursive: true });
+      } catch { /* already gone */ }
     }
   }
 
-  revoke(credentialScope: CredentialScope, providerId?: string): void {
-    const prefix = credentialScope + '\0' + (providerId ?? '');
-    for (const key of this.cache.keys()) {
-      if (key.startsWith(prefix)) {
-        this.cache.delete(key);
-      }
-    }
+  // ── Test-only methods (not on CredentialResolver interface) ─────
+
+  /** Number of cached credentials across all scopes. */
+  get size(): number {
+    let n = 0;
+    for (const scopeMap of this.cache.values())
+      for (const provMap of scopeMap.values())
+        n += provMap.size;
+    return n;
   }
 
   /**
-   * Load a credential from disk and populate the cache.
-   * Called on cold-path cache miss.
-   * Note: refresh sub-tokens are NOT cached — they're read from disk on demand.
+   * Load a credential into the hot cache.
+   * If credential is provided, uses it directly (values must be encrypted).
+   * Otherwise reads from disk (already encrypted).
+   * Cache always stores encrypted; resolve() decrypts on the way out.
    */
-  private warmCache(
+  loadCache(
     credentialScope: CredentialScope,
     providerId: string,
     credentialId: string,
+    credential?: Credential,
   ): void {
+    if (credential) {
+      this.cacheSet(credentialScope, providerId, credentialId, credential);
+      return;
+    }
     const keys = readKeysFile(credentialScope, providerId);
     const entry = keys[credentialId];
     if (!entry) return;
-    const ck = cacheKey(credentialScope, providerId, credentialId);
-    this.cache.set(ck, {
-      value: entry.value ? decrypt(entry.value) : '',
+    this.cacheSet(credentialScope, providerId, credentialId, {
+      value: entry.value || '',
       expires_ts: entry.expires_ts,
       updated_ts: entry.updated_ts,
       ...(entry.authFields && { authFields: entry.authFields }),
-      // refresh intentionally omitted — cold path, disk only
+      ...(entry.refresh && { refresh: entry.refresh }),
     });
   }
 
-  /** Delete the on-disk keys file for a (scope, provider). */
-  deleteKeys(credentialScope: CredentialScope, providerId: string): void {
-    try {
-      fs.unlinkSync(keysPath(credentialScope, providerId));
-    } catch {
-      /* already gone */
+  /** Drop from cache without touching disk. */
+  unloadCache(credentialScope: CredentialScope, providerId?: string): void {
+    if (providerId) {
+      this.cache.get(credentialScope)?.delete(providerId);
+    } else {
+      this.cache.delete(credentialScope);
     }
   }
 
-  /** Number of cached credentials (for testing). */
-  get size(): number {
-    return this.cache.size;
-  }
+  // ── Disk persistence ───────────────────────────────────────────
 
   /**
-   * Read the full Credential for a credentialPath.
-   * Checks cache first, falls back to disk.
-   * For nested paths ('oauth/refresh'), returns a synthetic Credential
-   * wrapping the nested sub-token.
+   * Write a credential to the keys file. Encrypts plaintext values and
+   * preserves existing nested sub-tokens not present in the new credential.
+   * Returns the encrypted Credential for direct cache storage.
    */
-  resolveCredential(
+  private persistCredential(
     credentialScope: CredentialScope,
     providerId: string,
-    credentialPath: string,
-  ): Credential | null {
-    const { id, nested } = parsePath(credentialPath);
-
-    if (nested) {
-      // Nested sub-tokens are always read from disk (cold path)
-      const keys = readKeysFile(credentialScope, providerId);
-      const entry = keys[id];
-      if (!entry) return null;
-      const sub = (entry as unknown as Record<string, unknown>)[nested];
-      if (!sub || typeof sub !== 'object') return null;
-      const subToken = sub as { value: string; expires_ts: number; updated_ts: number };
-      return {
-        value: subToken.value,
-        expires_ts: subToken.expires_ts,
-        updated_ts: subToken.updated_ts,
-        authFields: entry.authFields,
-      };
-    }
-
-    // Top-level: use cache
-    const ck = cacheKey(credentialScope, providerId, id);
-    if (!this.cache.has(ck)) {
-      this.warmCache(credentialScope, providerId, id);
-    }
-    return this.cache.get(ck) ?? null;
-  }
-
-  /** @deprecated Alias for resolveCredential. */
-  resolveKeyEntry(
-    credentialScope: CredentialScope,
-    providerId: string,
-    credentialPath: string,
-  ): Credential | null {
-    return this.resolveCredential(credentialScope, providerId, credentialPath);
-  }
-
-  /**
-   * Locked read-merge-write one credential path into the provider's keys file.
-   * Handles both top-level ('oauth') and nested ('oauth/refresh') paths.
-   */
-  private persistToKeys(
-    credentialScope: CredentialScope,
-    providerId: string,
-    credentialPath: string,
-    realToken: string,
-    expiresTs = 0,
-    authFields?: Record<string, string>,
-  ): boolean {
-    const { id, nested } = parsePath(credentialPath);
+    credentialId: string,
+    credential: Credential,
+  ): Credential {
+    let encrypted: Credential = {
+      value: encrypt(credential.value),
+      updated_ts: credential.updated_ts,
+      expires_ts: credential.expires_ts,
+      ...(credential.authFields && { authFields: credential.authFields }),
+      ...(credential.refresh && {
+        refresh: {
+          value: encrypt(credential.refresh.value),
+          expires_ts: credential.refresh.expires_ts,
+          updated_ts: credential.refresh.updated_ts,
+        },
+      }),
+    };
     try {
       updateJsonFile<KeysFile>(
         keysPath(credentialScope, providerId),
         (keys) => {
-          if (nested) {
-            // Nested path (e.g. 'oauth/refresh') — write sub-token
-            if (!keys[id]) {
-              keys[id] = { value: '', updated_ts: Date.now(), expires_ts: 0 };
-            }
-            (keys[id] as unknown as Record<string, unknown>)[nested] = {
-              value: encrypt(realToken),
-              expires_ts: expiresTs,
-              updated_ts: Date.now(),
-            };
-          } else {
-            // Top-level path — write credential, preserve nested sub-tokens
-            const existing = keys[id];
-            keys[id] = {
-              value: encrypt(realToken),
-              updated_ts: Date.now(),
-              expires_ts: expiresTs,
-              ...(authFields && { authFields }),
-              ...(existing?.refresh && { refresh: existing.refresh }),
-            };
+          const existing = keys[credentialId];
+          // Merge refresh: new credential's refresh wins, else preserve existing
+          if (!encrypted.refresh && existing?.refresh) {
+            encrypted = { ...encrypted, refresh: existing.refresh };
           }
+          keys[credentialId] = encrypted;
           keys.v = KEYS_FILE_VERSION;
         },
       );
-      return true;
     } catch (err) {
       logger.warn(
-        { err, credentialScope, providerId, credentialPath },
-        'Token persistence failed',
+        { err, credentialScope, providerId, credentialId },
+        'Credential persistence failed',
       );
-      return false;
     }
+    return encrypted;
   }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +541,7 @@ export class TokenSubstituteEngine {
   /** In-flight async operations keyed by (credentialScope, providerId, op). */
   private inflight = new Map<string, Promise<unknown>>();
 
-  constructor(private resolver: TokenResolver) {}
+  constructor(private resolver: CredentialResolver) {}
 
   // ── Configuration setters (called once at startup) ───────────────
 
@@ -658,7 +581,7 @@ export class TokenSubstituteEngine {
   // ── Internal helpers ─────────────────────────────────────────────
 
   /** Access the underlying token resolver (e.g. for legacy refresh operations). */
-  getResolver(): TokenResolver {
+  getResolver(): CredentialResolver {
     return this.resolver;
   }
 
@@ -766,7 +689,7 @@ export class TokenSubstituteEngine {
   getSubstitute(
     providerId: string,
     groupScope: GroupScope,
-    credentialPath: string = 'oauth',
+    credentialPath: string = CRED_OAUTH,
   ): string | null {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     if (!ps) return null;
@@ -790,7 +713,7 @@ export class TokenSubstituteEngine {
     scopeAttrs: Record<string, string>,
     groupScope: GroupScope,
     config: SubstituteConfig,
-    credentialPath: string = 'oauth',
+    credentialPath: string = CRED_OAUTH,
   ): string | null {
     const existing = this.getSubstitute(providerId, groupScope, credentialPath);
     if (existing) return existing;
@@ -800,7 +723,9 @@ export class TokenSubstituteEngine {
     const ownCredScope = toCredentialScope(groupScope);
     const sourceScope = credScope !== ownCredScope ? credScope : undefined;
 
-    const realToken = this.resolver.resolve(credScope, providerId, credentialPath);
+    const realToken = resolveCredentialPathToRealToken(
+      this.resolver, credScope, providerId, credentialPath,
+    );
     if (!realToken) return null;
 
     return this.generateSubstitute(
@@ -830,9 +755,8 @@ export class TokenSubstituteEngine {
     scopeAttrs: Record<string, string>,
     groupScope: GroupScope,
     config: SubstituteConfig,
-    credentialPath: string = 'oauth',
+    credentialPath: string = CRED_OAUTH,
     sourceScope?: CredentialScope,
-    authFields?: Record<string, string>,
   ): string | null {
     const { prefixLen, suffixLen, delimiters } = config;
 
@@ -868,18 +792,6 @@ export class TokenSubstituteEngine {
 
       if (substitute === realToken) continue;
       if (this.subToProvider.has(substitute)) continue;
-
-      // Persist real token via resolver (under the effective credential scope)
-      const effCredScope: CredentialScope =
-        sourceScope ?? toCredentialScope(groupScope);
-      this.resolver.store(
-        realToken,
-        providerId,
-        effCredScope,
-        credentialPath,
-        0,
-        authFields,
-      );
 
       // Store in the engine
       const entry: SubstituteEntry = { credentialPath, scopeAttrs };
@@ -924,7 +836,8 @@ export class TokenSubstituteEngine {
     }
 
     const effCredScope = this.effectiveScope(groupScope, ps);
-    const realToken = this.resolver.resolve(
+    const realToken = resolveCredentialPathToRealToken(
+      this.resolver,
       effCredScope,
       ref.providerId,
       entry.credentialPath,
@@ -984,38 +897,27 @@ export class TokenSubstituteEngine {
     const effCredScope = ps
       ? this.effectiveScope(groupScope, ps)
       : toCredentialScope(groupScope);
-    return this.resolver.resolve(effCredScope, providerId, credentialPath);
+    return resolveCredentialPathToRealToken(
+      this.resolver, effCredScope, providerId, credentialPath,
+    );
   }
 
-  /** Get the full Credential for a credentialPath, resolving source scope. */
-  getKeyEntry(
+  /**
+   * Resolve a cached Credential by (group, provider, credentialId).
+   * Handles source-scope indirection internally. Top-level only.
+   */
+  resolveCredential(
     groupScope: GroupScope,
     providerId: string,
-    credentialPath: string,
+    credentialId: string,
   ): Credential | null {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     const effCredScope = ps
       ? this.effectiveScope(groupScope, ps)
       : toCredentialScope(groupScope);
-    return (this.resolver as PersistentTokenResolver).resolveCredential(
-      effCredScope,
-      providerId,
-      credentialPath,
-    );
+    return this.resolver.resolve(effCredScope, providerId, credentialId);
   }
 
-  /**
-   * Get the expiry timestamp for a credential path, resolving source scope.
-   * Returns 0 if not found or no expiry set.
-   */
-  getKeyExpiry(
-    groupScope: GroupScope,
-    providerId: string,
-    credentialPath: string,
-  ): number {
-    const entry = this.getKeyEntry(groupScope, providerId, credentialPath);
-    return entry?.expires_ts ?? 0;
-  }
 
   /**
    * Refresh a credential. Writes to the source scope if borrowed and
@@ -1031,54 +933,68 @@ export class TokenSubstituteEngine {
   ): void {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     const ownScope = toCredentialScope(groupScope);
-    if (!ps) {
-      (this.resolver as PersistentTokenResolver).update(
-        ownScope,
-        providerId,
-        credentialPath,
-        newToken,
-        expiresTs,
-        authFields,
-      );
-      return;
-    }
 
-    if (ps.sourceScope) {
+    let targetScope: CredentialScope;
+    if (!ps) {
+      targetScope = ownScope;
+    } else if (ps.sourceScope) {
       if (this.accessCheck && !this.accessCheck(groupScope, ps.sourceScope)) {
-        (this.resolver as PersistentTokenResolver).update(
-          ownScope,
-          providerId,
-          credentialPath,
-          newToken,
-          expiresTs,
-          authFields,
-        );
+        targetScope = ownScope;
         ps.sourceScope = undefined;
         this.persistRefs(groupScope, providerId);
         logger.info(
           { groupScope, providerId },
           'Credential promoted to own scope (access revoked on refresh)',
         );
-        return;
+      } else {
+        targetScope = ps.sourceScope;
       }
-      (this.resolver as PersistentTokenResolver).update(
-        ps.sourceScope,
-        providerId,
-        credentialPath,
-        newToken,
-        expiresTs,
-        authFields,
-      );
     } else {
-      (this.resolver as PersistentTokenResolver).update(
-        ownScope,
-        providerId,
-        credentialPath,
-        newToken,
-        expiresTs,
-        authFields,
-      );
+      targetScope = ownScope;
     }
+
+    this.storeByPath(targetScope, providerId, credentialPath, newToken, expiresTs, authFields);
+  }
+
+  /**
+   * Store a token by credentialPath. For top-level paths, stores a new
+   * Credential. For nested paths (e.g. 'oauth/refresh'), reads the
+   * existing credential and updates the nested sub-token.
+   */
+  private storeByPath(
+    credentialScope: CredentialScope,
+    providerId: string,
+    credentialPath: string,
+    token: string,
+    expiresTs: number,
+    authFields?: Record<string, string>,
+  ): void {
+    const { id, nested } = parsePath(credentialPath);
+    if (!nested) {
+      this.resolver.store(providerId, credentialScope, id, {
+        value: token,
+        expires_ts: expiresTs,
+        updated_ts: Date.now(),
+        ...(authFields && { authFields }),
+      });
+      return;
+    }
+    // Nested: read existing credential, update sub-token, store back
+    const existing = this.resolver.resolve(credentialScope, providerId, id);
+    if (!existing) {
+      logger.warn(
+        { credentialScope, providerId, credentialPath },
+        'Cannot store nested credential without existing parent',
+      );
+      return;
+    }
+    const cred: Credential = { ...existing };
+    (cred as unknown as Record<string, unknown>)[nested] = {
+      value: token,
+      expires_ts: expiresTs,
+      updated_ts: Date.now(),
+    };
+    this.resolver.store(providerId, credentialScope, id, cred);
   }
 
   /**
@@ -1103,7 +1019,7 @@ export class TokenSubstituteEngine {
     }
 
     // Store the real token in the group's own scope
-    (this.resolver as PersistentTokenResolver).update(
+    this.storeByPath(
       toCredentialScope(groupScope),
       providerId,
       credentialPath,
@@ -1174,7 +1090,7 @@ export class TokenSubstituteEngine {
 
     // Don't revoke from resolver if borrowed (those tokens belong to the source scope)
     if (!ps.sourceScope) {
-      this.resolver.revoke(toCredentialScope(groupScope), providerId);
+      this.resolver.delete(toCredentialScope(groupScope), providerId);
     }
 
     this.deleteRefs(groupScope, providerId);
@@ -1196,11 +1112,7 @@ export class TokenSubstituteEngine {
       const { scope: credScope, writable } =
         this.resolveCredentialScopeInternal(groupScope, providerId);
       if (writable) {
-        this.resolver.revoke(credScope, providerId);
-        (this.resolver as PersistentTokenResolver).deleteKeys(
-          credScope,
-          providerId,
-        );
+        this.resolver.delete(credScope, providerId);
       }
       return count;
     }
@@ -1218,8 +1130,7 @@ export class TokenSubstituteEngine {
       const { scope: credScope, writable } =
         this.resolveCredentialScopeInternal(groupScope, pid);
       if (writable) {
-        this.resolver.revoke(credScope, pid);
-        (this.resolver as PersistentTokenResolver).deleteKeys(credScope, pid);
+        this.resolver.delete(credScope, pid);
       }
     }
     this.scopes.delete(groupScope);
@@ -1237,11 +1148,7 @@ export class TokenSubstituteEngine {
     const effCredScope = ps
       ? this.effectiveScope(groupScope, ps)
       : toCredentialScope(groupScope);
-    this.resolver.revoke(effCredScope, providerId);
-    (this.resolver as PersistentTokenResolver).deleteKeys(
-      effCredScope,
-      providerId,
-    );
+    this.resolver.delete(effCredScope, providerId);
   }
 
   /**
@@ -1257,10 +1164,8 @@ export class TokenSubstituteEngine {
     const toRemove: string[] = [];
 
     for (const [sub, entry] of ps.substitutes) {
-      const realToken = this.resolver.resolve(
-        effCredScope,
-        providerId,
-        entry.credentialPath,
+      const realToken = resolveCredentialPathToRealToken(
+        this.resolver, effCredScope, providerId, entry.credentialPath,
       );
       if (!realToken) toRemove.push(sub);
     }

@@ -47,8 +47,8 @@ describe('CredentialStore', () => {
       expect(decrypt(encrypted)).toBe(plaintext);
     });
 
-    it('decrypt passes through plaintext', () => {
-      expect(decrypt('not-encrypted')).toBe('not-encrypted');
+    it('decrypt throws on plaintext input', () => {
+      expect(() => decrypt('not-encrypted')).toThrow();
     });
 
     it('each encryption produces different ciphertext (random IV)', () => {
