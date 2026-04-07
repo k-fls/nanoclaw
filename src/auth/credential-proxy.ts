@@ -37,6 +37,7 @@ import { logger } from '../logger.js';
 import { createMitmContext, type MitmContext } from './mitm-proxy.js';
 import { createTransparentServer } from './transparent-proxy.js';
 import { handleBrowserOpen } from './browser-open-handler.js';
+import { routeInteractionRequest } from './auth-interactions.js';
 import type { ContainerSessionContext } from './session-context.js';
 import type { GroupScope } from './oauth-types.js';
 
@@ -749,34 +750,14 @@ export class CredentialProxy {
         return;
       }
 
-      // SSE endpoint: per-flow events
-      if (
-        req.url?.startsWith('/auth/flow/') &&
-        req.url.endsWith('/events') &&
-        req.method === 'GET'
-      ) {
-        const flowId = decodeURIComponent(
-          req.url.slice('/auth/flow/'.length, -'/events'.length),
-        );
+      // Interaction endpoints: status, SSE events, list
+      if (req.url?.startsWith('/interaction/') || req.url === '/interactions') {
         const ctx = this.sessionContexts.get(scope);
-        if (ctx) {
-          ctx.statusRegistry.handleSSE(flowId, req, res);
-        } else {
-          res.writeHead(404, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'no active session' }));
+        if (ctx && routeInteractionRequest(ctx.statusRegistry, req.url, req.method || '', req, res)) {
+          return;
         }
-        return;
-      }
-
-      // Flow list endpoint
-      if (req.url === '/auth/flows' && req.method === 'GET') {
-        const ctx = this.sessionContexts.get(scope);
-        if (ctx) {
-          ctx.statusRegistry.handleListInteractions(req, res);
-        } else {
-          res.writeHead(200, { 'content-type': 'application/json' });
-          res.end('[]');
-        }
+        res.writeHead(404);
+        res.end();
         return;
       }
 

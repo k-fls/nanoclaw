@@ -1361,6 +1361,7 @@ describe('universal-oauth-handler', () => {
         return (url, providerId, _sourceIP) => {
           capturedUrl = url;
           capturedProviderId = providerId;
+          return 'test:0:mock';
         };
       });
 

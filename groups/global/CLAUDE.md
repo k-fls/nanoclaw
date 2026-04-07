@@ -34,15 +34,9 @@ Text inside `<internal>` tags is logged but not sent to the user. If you've alre
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
 
-## Authentication
+## Credentials
 
-If a tool call fails with an authentication error (401/403), an OAuth re-authentication flow may be in progress. Before retrying, check the status:
-
-```bash
-curl -s http://${PROXY_HOST}:${PROXY_PORT}/auth/flows
-```
-
-This returns a JSON array of active flows. If a flow is `active` (being presented to the user), wait before retrying — the user is completing authentication. Once the flow shows `completed`, retry your request.
+Available credentials are in `/workspace/group/credentials/tokens/`. Supported providers are listed in `/workspace/global/credentials/providers/`. If a credential is missing or an API call fails with 401/403, see the `credentials` skill for authentication flows and status tracking.
 
 ## Your Workspace
 

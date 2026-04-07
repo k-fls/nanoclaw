@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
 import { muteLogger, restoreLogger } from '../test-helpers.js';
 import {
@@ -872,6 +874,107 @@ describe('TokenSubstituteEngine', () => {
       });
 
       expect(callCount).toBe(2);
+    });
+  });
+
+  // ── Credential info files ─────────────────────────────────────────
+
+  describe('credential info file', () => {
+    let tmpGroupDir: string;
+    let groupFolderMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(async () => {
+      const os = await import('os');
+      tmpGroupDir = fs.mkdtempSync(path.join(os.default.tmpdir(), 'nanoclaw-credinfo-'));
+      const groupFolder = await import('../group-folder.js');
+      groupFolderMock = vi
+        .spyOn(groupFolder, 'resolveGroupFolderPath')
+        .mockReturnValue(tmpGroupDir);
+    });
+
+    afterEach(() => {
+      groupFolderMock.mockRestore();
+      fs.rmSync(tmpGroupDir, { recursive: true, force: true });
+    });
+
+    function providerPath(providerId: string): string {
+      return path.join(tmpGroupDir, 'credentials', 'tokens', `${providerId}.jsonl`);
+    }
+
+    function readLines(providerId: string): Record<string, unknown>[] {
+      return fs.readFileSync(providerPath(providerId), 'utf-8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+    }
+
+    it('writes per-provider JSONL file with substitute', () => {
+      const real = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+      const sub = storeAndGenerate(real, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG);
+
+      const lines = readLines('github');
+      expect(lines).toEqual([
+        { provider: 'github', name: CRED_OAUTH, token: sub },
+      ]);
+    });
+
+    it('excludes nested paths from output', () => {
+      const realAccess = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+      const realRefresh = 'ghp_refreshXXXXXXXXXXXXXXXXXXXXXXXXXXXXab';
+      const sub = storeAndGenerate(realAccess, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, CRED_OAUTH);
+      storeAndGenerate(realRefresh, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, CRED_OAUTH_REFRESH);
+
+      const lines = readLines('github');
+      expect(lines).toEqual([
+        { provider: 'github', name: CRED_OAUTH, token: sub },
+      ]);
+    });
+
+    it('sets borrowed flag when sourceScope is present', () => {
+      const borrowingScope = asGroupScope('borrower');
+      const defaultCredScope = asCredentialScope('default');
+      const real = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+
+      resolver.store('github', defaultCredScope, CRED_OAUTH, {
+        value: real, expires_ts: 0, updated_ts: Date.now(),
+      });
+
+      const sub = engine.generateSubstitute(
+        real, 'github', {}, borrowingScope, DEFAULT_SUBSTITUTE_CONFIG,
+        CRED_OAUTH, defaultCredScope,
+      )!;
+
+      const lines = readLines('github');
+      expect(lines).toEqual([
+        { provider: 'github', name: CRED_OAUTH, token: sub, borrowed: true },
+      ]);
+    });
+
+    it('removes file on revocation', () => {
+      const real = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+      storeAndGenerate(real, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG);
+      expect(fs.existsSync(providerPath('github'))).toBe(true);
+
+      engine.revokeByScope(scope, 'github');
+      expect(fs.existsSync(providerPath('github'))).toBe(false);
+    });
+
+    it('writes separate files per provider', () => {
+      const realOauth = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+      const realApiKey = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const subOauth = storeAndGenerate(realOauth, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, CRED_OAUTH);
+
+      resolver.store('other', asCredentialScope(scope as string), 'api_key', {
+        value: realApiKey, expires_ts: 0, updated_ts: Date.now(),
+      });
+      const subApiKey = engine.generateSubstitute(
+        realApiKey, 'other', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, 'api_key',
+      )!;
+
+      expect(readLines('github')).toEqual([
+        { provider: 'github', name: CRED_OAUTH, token: subOauth },
+      ]);
+      expect(readLines('other')).toEqual([
+        { provider: 'other', name: 'api_key', token: subApiKey },
+      ]);
     });
   });
 });

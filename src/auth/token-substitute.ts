@@ -48,6 +48,7 @@ function toCredentialScope(groupScope: GroupScope): CredentialScope {
   return groupScope as unknown as CredentialScope;
 }
 import { encrypt, decrypt, CREDENTIALS_DIR } from './store.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
 
@@ -1218,12 +1219,78 @@ export class TokenSubstituteEngine {
     } catch (err) {
       logger.warn({ err, groupScope, providerId }, 'Refs persistence failed');
     }
+
+    this.persistCredentialInfo(groupScope, providerId);
   }
 
   /** Delete a provider's refs file for a scope. */
   private deleteRefs(groupScope: GroupScope, providerId: string): void {
     try {
       fs.unlinkSync(refsPath(groupScope, providerId));
+    } catch {
+      /* already gone */
+    }
+    this.deleteCredentialInfo(groupScope, providerId);
+  }
+
+  // ── Credential info files (group folder) ────────────────────────────
+
+  /**
+   * Write a per-provider JSONL file into the group's credentials subfolder.
+   * One line per top-level credential (nested paths like oauth/refresh excluded).
+   * Each line: {"provider":"github","name":"oauth","token":"ghp_..."}
+   * Includes the substitute token (safe — format-preserving fake, not real).
+   */
+  private persistCredentialInfo(groupScope: GroupScope, providerId: string): void {
+    let groupDir: string;
+    try {
+      groupDir = resolveGroupFolderPath(groupScope as string);
+    } catch {
+      return;
+    }
+
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    const filePath = path.join(groupDir, 'credentials', 'tokens', `${providerId}.jsonl`);
+
+    if (!ps || ps.substitutes.size === 0) {
+      try { fs.unlinkSync(filePath); } catch { /* already gone */ }
+      return;
+    }
+
+    const borrowed = !!ps.sourceScope;
+    const byCredential = new Map<string, string[]>();
+    for (const [sub, entry] of ps.substitutes) {
+      const topLevel = entry.credentialPath.split('/')[0];
+      if (!byCredential.has(topLevel)) byCredential.set(topLevel, []);
+      byCredential.get(topLevel)!.push(sub);
+    }
+
+    const lines: string[] = [];
+    for (const [name, subs] of byCredential) {
+      subs.sort();
+      const obj: Record<string, unknown> = { provider: providerId, name, token: subs[0] };
+      if (borrowed) obj.borrowed = true;
+      lines.push(JSON.stringify(obj));
+    }
+
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, lines.join('\n') + '\n');
+    } catch (err) {
+      logger.warn({ err, groupScope, providerId }, 'Credential info write failed');
+    }
+  }
+
+  /** Remove a provider's credential info file from the group folder. */
+  private deleteCredentialInfo(groupScope: GroupScope, providerId: string): void {
+    let groupDir: string;
+    try {
+      groupDir = resolveGroupFolderPath(groupScope as string);
+    } catch {
+      return;
+    }
+    try {
+      fs.unlinkSync(path.join(groupDir, 'credentials', 'tokens', `${providerId}.jsonl`));
     } catch {
       /* already gone */
     }
@@ -1317,5 +1384,28 @@ export class TokenSubstituteEngine {
       logger.warn({ err }, 'Failed to scan for persisted refs');
     }
     return total;
+  }
+
+  /**
+   * Regenerate credential info files for all loaded group scopes.
+   * Call after loadAllPersistedRefs() to ensure the JSONL files exist
+   * even when no new substitutes are generated.
+   */
+  regenerateAllCredentialInfo(): void {
+    for (const [groupScope, pmap] of this.scopes) {
+      // Remove stale files from previous runs
+      try {
+        const dir = path.join(
+          resolveGroupFolderPath(groupScope as string),
+          'credentials', 'tokens',
+        );
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(dir, { recursive: true });
+      } catch { /* best effort */ }
+
+      for (const providerId of pmap.keys()) {
+        this.persistCredentialInfo(groupScope, providerId);
+      }
+    }
   }
 }

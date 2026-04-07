@@ -24,6 +24,7 @@ import type { HostHandler } from './credential-proxy.js';
 import { proxyBuffered } from './credential-proxy.js';
 import { parseBody } from './oauth-interceptor.js';
 import type { AuthErrorCallback } from './session-context.js';
+import { writeInterceptStub } from './auth-interactions.js';
 import { logger } from '../logger.js';
 
 // Re-export setUpstreamAgent for test use
@@ -59,7 +60,7 @@ type OAuthInitiationCallback = (
   authUrl: string,
   providerId: string,
   containerIP: string,
-) => void;
+) => string | null;
 type OAuthInitiationResolver = (
   scope: GroupScope,
 ) => OAuthInitiationCallback | null;
@@ -948,19 +949,8 @@ function createAuthorizeStubHandler(
     // Push to flow queue if a session context exists (agent is running)
     const oauthInitCb = _oauthInitiationResolver?.(groupScope);
     if (oauthInitCb) {
-      oauthInitCb(authUrl, provider.id, sourceIP || '');
-
-      // Return a stub response — don't forward to upstream.
-      // The container's HTTP client gets a 200 with an explanation.
-      clientRes.writeHead(200, { 'content-type': 'application/json' });
-      clientRes.end(
-        JSON.stringify({
-          status: 'intercepted',
-          message:
-            'OAuth authorization URL intercepted by proxy and queued for user authentication',
-          url: authUrl,
-        }),
-      );
+      const interactionId = oauthInitCb(authUrl, provider.id, sourceIP || '');
+      writeInterceptStub(clientRes, authUrl, interactionId);
       return;
     }
 

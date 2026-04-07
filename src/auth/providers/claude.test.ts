@@ -264,8 +264,8 @@ describe('claudeProvider', () => {
       vi.mocked(readEnvFile).mockReset();
       vi.mocked(readEnvFile).mockReturnValue({});
 
-      const resolver = new PersistentCredentialResolver();
-      claudeProvider.importEnv!(asCredentialScope('empty-env-scope'), resolver);
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      claudeProvider.importEnv!(asCredentialScope('empty-env-scope'), engine.storeCredential.bind(engine));
     });
   });
 

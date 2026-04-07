@@ -138,9 +138,9 @@ describe('browser-open-handler', () => {
       expect(events[0].scope).toBe('my-group');
       expect(events[0].providerId).toBe('claude');
 
-      // flowId should be in the response
+      // interactionId should be in the response
       const body = JSON.parse(res._body);
-      expect(body.flowId).toBe('claude:12345');
+      expect(body.interactionId).toBe('claude:12345');
     });
 
     it('does not invoke callback for unknown URLs', async () => {

@@ -6,6 +6,7 @@
  * with a wrapper for x-api-key support. Discovery-file providers fill gaps
  * for other OAuth services.
  */
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -23,6 +24,7 @@ import {
   CLAUDE_OAUTH_PROVIDER,
   PROVIDER_ID as CLAUDE_PROVIDER_ID,
 } from './providers/claude.js';
+import { GROUPS_DIR } from '../config.js';
 import { logger } from '../logger.js';
 
 const registry = new Map<string, CredentialProvider>();
@@ -124,6 +126,7 @@ export function getTokenEngine(): TokenSubstituteEngine {
     if (loaded > 0) {
       logger.info({ count: loaded }, 'Loaded persisted substitute refs');
     }
+    _tokenEngine.regenerateAllCredentialInfo();
   }
   return _tokenEngine;
 }
@@ -229,6 +232,56 @@ export function registerDiscoveryProviders(
     { providers: providers.size, rules: ruleCount },
     'Registered discovery OAuth providers',
   );
+
+  publishProviderInfo();
+}
+
+/**
+ * Write per-provider JSONL files to groups/global/credentials/providers/.
+ * Each file has one line per intercept rule with mode and anchor.
+ * Shared read-only across all containers.
+ */
+function publishProviderInfo(): void {
+  const dir = path.join(GROUPS_DIR, 'global', 'credentials', 'providers');
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    return;
+  }
+
+  // Collect all OAuthProviders: builtin (Claude) + discovery
+  const allProviders: OAuthProvider[] = [CLAUDE_OAUTH_PROVIDER];
+  for (const p of _discoveryProviders.values()) {
+    allProviders.push(p);
+  }
+
+  for (const provider of allProviders) {
+    const modes = new Set<string>();
+    const hosts = new Set<string>();
+    for (const rule of provider.rules) {
+      modes.add(rule.mode);
+      if (rule.mode === 'bearer-swap') hosts.add(rule.anchor);
+    }
+
+    const lines: string[] = [];
+    const obj: Record<string, unknown> = {
+      provider: provider.id,
+      modes: [...modes].sort(),
+      hosts: [...hosts].sort(),
+    };
+    if (provider.envVars) obj.envVars = provider.envVars;
+    lines.push(JSON.stringify(obj));
+
+    try {
+      fs.writeFileSync(
+        path.join(dir, `${provider.id}.jsonl`),
+        lines.join('\n') + '\n',
+      );
+    } catch (err) {
+      logger.warn({ err, providerId: provider.id }, 'Provider info write failed');
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

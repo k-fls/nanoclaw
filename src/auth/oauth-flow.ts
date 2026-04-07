@@ -107,7 +107,7 @@ export function wireAuthCallbacks(proxy: CredentialProxy): void {
     const ctx = proxy.getSessionContext(eventScope);
     if (!ctx) return null;
     return (authUrl: string, providerId: string, _containerIP: string) => {
-      pushOAuthFlow(
+      return pushOAuthFlow(
         ctx,
         authUrl,
         providerId,
