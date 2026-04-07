@@ -156,8 +156,12 @@ function mockTokenEngine(opts?: {
   return {
     engine: {
       resolveCredentialScope: vi.fn(() => TEST_CRED_SCOPE),
-      getResolver: () => resolver,
       getSubstitute: vi.fn(() => opts?.existingSubstitute ?? null),
+      storeGroupCredential: vi.fn(
+        (_groupScope: any, providerId: string, credentialId: string, credential: any) => {
+          stored.push({ providerId, credentialScope: String(_groupScope), credentialId, credential });
+        },
+      ),
       clearCredentials: vi.fn(),
       pruneStaleRefs: vi.fn(),
       revokeByScope: vi.fn(() => 2),
@@ -290,9 +294,9 @@ describe('storeProviderKey', () => {
       TEST_GROUP_SCOPE,
       'github',
     );
-    expect(resolver.store).toHaveBeenCalledWith(
+    expect(engine.storeGroupCredential).toHaveBeenCalledWith(
+      TEST_GROUP_SCOPE,
       'github',
-      TEST_CRED_SCOPE,
       CRED_OAUTH,
       expect.objectContaining({ value: 'my-token', expires_ts: 0 }),
     );
@@ -387,9 +391,9 @@ describe('handleSetKey', () => {
     expect(result).toContain('Key stored');
     expect(result).toContain('github');
     expect(mockGpgDecrypt).toHaveBeenCalled();
-    expect(resolver.store).toHaveBeenCalledWith(
+    expect(engine.storeGroupCredential).toHaveBeenCalledWith(
+      TEST_GROUP_SCOPE,
       'github',
-      TEST_CRED_SCOPE,
       CRED_OAUTH,
       expect.objectContaining({ value: 'decrypted-key', expires_ts: 0 }),
     );
@@ -406,9 +410,9 @@ describe('handleSetKey', () => {
     const args = `api_key expiry=3600\n${PGP_ENCRYPTED}`;
     handleSetKey('github', args, TEST_GROUP_SCOPE, engine);
 
-    expect(resolver.store).toHaveBeenCalledWith(
+    expect(engine.storeGroupCredential).toHaveBeenCalledWith(
+      TEST_GROUP_SCOPE,
       'github',
-      TEST_CRED_SCOPE,
       'api_key',
       expect.objectContaining({ value: 'decrypted-key', expires_ts: 3600 }),
     );
@@ -419,9 +423,9 @@ describe('handleSetKey', () => {
     const args = `oauth ${PGP_ENCRYPTED}`;
     handleSetKey('github', args, TEST_GROUP_SCOPE, engine);
 
-    expect(resolver.store).toHaveBeenCalledWith(
+    expect(engine.storeGroupCredential).toHaveBeenCalledWith(
+      TEST_GROUP_SCOPE,
       'github',
-      TEST_CRED_SCOPE,
       CRED_OAUTH,
       expect.objectContaining({ value: 'decrypted-key', expires_ts: 0 }),
     );
@@ -505,8 +509,8 @@ describe('handleSetKey', () => {
     const args = `oauth expiry=${futureMs}\n${PGP_ENCRYPTED}`;
     handleSetKey('github', args, TEST_GROUP_SCOPE, engine);
 
-    const storeCall = resolver.store.mock.calls[0];
-    // New CredentialResolver.store signature: (providerId, scope, credentialId, credential)
+    const storeCall = engine.storeGroupCredential.mock.calls[0];
+    // storeGroupCredential(groupScope, providerId, credentialId, credential)
     const credential = storeCall[3] as { expires_ts: number };
     expect(credential.expires_ts).toBe(futureMs);
   });
@@ -570,9 +574,9 @@ describe('runInteractiveKeySetup', () => {
     expect(chat.sendRaw).toHaveBeenCalled();
     const rawMsg = (chat.sendRaw as any).mock.calls[0][0];
     expect(rawMsg).toContain('BEGIN PGP PUBLIC KEY BLOCK');
-    expect(resolver.store).toHaveBeenCalledWith(
+    expect(engine.storeGroupCredential).toHaveBeenCalledWith(
+      TEST_GROUP_SCOPE,
       'github',
-      TEST_CRED_SCOPE,
       CRED_OAUTH,
       expect.objectContaining({ value: 'decrypted-key', expires_ts: 0 }),
     );

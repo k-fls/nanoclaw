@@ -663,17 +663,15 @@ export const claudeProvider: CredentialProvider = {
 
   importEnv(
     scope: CredentialScope,
-    resolver: import('../oauth-types.js').TokenResolver,
+    store: (providerId: string, credentialScope: CredentialScope, credentialId: string, credential: import('../oauth-types.js').Credential) => void,
   ): void {
     const envVars = readEnvFile(ENV_FALLBACK_KEYS);
     if (Object.keys(envVars).length === 0) return;
 
-    const credScope = scope;
-
     const now = Date.now();
     // API key takes priority over OAuth tokens (mode exclusivity)
     if (envVars.ANTHROPIC_API_KEY) {
-      resolver.store(PROVIDER_ID, credScope, 'api_key', {
+      store(PROVIDER_ID, scope, 'api_key', {
         value: envVars.ANTHROPIC_API_KEY,
         expires_ts: 0,
         updated_ts: now,
@@ -681,7 +679,7 @@ export const claudeProvider: CredentialProvider = {
     } else {
       const oauthToken = envVars.CLAUDE_CODE_OAUTH_TOKEN ?? envVars.ANTHROPIC_AUTH_TOKEN;
       if (oauthToken) {
-        resolver.store(PROVIDER_ID, credScope, CRED_OAUTH, {
+        store(PROVIDER_ID, scope, CRED_OAUTH, {
           value: oauthToken,
           expires_ts: 0,
           updated_ts: now,
@@ -757,14 +755,12 @@ export const claudeProvider: CredentialProvider = {
     result: FlowResult,
     tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
   ): void {
-    const credScope = scope;
-    const resolver = tokenEngine.getResolver();
     const groupScope = asGroupScope(scope);
 
     switch (result.auth_type) {
       case 'api_key':
         tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
-        resolver.store(PROVIDER_ID, credScope, 'api_key', {
+        tokenEngine.storeGroupCredential(groupScope, PROVIDER_ID, 'api_key', {
           value: result.token,
           expires_ts: 0,
           updated_ts: Date.now(),
@@ -772,7 +768,7 @@ export const claudeProvider: CredentialProvider = {
         break;
       case 'setup_token':
         tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
-        resolver.store(PROVIDER_ID, credScope, CRED_OAUTH, {
+        tokenEngine.storeGroupCredential(groupScope, PROVIDER_ID, CRED_OAUTH, {
           value: result.token,
           expires_ts: 0,
           updated_ts: Date.now(),

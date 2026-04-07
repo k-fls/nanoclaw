@@ -29,7 +29,7 @@ import type {
 export function importEnvToDefault(engine: TokenSubstituteEngine): void {
   for (const provider of getAllProviders()) {
     if (engine.hasAnyCredential(asGroupScope('default'), provider.id)) continue;
-    provider.importEnv?.(DEFAULT_CREDENTIAL_SCOPE, engine.getResolver());
+    provider.importEnv?.(DEFAULT_CREDENTIAL_SCOPE, engine.storeCredential.bind(engine));
   }
 }
 

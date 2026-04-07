@@ -237,9 +237,8 @@ describe('claudeProvider', () => {
           'sk-ant-api03-from-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
 
-      const resolver = new PersistentCredentialResolver();
-      claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, resolver);
-      // Verify importEnv was called without error (credentials stored via resolver)
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, engine.storeCredential.bind(engine));
     });
 
     it('skips import if credentials already exist', () => {
@@ -258,8 +257,7 @@ describe('claudeProvider', () => {
         ANTHROPIC_API_KEY: 'should-not-overwrite',
       });
 
-      const resolver = new PersistentCredentialResolver();
-      claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, resolver);
+      claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, engine.storeCredential.bind(engine));
     });
 
     it('skips import when .env has no relevant keys', () => {

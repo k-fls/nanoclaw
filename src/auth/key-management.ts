@@ -5,7 +5,7 @@
  * and credential deletion for any bearer-swap-capable provider.
  */
 import type { GroupScope, CredentialScope } from './oauth-types.js';
-import { asCredentialScope, CRED_OAUTH } from './oauth-types.js';
+import { CRED_OAUTH } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import { readKeysFile, type Credential } from './token-substitute.js';
 import type { ChatIO } from './types.js';
@@ -92,9 +92,6 @@ export function storeProviderKey(
   expiresTs: number,
   tokenEngine: TokenSubstituteEngine,
 ): { needsRestart: boolean } {
-  const credScope = asCredentialScope(String(groupScope));
-  const resolver = tokenEngine.getResolver();
-
   // Check if any env var for this credential had no substitute yet
   let needsRestart = false;
   const provider = getDiscoveryProvider(providerId);
@@ -114,7 +111,7 @@ export function storeProviderKey(
 
   // Clear → store → prune
   tokenEngine.clearCredentials(groupScope, providerId);
-  resolver.store(providerId, credScope, credentialId, {
+  tokenEngine.storeGroupCredential(groupScope, providerId, credentialId, {
     value: token,
     expires_ts: expiresTs,
     updated_ts: Date.now(),

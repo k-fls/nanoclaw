@@ -580,9 +580,17 @@ export class TokenSubstituteEngine {
 
   // ── Internal helpers ─────────────────────────────────────────────
 
-  /** Access the underlying token resolver (e.g. for legacy refresh operations). */
-  getResolver(): CredentialResolver {
-    return this.resolver;
+  /**
+   * Store a credential directly by credentialScope. No group logic —
+   * used by importEnv to bootstrap .env credentials into default scope.
+   */
+  storeCredential(
+    providerId: string,
+    credentialScope: CredentialScope,
+    credentialId: string,
+    credential: Credential,
+  ): void {
+    this.resolver.store(providerId, credentialScope, credentialId, credential);
   }
 
   /** Get or create the provider map for a group scope. */
@@ -998,43 +1006,25 @@ export class TokenSubstituteEngine {
   }
 
   /**
-   * Add or update a credential for a group. Always writes to the group's
-   * own scope. If the provider currently has borrowed substitutes, they
-   * are all removed first (ownership takeover).
+   * Store a newly obtained credential for a group.
+   * Always writes to the group's own scope. If the provider currently
+   * has borrowed substitutes, they are revoked first (ownership takeover).
    */
-  addOrUpdateCredential(
+  storeGroupCredential(
     groupScope: GroupScope,
     providerId: string,
-    credentialPath: string,
-    newToken: string,
-    config: SubstituteConfig,
-    scopeAttrs: Record<string, string> = {},
-    expiresTs = 0,
-  ): string | null {
+    credentialId: string,
+    credential: Credential,
+  ): void {
     const ps = this.scopes.get(groupScope)?.get(providerId);
-
-    // Ownership takeover: remove borrowed substitutes
     if (ps?.sourceScope) {
       this.revokeProvider(groupScope, providerId);
     }
-
-    // Store the real token in the group's own scope
-    this.storeByPath(
+    this.resolver.store(
+      providerId,
       toCredentialScope(groupScope),
-      providerId,
-      credentialPath,
-      newToken,
-      expiresTs,
-    );
-
-    // Generate a new substitute (no sourceScope = owned)
-    return this.generateSubstitute(
-      newToken,
-      providerId,
-      scopeAttrs,
-      groupScope,
-      config,
-      credentialPath,
+      credentialId,
+      credential,
     );
   }
 

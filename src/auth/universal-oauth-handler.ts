@@ -17,7 +17,7 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import type { InterceptRule, OAuthProvider, Credential } from './oauth-types.js';
-import { asCredentialScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
+import { CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
 import type { GroupScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { HostHandler } from './credential-proxy.js';
@@ -859,7 +859,6 @@ function createTokenExchangeHandler(
           );
 
           // Store credential in the group's own scope before generating substitutes.
-          const credScope = asCredentialScope(String(groupScope));
           const credential: Credential = {
             value: parsed.fields.access_token,
             expires_ts: 0,
@@ -873,9 +872,9 @@ function createTokenExchangeHandler(
               updated_ts: Date.now(),
             };
           }
-          tokenEngine.getResolver().store(
+          tokenEngine.storeGroupCredential(
+            groupScope,
             provider.id,
-            credScope,
             CRED_OAUTH,
             credential,
           );

@@ -56,12 +56,11 @@ export interface CredentialProvider {
 
   /**
    * Import credentials from .env into the given scope.
-   * Each provider reads its own keys from .env and writes to the resolver.
    * Called once at startup for the 'default' scope.
    */
   importEnv?(
     scope: CredentialScope,
-    resolver: import('./oauth-types.js').TokenResolver,
+    store: (providerId: string, credentialScope: CredentialScope, credentialId: string, credential: import('./oauth-types.js').Credential) => void,
   ): void;
 }
 

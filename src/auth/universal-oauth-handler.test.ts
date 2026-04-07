@@ -289,7 +289,7 @@ describe('universal-oauth-handler', () => {
 
       // Register a token — store credential first, then generate substitute
       const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
-      engine.getResolver().store('test-provider', asCredentialScope('test-scope'), CRED_OAUTH, {
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
         value: realToken, expires_ts: 0, updated_ts: Date.now(),
       });
       const sub = engine.generateSubstitute(
@@ -374,7 +374,7 @@ describe('universal-oauth-handler', () => {
       const handler = createHandler(provider, rule, engine);
 
       const realKey = 'key_xabcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
-      engine.getResolver().store('test-provider', asCredentialScope('test-scope'), 'api_key', {
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', 'api_key', {
         value: realKey, expires_ts: 0, updated_ts: Date.now(),
       });
       const subKey = engine.generateSubstitute(
@@ -402,7 +402,7 @@ describe('universal-oauth-handler', () => {
       const handler = createHandler(provider, rule, engine);
 
       const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
-      engine.getResolver().store('test-provider', asCredentialScope('test-scope'), CRED_OAUTH, {
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
         value: realToken, expires_ts: 0, updated_ts: Date.now(),
       });
       const sub = engine.generateSubstitute(
@@ -592,7 +592,7 @@ describe('universal-oauth-handler', () => {
 
       // Token scoped to tenant "acme"
       const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
-      engine.getResolver().store('test-provider', asCredentialScope('test-scope'), CRED_OAUTH, {
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
         value: realToken, expires_ts: 0, updated_ts: Date.now(),
       });
       const sub = engine.generateSubstitute(
@@ -1028,8 +1028,7 @@ describe('universal-oauth-handler', () => {
 
       // Pre-register a refresh token substitute (store credential first)
       const realRefresh = 'real_refresh_abcdefghijklmnopqrstuvwxyz1234567890a';
-      const resolver = engine.getResolver();
-      resolver.store('test-provider', asCredentialScope('test-scope'), CRED_OAUTH, {
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
         value: 'placeholder', expires_ts: 0, updated_ts: Date.now(),
         refresh: { value: realRefresh, expires_ts: 0, updated_ts: Date.now() },
       });
