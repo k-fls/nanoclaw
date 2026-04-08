@@ -14,7 +14,8 @@ import { CREDENTIAL_PROXY_PORT } from '../config.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
 import { getProxy, type CredentialProxy } from './credential-proxy.js';
 import { getMitmCaCertPath } from './mitm-proxy.js';
-import { getAllProviders } from './registry.js';
+import { getAllProviders, getAllDiscoveryProviderIds, getDiscoveryProvider } from './registry.js';
+import { provisionEnvVars } from './provision.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { GroupScope } from './oauth-types.js';
 import type { RegisteredGroup } from '../types.js';
@@ -77,16 +78,41 @@ function detectProxyBindHost(): string {
  * using the group's flags (useDefaultCredentials, isMain).
  * Providers handle writing any provider-specific files (e.g. .credentials.json).
  */
-function injectSubstituteCredentials(
+/** @internal Exported for testing. */
+export function injectSubstituteCredentials(
   args: string[],
   group: RegisteredGroup,
   tokenEngine: TokenSubstituteEngine,
 ): void {
-  for (const provider of getAllProviders()) {
-    const { env } = provider.provision(group, tokenEngine);
+  const claimed = new Map<string, string>(); // env var name → provider id
+
+  function inject(env: Record<string, string>, providerId: string): void {
     for (const [key, value] of Object.entries(env)) {
+      const owner = claimed.get(key);
+      if (owner) {
+        logger.warn(
+          { envVar: key, provider: providerId, existingProvider: owner, group: group.folder },
+          'Env var already claimed by another provider, skipping',
+        );
+        continue;
+      }
+      claimed.set(key, providerId);
       args.push('-e', `${key}=${value}`);
     }
+  }
+
+  // Builtin providers (Claude)
+  for (const provider of getAllProviders()) {
+    const { env } = provider.provision(group, tokenEngine);
+    inject(env, provider.id);
+  }
+
+  // Discovery providers (GitHub, Google, etc.)
+  for (const id of getAllDiscoveryProviderIds()) {
+    const provider = getDiscoveryProvider(id);
+    if (!provider) continue;
+    const env = provisionEnvVars(provider, group, tokenEngine);
+    inject(env, id);
   }
 }
 
