@@ -8,10 +8,11 @@
 import {
   registerInteractionHandler,
   defaultHandler,
-  getInteractionPrefix,
   type HandlerContext,
   type InteractionEntry,
 } from '../interaction/index.js';
+import { brandChat } from '../interaction/chat-io.js';
+import { AUTH_PREFIX } from './chat-prompts.js';
 import { logger } from '../logger.js';
 
 /**
@@ -67,8 +68,8 @@ async function deviceCodeHandler(
 ): Promise<void> {
   entry = dedup(entry, ctx);
 
-  const prefix = getInteractionPrefix();
-  const { chat, statusRegistry } = ctx;
+  const chat = brandChat(ctx.chat, AUTH_PREFIX);
+  const { statusRegistry } = ctx;
 
   statusRegistry.emit(
     entry.interactionId,
@@ -80,7 +81,7 @@ async function deviceCodeHandler(
   // Bare code via sendRaw so user can copy it
   await chat.sendRaw(entry.eventParam);
   await chat.send(
-    `${prefix}Copy the code above and open ${entry.eventUrl} to complete authentication.`,
+    `Copy the code above and open ${entry.eventUrl} to complete authentication.`,
   );
 
   statusRegistry.emit(

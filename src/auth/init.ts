@@ -50,7 +50,7 @@ export interface AuthSystem {
 export async function initAuthSystem(
   getGroups: () => Record<string, RegisteredGroup>,
 ): Promise<AuthSystem> {
-  setInteractionPrefix('🔑🤖 ');
+  setInteractionPrefix('🤖');
   registerAuthHandlers();
   initCredentialStore();
   ensureNetwork();

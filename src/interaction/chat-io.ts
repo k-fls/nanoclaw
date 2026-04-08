@@ -3,6 +3,7 @@
  * flow messages through the normal channel messaging path.
  */
 import type { ChatIO } from './types.js';
+import { getInteractionPrefix } from './types.js';
 import type { Channel } from '../types.js';
 import { getMessagesSince, HIDE_REASON, hideMessage } from '../db.js';
 
@@ -57,5 +58,20 @@ export function createChatIO(deps: ChatIODeps): ChatIO {
         saveState();
       }
     },
+  };
+}
+
+/**
+ * Wrap a ChatIO so `send()` prepends `{interactionPrefix}{brandPrefix} `.
+ * `sendRaw()` is passed through unchanged.
+ */
+export function brandChat(chat: ChatIO, brandPrefix: string): ChatIO {
+  return {
+    send: (text: string) =>
+      chat.send(`${getInteractionPrefix()}${brandPrefix} ${text}`),
+    sendRaw: (text: string) => chat.sendRaw(text),
+    receive: (timeoutMs?: number) => chat.receive(timeoutMs),
+    hideMessage: () => chat.hideMessage(),
+    advanceCursor: () => chat.advanceCursor(),
   };
 }

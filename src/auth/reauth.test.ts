@@ -10,6 +10,9 @@ import {
   asCredentialScope,
   DEFAULT_CREDENTIAL_SCOPE,
 } from './oauth-types.js';
+import { setInteractionPrefix } from '../interaction/types.js';
+import { brandChat } from '../interaction/chat-io.js';
+import { AUTH_PREFIX } from './chat-prompts.js';
 
 const TEST_GROUP_SCOPE = asGroupScope('test-group');
 const TEST_CRED_SCOPE = asCredentialScope('test-scope');
@@ -19,6 +22,7 @@ vi.stubEnv('HOME', tmpDir);
 
 beforeEach(() => {
   fs.mkdirSync(path.join(tmpDir, '.config', 'nanoclaw'), { recursive: true });
+  setInteractionPrefix('🤖');
 });
 
 afterEach(() => {
@@ -95,8 +99,7 @@ function createChat(
 ): ChatIO & { sent: string[] } {
   let replyIndex = 0;
   const sent: string[] = [];
-  return {
-    sent,
+  const raw: ChatIO = {
     send: vi.fn(async (text: string) => {
       sent.push(text);
     }),
@@ -111,6 +114,8 @@ function createChat(
     hideMessage: vi.fn(),
     advanceCursor: vi.fn(),
   };
+  const branded = brandChat(raw, AUTH_PREFIX);
+  return Object.assign(branded, { sent });
 }
 
 // Must mock registry before importing reauth
@@ -163,7 +168,7 @@ describe('runReauth', () => {
     );
 
     for (const msg of chat.sent) {
-      expect(msg).toMatch(/^🔑🤖/);
+      expect(msg).toMatch(/^🤖🔑/);
     }
   });
 
@@ -231,7 +236,7 @@ describe('runReauth', () => {
     ]);
     mockProviders.push(provider);
 
-    const chat = createChat(['3']); // cancel
+    const chat = createChat(['0']); // cancel
     await runReauth(
       TEST_GROUP_SCOPE,
       chat,
@@ -245,16 +250,14 @@ describe('runReauth', () => {
     expect(menu).toContain('Description of A');
     expect(menu).toContain('2. *Option B*');
     expect(menu).toContain('Description of B');
-    expect(menu).toContain('3. Cancel');
+    expect(menu).toContain('0. Cancel');
     // Descriptions should be indented
     expect(menu).toContain('   Description of A');
-    // Options should be separated by blank lines
+    // Cancel should be after option entries
     const lines = menu.split('\n');
-    const optAIndex = lines.findIndex((l) => l.includes('1. *Option A*'));
     const optBIndex = lines.findIndex((l) => l.includes('2. *Option B*'));
-    // There should be a blank line between the description of A and option B
-    const between = lines.slice(optAIndex + 2, optBIndex);
-    expect(between.some((l) => l.trim() === '')).toBe(true);
+    const cancelIndex = lines.findIndex((l) => l.includes('0. Cancel'));
+    expect(cancelIndex).toBeGreaterThan(optBIndex);
   });
 
   it('instructions come after options', async () => {
@@ -273,8 +276,8 @@ describe('runReauth', () => {
     );
 
     const menu = chat.sent[0];
-    const cancelPos = menu.indexOf('Cancel');
-    const instructionPos = menu.indexOf('reply with a number only');
+    const cancelPos = menu.indexOf('0. Cancel');
+    const instructionPos = menu.indexOf('Reply with a number to select');
     expect(instructionPos).toBeGreaterThan(cancelPos);
   });
 
@@ -284,7 +287,7 @@ describe('runReauth', () => {
     ]);
     mockProviders.push(provider);
 
-    const chat = createChat(['2']); // 2 = Cancel (1 option + Cancel)
+    const chat = createChat(['0']); // 0 = Cancel
     const result = await runReauth(
       TEST_GROUP_SCOPE,
       chat,
@@ -328,7 +331,7 @@ describe('runReauth', () => {
       mockEngine,
     );
     expect(result).toBe(false);
-    expect(chat.sent.some((m) => m.includes('Timed out'))).toBe(true);
+    expect(chat.sent.some((m) => m.includes('Cancelled'))).toBe(true);
   });
 
   it('stores credentials on success', async () => {
@@ -435,7 +438,7 @@ describe('runReauth', () => {
       expect(result).toBe(true);
       // Menu should have been shown twice
       const menuMessages = chat.sent.filter((m) =>
-        m.includes('Choose an authentication method'),
+        m.includes('Authentication required for'),
       );
       expect(menuMessages).toHaveLength(2);
     });
@@ -446,8 +449,8 @@ describe('runReauth', () => {
       ]);
       mockProviders.push(provider);
 
-      // First: pick option 1 (RESELECT), second: pick cancel (2)
-      const chat = createChat(['1', '2']);
+      // First: pick option 1 (RESELECT), second: pick cancel (0)
+      const chat = createChat(['1', '0']);
       const result = await runReauth(
         TEST_GROUP_SCOPE,
         chat,
@@ -483,7 +486,7 @@ describe('runReauth', () => {
         m.includes('Hello from provider'),
       );
       expect(providerMsg).toBeDefined();
-      expect(providerMsg).toMatch(/^🔑🤖/);
+      expect(providerMsg).toMatch(/^🤖🔑/);
     });
   });
 });

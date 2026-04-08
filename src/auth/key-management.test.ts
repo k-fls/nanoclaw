@@ -561,7 +561,7 @@ describe('runInteractiveKeySetup', () => {
 
   it('sends GPG key raw and stores decrypted key', async () => {
     const { engine, resolver } = mockTokenEngine();
-    const chat = createChat([PGP_ENCRYPTED]);
+    const chat = createChat(['1', PGP_ENCRYPTED]);
 
     const result = await runInteractiveKeySetup(
       'github',
@@ -599,11 +599,11 @@ describe('runInteractiveKeySetup', () => {
     );
   });
 
-  it('returns false when no roles found', async () => {
+  it('returns false when user cancels credential selection', async () => {
     // Provider with bearer-swap but no envVars and no existing keys
     mockProviders.set('bare', makeProvider('bare'));
     const { engine } = mockTokenEngine();
-    const chat = createChat([]);
+    const chat = createChat(['0']); // cancel
 
     const result = await runInteractiveKeySetup(
       'bare',
@@ -612,7 +612,7 @@ describe('runInteractiveKeySetup', () => {
       chat,
     );
     expect(result).toBe(false);
-    expect(chat.sent.some((m) => m.includes('not configured'))).toBe(true);
+    expect(chat.sent.some((m) => m.includes('Cancelled'))).toBe(true);
   });
 
   it('asks user to choose when multiple roles', async () => {
@@ -633,13 +633,13 @@ describe('runInteractiveKeySetup', () => {
       chat,
     );
     expect(result).toBe(true);
-    // Menu should have been shown
-    expect(chat.sent.some((m) => m.includes('Multiple credentials'))).toBe(true);
+    // Menu should have been shown with numbered choices
+    expect(chat.sent.some((m) => m.includes('1.'))).toBe(true);
   });
 
   it('returns false on cancel reply', async () => {
     const { engine } = mockTokenEngine();
-    const chat = createChat(['cancel']);
+    const chat = createChat(['0']); // cancel at credential selection
 
     const result = await runInteractiveKeySetup(
       'github',
@@ -653,7 +653,7 @@ describe('runInteractiveKeySetup', () => {
   it('returns false when GPG not available', async () => {
     mockGpgAvailable.mockReturnValue(false);
     const { engine } = mockTokenEngine();
-    const chat = createChat([]);
+    const chat = createChat(['1']); // select credential, then GPG fails
 
     const result = await runInteractiveKeySetup(
       'github',
@@ -669,7 +669,7 @@ describe('runInteractiveKeySetup', () => {
 
   it('returns false on non-PGP reply', async () => {
     const { engine } = mockTokenEngine();
-    const chat = createChat(['plain-text-key']);
+    const chat = createChat(['1', 'plain-text-key']);
 
     const result = await runInteractiveKeySetup(
       'github',
@@ -688,7 +688,7 @@ describe('runInteractiveKeySetup', () => {
       throw new Error('bad');
     });
     const { engine } = mockTokenEngine();
-    const chat = createChat([PGP_ENCRYPTED]);
+    const chat = createChat(['1', PGP_ENCRYPTED]);
 
     const result = await runInteractiveKeySetup(
       'github',
@@ -702,7 +702,7 @@ describe('runInteractiveKeySetup', () => {
 
   it('hides message and advances cursor after receiving reply', async () => {
     const { engine } = mockTokenEngine();
-    const chat = createChat([PGP_ENCRYPTED]);
+    const chat = createChat(['1', PGP_ENCRYPTED]);
 
     await runInteractiveKeySetup('github', TEST_GROUP_SCOPE, engine, chat);
     expect(chat.hideMessage).toHaveBeenCalled();

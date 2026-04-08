@@ -20,11 +20,10 @@ import {
   gpgDecrypt,
   isPgpMessage,
 } from './gpg.js';
+import { chooseName, IDLE_TIMEOUT } from './chat-prompts.js';
 import { logger } from '../logger.js';
 
 const PGP_BEGIN = '-----BEGIN PGP MESSAGE-----';
-const IDLE_TIMEOUT = 120_000;
-const KEY_SETUP_PREFIX = '🔑🤖';
 
 // ---------------------------------------------------------------------------
 // Eligibility
@@ -133,51 +132,29 @@ export async function runInteractiveKeySetup(
 ): Promise<boolean> {
   if (!isKeyEligibleProvider(providerId)) {
     await chat.send(
-      `${KEY_SETUP_PREFIX} Provider *${providerId}* has no bearer-swap rules — ` +
+      `Provider *${providerId}* has no bearer-swap rules — ` +
         `it cannot be configured for manual key setup.`,
     );
     return false;
   }
 
-  // Determine credential ID
+  // Determine credential ID — user picks an existing one or types a new name.
   const credIds = getProviderCredentialIds(providerId, groupScope, tokenEngine);
-  let credentialId: string;
-
-  if (credIds.size === 0) {
-    await chat.send(
-      `${KEY_SETUP_PREFIX} Provider *${providerId}* is not configured for manual key setup ` +
-        `(no known credentials from existing keys or env var declarations).`,
-    );
+  const credentialId = await chooseName(
+    chat,
+    `Set key for *${providerId}*:`,
+    [...credIds],
+    true,
+  );
+  if (!credentialId) {
+    await chat.send(`Cancelled.`);
     return false;
-  } else if (credIds.size === 1) {
-    credentialId = [...credIds][0];
-  } else {
-    // Multiple credentials — ask user to choose
-    const credList = [...credIds];
-    const menu = credList.map((r, i) => `${i + 1}. ${r}`).join('\n');
-    await chat.send(
-      `${KEY_SETUP_PREFIX} Multiple credentials available for *${providerId}*:\n\n` +
-        `${menu}\n\nReply with a number.`,
-    );
-    const reply = await chat.receive(IDLE_TIMEOUT);
-    if (!reply) {
-      await chat.send(`${KEY_SETUP_PREFIX} Timed out.`);
-      return false;
-    }
-    chat.hideMessage();
-    chat.advanceCursor();
-    const choice = parseInt(reply.trim(), 10);
-    if (isNaN(choice) || choice < 1 || choice > credList.length) {
-      await chat.send(`${KEY_SETUP_PREFIX} Cancelled.`);
-      return false;
-    }
-    credentialId = credList[choice - 1];
   }
 
   // GPG setup
   if (!isGpgAvailable()) {
     await chat.send(
-      `${KEY_SETUP_PREFIX} GPG is not installed. ` +
+      `GPG is not installed. ` +
         `Install it (\`apt install gnupg\` or \`brew install gnupg\`) and try again.`,
     );
     return false;
@@ -188,7 +165,7 @@ export async function runInteractiveKeySetup(
     ensureGpgKey(scope);
   } catch (err) {
     await chat.send(
-      `${KEY_SETUP_PREFIX} Failed to initialize GPG keypair: ` +
+      `Failed to initialize GPG keypair: ` +
         `${err instanceof Error ? err.message : String(err)}`,
     );
     return false;
@@ -208,12 +185,12 @@ export async function runInteractiveKeySetup(
       '```\n' +
       'echo "your-api-key" | gpg --encrypt --armor --recipient nanoclaw\n' +
       '```\n\n' +
-      '*Step 3.* Paste the encrypted output here. Reply "cancel" to abort.',
+      '*Step 3.* Paste the encrypted output here, or reply *0* to abort.',
   );
 
   const reply = await chat.receive(IDLE_TIMEOUT);
-  if (!reply || reply.trim().toLowerCase() === 'cancel') {
-    await chat.send(`${KEY_SETUP_PREFIX} Cancelled.`);
+  if (!reply || reply.trim() === '0') {
+    await chat.send(`Cancelled.`);
     return false;
   }
   chat.hideMessage();
@@ -221,7 +198,7 @@ export async function runInteractiveKeySetup(
 
   if (!isPgpMessage(reply)) {
     await chat.send(
-      `${KEY_SETUP_PREFIX} Expected a GPG-encrypted message (${PGP_BEGIN}).\n` +
+      `Expected a GPG-encrypted message (${PGP_BEGIN}).\n` +
         `Plaintext keys are not accepted for security reasons.`,
     );
     return false;
@@ -232,7 +209,7 @@ export async function runInteractiveKeySetup(
     plaintext = gpgDecrypt(scope, reply.trim());
   } catch (err) {
     await chat.send(
-      `${KEY_SETUP_PREFIX} Failed to decrypt PGP message. ` +
+      `Failed to decrypt PGP message. ` +
         `Make sure you encrypted with the public key shown above.`,
     );
     logger.error({ scope, err }, 'GPG decrypt failed');
@@ -248,7 +225,7 @@ export async function runInteractiveKeySetup(
     tokenEngine,
   );
 
-  let msg = `${KEY_SETUP_PREFIX} Key stored for *${providerId}* (*${credentialId}*).`;
+  let msg = `Key stored for *${providerId}* (*${credentialId}*).`;
   if (needsRestart) {
     msg +=
       '\n⚠️ Container restart may be needed for the new key to take effect.';
@@ -287,23 +264,29 @@ export function handleSetKey(
   const pgpBlock = argsAfterSetKey.slice(pgpIdx);
   const prefix = argsAfterSetKey.slice(0, pgpIdx).trim();
 
-  // Parse optional credential ID and expiry from tokens before the PGP block
+  // Parse optional credential ID and expiry from tokens before the PGP block.
+  // Any token that isn't `expiry=…` is treated as a credential ID — users can
+  // supply arbitrary names, not just pre-existing ones.
   const tokens = prefix.split(/\s+/).filter(Boolean);
   let credentialId: string | undefined;
   let expiry = 0;
 
-  const knownIds = getProviderCredentialIds(providerId, groupScope, tokenEngine);
   for (const tok of tokens) {
-    if (knownIds.has(tok)) {
-      credentialId = tok;
-    } else if (tok.startsWith('expiry=')) {
+    if (tok.startsWith('expiry=')) {
       const val = parseInt(tok.slice(7), 10);
       if (!isNaN(val)) expiry = val;
+    } else if (!credentialId) {
+      credentialId = tok;
     }
   }
 
-  // Default credential ID from provider
+  // Default credential ID when none was provided
   if (!credentialId) {
+    const knownIds = getProviderCredentialIds(
+      providerId,
+      groupScope,
+      tokenEngine,
+    );
     credentialId = knownIds.size === 1 ? [...knownIds][0] : CRED_OAUTH;
   }
 

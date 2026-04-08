@@ -23,6 +23,8 @@ import { handleSetKey, handleDeleteKeys } from '../auth/key-management.js';
 import { isGpgAvailable, ensureGpgKey, exportPublicKey } from '../auth/gpg.js';
 import { runReauth } from '../auth/reauth.js';
 import { getTokenEngine } from '../auth/registry.js';
+import { AUTH_PREFIX } from '../auth/chat-prompts.js';
+import { brandChat } from '../interaction/chat-io.js';
 import { scopeOf } from '../types.js';
 import { reply } from './helpers.js';
 import { registerCommand } from './registry.js';
@@ -37,9 +39,10 @@ registerCommand('auth', {
       return {
         stopContainer: true,
         asyncAction: async (io) => {
+          const chat = brandChat(io, AUTH_PREFIX);
           await runReauth(
             scopeOf(ctx.group),
-            io,
+            chat,
             'User requested auth',
             CLAUDE_PROVIDER_ID,
             tokenEngine,
@@ -67,12 +70,13 @@ registerCommand('auth', {
     if (subcommand === 'delete') {
       return {
         asyncAction: async (io) => {
+          const chat = brandChat(io, AUTH_PREFIX);
           const msg = await handleDeleteKeys(
             providerId,
             scopeOf(ctx.group),
             tokenEngine,
           );
-          if (msg) await io.send(msg);
+          if (msg) await chat.send(msg);
         },
       };
     }
@@ -82,13 +86,14 @@ registerCommand('auth', {
       const rest = args.slice(args.indexOf('set-key') + 7).trim();
       return {
         asyncAction: async (io) => {
+          const chat = brandChat(io, AUTH_PREFIX);
           const msg = await handleSetKey(
             providerId,
             rest,
             scopeOf(ctx.group),
             tokenEngine,
           );
-          if (msg) await io.send(msg);
+          if (msg) await chat.send(msg);
         },
       };
     }
@@ -96,6 +101,7 @@ registerCommand('auth', {
     // (b) /auth <provider> → interactive key setup (needs ChatIO)
     return {
       asyncAction: async (io) => {
+        const chat = brandChat(io, AUTH_PREFIX);
         const { runInteractiveKeySetup } = await import(
           '../auth/key-management.js'
         );
@@ -103,7 +109,7 @@ registerCommand('auth', {
           providerId,
           scopeOf(ctx.group),
           tokenEngine,
-          io,
+          chat,
         );
       },
     };
