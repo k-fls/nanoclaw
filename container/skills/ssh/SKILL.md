@@ -29,16 +29,21 @@ Each line is JSON:
 
 ## Usage After Connecting
 
-After `ssh_connect` returns, use standard SSH commands with the ControlPath socket:
+After `ssh_connect` returns, use standard SSH commands with the ControlPath socket.
+
+The connection is pre-authenticated via ControlMaster on the host — your commands multiplex over the existing socket. This means:
+- **No `-o StrictHostKeyChecking=...` needed** — host key verification already happened on the host side before the socket was created. Adding it is unnecessary and misleading.
+- **For `ssh`: the destination argument is ignored** — the socket already knows the user and host. You must still provide it syntactically, but any value works (convention: `_`).
+- **For `scp`/`rsync`: `user@host` is required** — it determines the remote file path. Get `username` and `host` from the JSONL manifest or the `ssh_connect` response.
 
 ```bash
-# Run a command
-ssh -o ControlPath=/ssh-sockets/prod-db.sock deploy@prod-db.example.com ls /tmp
+# Run a command (destination is ignored, use _ as placeholder)
+ssh -o ControlPath=/ssh-sockets/prod-db.sock _ ls /tmp
 
-# Copy files
+# Copy files (user@host required for remote path)
 scp -o ControlPath=/ssh-sockets/prod-db.sock local.txt deploy@prod-db.example.com:/remote/
 
-# Rsync
+# Rsync (user@host required for remote path)
 rsync -e "ssh -o ControlPath=/ssh-sockets/prod-db.sock" src/ deploy@prod-db.example.com:/dest/
 ```
 

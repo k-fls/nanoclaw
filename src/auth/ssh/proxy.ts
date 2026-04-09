@@ -268,12 +268,13 @@ async function handleConnect(
     }
 
     const containerSock = containerSocketPath(alias);
+    const dest = `${conn.username}@${conn.host}`;
     const usage = [
-      `SSH connection established for '${alias}' (${conn.username}@${conn.host}:${conn.port}).`,
+      `SSH connection established for '${alias}' (${dest}:${conn.port}).`,
       `Usage:`,
-      `  ssh -o ControlPath=${containerSock} ${conn.username}@${conn.host} [command]`,
-      `  scp -o ControlPath=${containerSock} local.txt ${conn.username}@${conn.host}:/remote/`,
-      `  rsync -e "ssh -o ControlPath=${containerSock}" src/ ${conn.username}@${conn.host}:/dest/`,
+      `  ssh -o ControlPath=${containerSock} _ [command]`,
+      `  scp -o ControlPath=${containerSock} local.txt ${dest}:/remote/`,
+      `  rsync -e "ssh -o ControlPath=${containerSock}" src/ ${dest}:/dest/`,
     ].join('\n');
 
     sendJson(res, 200, { status: 'ok', alias, usage });

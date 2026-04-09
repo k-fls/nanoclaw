@@ -17,6 +17,7 @@ import {
   SSH_PROVIDER_ID,
   PEM_PASSWORDS_PROVIDER_ID,
   isValidAlias,
+  isFingerprint,
   parseConnectionString,
   sshToCredential,
   sshFromCredential,
@@ -443,6 +444,9 @@ function processSecret(
   if (hostKeyOverride === '*') {
     hostKey = '*';
   } else if (hostKeyOverride) {
+    if (!isFingerprint(hostKeyOverride)) {
+      return 'Invalid hostKey. Use `*` or a fingerprint (`SHA256:...` / `MD5:...`).';
+    }
     hostKey = hostKeyOverride;
   }
 
@@ -641,7 +645,12 @@ function handleSshResetHost(args: string, scope: GroupScope) {
   for (const p of parts.slice(1)) {
     if (p.startsWith('hostKey=')) {
       const val = p.slice(8);
-      newHostKey = val === '*' ? '*' : val;
+      if (val !== '*' && !isFingerprint(val)) {
+        return reply(
+          'Invalid hostKey. Use `*` or a fingerprint (`SHA256:...` / `MD5:...`).',
+        );
+      }
+      newHostKey = val;
     }
   }
 

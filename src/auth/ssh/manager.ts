@@ -31,6 +31,8 @@ import type {
 import {
   sshFromCredential,
   sshToCredential,
+  isFingerprint,
+  fingerprintEqual,
   SSH_PROVIDER_ID,
 } from './types.js';
 
@@ -38,10 +40,6 @@ import {
 
 const SSH_SOCKET_BASE = '/tmp/nanoclaw/ssh';
 
-/** Detect whether a stored hostKey value is a fingerprint (SHA256:..., MD5:...) vs a raw key line. */
-function isFingerprint(value: string): boolean {
-  return /^(SHA256|MD5):/.test(value);
-}
 const DEFAULT_CONNECT_TIMEOUT = 5;
 const SOCKET_POLL_INTERVAL_MS = 100;
 const SOCKET_POLL_MARGIN_MS = 2000;
@@ -225,7 +223,7 @@ export class SSHManager {
           );
         }
         const scannedFp = this.fingerprint(scanned);
-        if (meta.hostKey === scannedFp) {
+        if (fingerprintEqual(meta.hostKey, scannedFp)) {
           // Use scanned key line for known_hosts (fingerprint can't go there)
           return {
             keyLine: scanned,

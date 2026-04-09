@@ -62,6 +62,32 @@ export function isValidAlias(alias: string): boolean {
   );
 }
 
+/**
+ * Validate that a hostKey value is a well-formed fingerprint.
+ * SHA256: base64 of 32 bytes (43 chars, no padding).
+ * MD5: 16 colon-separated hex pairs (47 chars).
+ */
+export function isFingerprint(value: string): boolean {
+  return (
+    /^(SHA256|sha256):[A-Za-z0-9+/]{43}$/.test(value) ||
+    /^(MD5|md5):([0-9a-fA-F]{2}:){15}[0-9a-fA-F]{2}$/.test(value)
+  );
+}
+
+/** Compare two fingerprints. Case-insensitive for prefix and MD5 hex; case-sensitive for SHA256 base64. */
+export function fingerprintEqual(a: string, b: string): boolean {
+  const prefixA = a.substring(0, 7).toLowerCase();
+  if (prefixA.startsWith('md5:')) {
+    return a.toLowerCase() === b.toLowerCase();
+  }
+  
+  // SHA256: prefix is case-insensitive, base64 payload is case-sensitive
+  if (prefixA === 'sha256:' && b.substring(0, 7).toLowerCase() === 'sha256:') {
+    return a.slice(7) === b.slice(7);
+  }
+  return false;
+}
+
 // ── Connection string parsing ─────────────────────────────────────
 
 export interface ParsedConnectionString {
