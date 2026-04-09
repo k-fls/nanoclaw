@@ -128,10 +128,14 @@ function generateHostCert(
   const keys = forge.pki.rsa.generateKeyPair(2048);
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
-  // Prefix with '00' so the ASN.1 INTEGER is always positive.
-  // Clients may rejects certs with negative serial numbers.
-  cert.serialNumber =
-    '00' + forge.util.bytesToHex(forge.random.getBytesSync(16));
+  // Clear the high bit of the first random byte so the ASN.1 INTEGER
+  // is always positive without needing a leading 0x00 pad byte.
+  // Unconditional '00' prefix causes "illegal padding" errors on strict
+  // DER parsers (OpenSSL 3.x / Node 21+) when the next byte is < 0x80.
+  const rnd = forge.random.getBytesSync(16);
+  const masked =
+    String.fromCharCode(rnd.charCodeAt(0) & 0x7f) + rnd.slice(1);
+  cert.serialNumber = forge.util.bytesToHex(masked);
   cert.validity.notBefore = new Date();
   cert.validity.notAfter = new Date();
   cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
