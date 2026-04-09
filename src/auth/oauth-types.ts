@@ -34,9 +34,6 @@ export function asCredentialScope(scope: string): CredentialScope {
   return scope as unknown as CredentialScope;
 }
 
-/** The shared credential scope used by main and groups with useDefaultCredentials. */
-export const DEFAULT_CREDENTIAL_SCOPE: CredentialScope =
-  asCredentialScope('default');
 
 // ---------------------------------------------------------------------------
 // Intercept rules (3-level matching: anchor → host regex → path regex)

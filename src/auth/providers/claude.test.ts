@@ -68,7 +68,6 @@ import type { RegisteredGroup } from '../../types.js';
 import {
   asCredentialScope,
   asGroupScope,
-  DEFAULT_CREDENTIAL_SCOPE,
   CRED_OAUTH,
   CRED_OAUTH_REFRESH,
 } from '../oauth-types.js';
@@ -238,13 +237,13 @@ describe('claudeProvider', () => {
       });
 
       const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
-      claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, engine.storeCredential.bind(engine));
+      claudeProvider.importEnv!(TEST_CRED_SCOPE, engine.storeCredential.bind(engine));
     });
 
     it('skips import if credentials already exist', () => {
       const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       claudeProvider.storeResult(
-        DEFAULT_CREDENTIAL_SCOPE,
+        TEST_CRED_SCOPE,
         {
           auth_type: 'api_key',
           token: 'existing-key',
@@ -257,7 +256,7 @@ describe('claudeProvider', () => {
         ANTHROPIC_API_KEY: 'should-not-overwrite',
       });
 
-      claudeProvider.importEnv!(DEFAULT_CREDENTIAL_SCOPE, engine.storeCredential.bind(engine));
+      claudeProvider.importEnv!(TEST_CRED_SCOPE, engine.storeCredential.bind(engine));
     });
 
     it('skips import when .env has no relevant keys', () => {

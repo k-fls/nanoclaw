@@ -809,8 +809,8 @@ describe('TokenSubstituteEngine', () => {
     });
 
     it('coalesces groups that resolve to the same credential scope', async () => {
-      // Both groups configured to use default credentials.
-      // Main group resolves directly to 'default' scope.
+      // group-b borrows from group-a, so both resolve to group-a's scope
+      // when group-a has keys and group-b does not.
       const groupA = asGroupScope('group-a');
       const groupB = asGroupScope('group-b');
       engine.setGroupResolver((folder) => ({
@@ -818,9 +818,18 @@ describe('TokenSubstituteEngine', () => {
         folder: folder as string,
         trigger: '',
         added_at: '',
-        isMain: true,
-        containerConfig: { useDefaultCredentials: true },
+        containerConfig:
+          folder === 'group-b'
+            ? { credentialSource: 'group-a' }
+            : {},
       }));
+
+      // Store a credential in group-a's scope so hasKeysInScope returns true
+      resolver.store('provider', asCredentialScope('group-a'), 'oauth', {
+        value: 'dummy-token',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
 
       let callCount = 0;
       let resolve!: (v: boolean) => void;

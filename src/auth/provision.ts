@@ -15,7 +15,7 @@ import type {
 } from './oauth-types.js';
 import {
   asGroupScope,
-  DEFAULT_CREDENTIAL_SCOPE,
+  asCredentialScope,
 } from './oauth-types.js';
 import type {
   TokenSubstituteEngine,
@@ -23,13 +23,18 @@ import type {
 } from './token-substitute.js';
 
 /**
- * Import .env values into the default scope via each provider's importEnv().
+ * Import .env values into the main group's scope via each provider's importEnv().
  * Called once at startup. Skips providers that already have keys stored.
  */
-export function importEnvToDefault(engine: TokenSubstituteEngine): void {
+export function importEnvToMainGroup(
+  engine: TokenSubstituteEngine,
+  mainGroupFolder: string,
+): void {
+  const mainScope = asGroupScope(mainGroupFolder);
+  const mainCredScope = asCredentialScope(mainGroupFolder);
   for (const provider of getAllProviders()) {
-    if (engine.hasAnyCredential(asGroupScope('default'), provider.id)) continue;
-    provider.importEnv?.(DEFAULT_CREDENTIAL_SCOPE, engine.storeCredential.bind(engine));
+    if (engine.hasAnyCredential(mainScope, provider.id)) continue;
+    provider.importEnv?.(mainCredScope, engine.storeCredential.bind(engine));
   }
 }
 
@@ -71,14 +76,23 @@ export function createAccessCheck(
   groupResolver: GroupResolver,
 ): ScopeAccessCheck {
   return (groupScope: GroupScope, sourceScope: CredentialScope): boolean => {
-    if (sourceScope === 'default') {
-      const group = groupResolver(groupScope);
-      if (!group) return false;
-      return (
-        group.containerConfig?.useDefaultCredentials ?? group.isMain === true
-      );
-    }
-    // Non-default sourceScope: only the group itself can access its own scope
-    return (groupScope as string) === (sourceScope as string);
+    // Own scope: always allowed
+    if ((groupScope as string) === (sourceScope as string)) return true;
+
+    const borrower = groupResolver(groupScope);
+    if (!borrower) return false;
+
+    // Borrower must claim this source
+    if (borrower.containerConfig?.credentialSource !== (sourceScope as string))
+      return false;
+
+    // Grantor must have listed this borrower
+    const grantor = groupResolver(asGroupScope(sourceScope as string));
+    if (!grantor) return false;
+    return (
+      grantor.containerConfig?.credentialGrantees?.includes(
+        groupScope as string,
+      ) === true
+    );
   };
 }

@@ -30,7 +30,8 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
-  useDefaultCredentials?: boolean; // Default: true — allow fallback to default scope credentials
+  credentialSource?: string; // folder name of the group to borrow credentials from (borrower side)
+  credentialGrantees?: string[]; // folder names of groups granted access to this group's credentials (grantor side)
 }
 
 export interface RegisteredGroup {

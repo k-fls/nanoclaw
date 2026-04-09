@@ -34,11 +34,11 @@ import type {
 } from './oauth-types.js';
 import {
   MIN_RANDOM_CHARS,
-  DEFAULT_CREDENTIAL_SCOPE,
   CRED_OAUTH,
   asGroupScope,
   asCredentialScope,
 } from './oauth-types.js';
+import { onKeysFileWritten, onKeysFileDeleted } from './manifest.js';
 
 /**
  * Use a group's own folder as a credential scope.
@@ -283,6 +283,7 @@ export function writeKeysFile(
   const p = keysPath(credentialScope, providerId);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
+  onKeysFileWritten(credentialScope, providerId);
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +409,7 @@ export class PersistentCredentialResolver implements CredentialResolver {
         fs.rmSync(scopeDir, { recursive: true });
       } catch { /* already gone */ }
     }
+    onKeysFileDeleted(credentialScope, providerId);
   }
 
   // ── Test-only methods (not on CredentialResolver interface) ─────
@@ -497,6 +499,7 @@ export class PersistentCredentialResolver implements CredentialResolver {
           keys.v = KEYS_FILE_VERSION;
         },
       );
+      onKeysFileWritten(credentialScope, providerId);
     } catch (err) {
       logger.warn(
         { err, credentialScope, providerId, credentialId },
@@ -653,22 +656,20 @@ export class TokenSubstituteEngine {
   private resolveCredentialScopeInternal(
     groupScope: GroupScope,
     providerId: string,
-    defaultScope: CredentialScope = DEFAULT_CREDENTIAL_SCOPE,
   ): { scope: CredentialScope; writable: boolean } {
     const ownScope = toCredentialScope(groupScope);
     const group = this.groupResolver?.(groupScope);
     if (!group) return { scope: ownScope, writable: true };
-    const useDefault =
-      group.containerConfig?.useDefaultCredentials ?? group.isMain === true;
-    // Main + default: main manages default directly
-    if (group.isMain && useDefault)
-      return { scope: defaultScope, writable: true };
     // Check own scope first
     if (this.hasKeysInScope(ownScope, providerId))
       return { scope: ownScope, writable: true };
-    // Fall back to default if allowed — read-only (non-main borrowing)
-    if (useDefault && this.hasKeysInScope(defaultScope, providerId))
-      return { scope: defaultScope, writable: false };
+    // Fall back to credentialSource if configured
+    const sourceName = group.containerConfig?.credentialSource;
+    if (sourceName) {
+      const sourceScope = asCredentialScope(sourceName);
+      if (this.hasKeysInScope(sourceScope, providerId))
+        return { scope: sourceScope, writable: false };
+    }
     return { scope: ownScope, writable: true };
   }
 

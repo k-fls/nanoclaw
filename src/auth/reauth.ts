@@ -7,7 +7,6 @@ import { logger } from '../logger.js';
 import { getAllProviders } from './registry.js';
 import { startExecInContainer, authSessionDir } from './exec.js';
 import type { CredentialScope, GroupScope } from './oauth-types.js';
-import { DEFAULT_CREDENTIAL_SCOPE } from './oauth-types.js';
 import type {
   AuthContext,
   AuthExecOpts,
@@ -80,18 +79,10 @@ async function showMenuAndRun(
   }
   choices.set(DELETE_CHOICE, 'Delete credentials');
 
-  // Check if any option targets the default scope — means we're modifying shared credentials
-  const targetsDefault = allOptions.some(
-    (opt) => opt.credentialScope === DEFAULT_CREDENTIAL_SCOPE,
-  );
-  const scopeNote = targetsDefault
-    ? "⚠️ This will change the *default* credentials used by all groups that don't have their own."
-    : `Group: *${groupScope}*`;
-
   const heading = [
     `*Authentication required for ${providerHint}*`,
     ``,
-    scopeNote,
+    `Group: *${groupScope}*`,
     `Reason: ${reason}`,
   ].join('\n');
 

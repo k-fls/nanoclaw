@@ -32,7 +32,7 @@ vi.mock('../env.js', () => ({
 
 const { initCredentialStore } = await import('./store.js');
 const { registerProvider } = await import('./registry.js');
-const { importEnvToDefault, createAccessCheck, provisionEnvVars } =
+const { importEnvToMainGroup, createAccessCheck, provisionEnvVars } =
   await import('./provision.js');
 
 import type { CredentialProvider } from './types.js';
@@ -41,7 +41,6 @@ import type { OAuthProvider } from './oauth-types.js';
 import {
   asGroupScope,
   asCredentialScope,
-  DEFAULT_CREDENTIAL_SCOPE,
   DEFAULT_SUBSTITUTE_CONFIG,
   CRED_OAUTH,
 } from './oauth-types.js';
@@ -52,7 +51,11 @@ import {
 
 function makeGroup(
   folder: string,
-  opts?: { useDefaultCredentials?: boolean; isMain?: boolean },
+  opts?: {
+    credentialSource?: string;
+    credentialGrantees?: string[];
+    isMain?: boolean;
+  },
 ): RegisteredGroup {
   return {
     name: `Group ${folder}`,
@@ -60,8 +63,11 @@ function makeGroup(
     trigger: '@Andy',
     added_at: new Date().toISOString(),
     containerConfig:
-      opts?.useDefaultCredentials !== undefined
-        ? { useDefaultCredentials: opts.useDefaultCredentials }
+      opts?.credentialSource || opts?.credentialGrantees
+        ? {
+            credentialSource: opts.credentialSource,
+            credentialGrantees: opts.credentialGrantees,
+          }
         : undefined,
     isMain: opts?.isMain,
   };
@@ -76,65 +82,73 @@ describe('createAccessCheck', () => {
     groups.clear();
   });
 
-  it('allows default scope when useDefaultCredentials is true', () => {
-    groups.set(
-      'my-group',
-      makeGroup('my-group', { useDefaultCredentials: true }),
-    );
-    expect(check(asGroupScope('my-group'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
-      true,
-    );
-  });
-
-  it('allows default scope for main group (implicit useDefaultCredentials)', () => {
-    groups.set('main-group', makeGroup('main-group', { isMain: true }));
-    expect(check(asGroupScope('main-group'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
-      true,
-    );
-  });
-
-  it('denies default scope when useDefaultCredentials is false', () => {
-    groups.set('locked', makeGroup('locked', { useDefaultCredentials: false }));
-    expect(check(asGroupScope('locked'), DEFAULT_CREDENTIAL_SCOPE)).toBe(false);
-  });
-
-  it('denies default scope when useDefaultCredentials is not set (non-main)', () => {
-    groups.set('regular', makeGroup('regular'));
-    expect(check(asGroupScope('regular'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
-      false,
-    );
-  });
-
-  it('denies default scope for main with explicit useDefaultCredentials=false', () => {
-    groups.set(
-      'main-locked',
-      makeGroup('main-locked', { isMain: true, useDefaultCredentials: false }),
-    );
-    expect(check(asGroupScope('main-locked'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
-      false,
-    );
-  });
-
-  it('denies default scope for unknown group', () => {
-    expect(check(asGroupScope('nonexistent'), DEFAULT_CREDENTIAL_SCOPE)).toBe(
-      false,
-    );
-  });
-
   it('allows own scope', () => {
     groups.set('self', makeGroup('self'));
     expect(check(asGroupScope('self'), asCredentialScope('self'))).toBe(true);
   });
 
-  it('denies cross-group non-default scope', () => {
+  it('allows bilateral grant (both sides configured)', () => {
+    groups.set(
+      'borrower',
+      makeGroup('borrower', { credentialSource: 'grantor' }),
+    );
+    groups.set(
+      'grantor',
+      makeGroup('grantor', { credentialGrantees: ['borrower'] }),
+    );
+    expect(
+      check(asGroupScope('borrower'), asCredentialScope('grantor')),
+    ).toBe(true);
+  });
+
+  it('denies when borrower claims source but grantor has not granted', () => {
+    groups.set(
+      'borrower',
+      makeGroup('borrower', { credentialSource: 'grantor' }),
+    );
+    groups.set('grantor', makeGroup('grantor'));
+    expect(
+      check(asGroupScope('borrower'), asCredentialScope('grantor')),
+    ).toBe(false);
+  });
+
+  it('denies when grantor has granted but borrower has not set source', () => {
+    groups.set('borrower', makeGroup('borrower'));
+    groups.set(
+      'grantor',
+      makeGroup('grantor', { credentialGrantees: ['borrower'] }),
+    );
+    expect(
+      check(asGroupScope('borrower'), asCredentialScope('grantor')),
+    ).toBe(false);
+  });
+
+  it('denies cross-group access without any sharing', () => {
     groups.set('group-a', makeGroup('group-a'));
+    groups.set('group-b', makeGroup('group-b'));
     expect(check(asGroupScope('group-a'), asCredentialScope('group-b'))).toBe(
       false,
     );
   });
+
+  it('denies for unknown borrower group', () => {
+    expect(
+      check(asGroupScope('nonexistent'), asCredentialScope('grantor')),
+    ).toBe(false);
+  });
+
+  it('denies for unknown grantor group', () => {
+    groups.set(
+      'borrower',
+      makeGroup('borrower', { credentialSource: 'nonexistent' }),
+    );
+    expect(
+      check(asGroupScope('borrower'), asCredentialScope('nonexistent')),
+    ).toBe(false);
+  });
 });
 
-describe('importEnvToDefault', () => {
+describe('importEnvToMainGroup', () => {
   beforeEach(() => {
     initCredentialStore();
   });
@@ -152,8 +166,8 @@ describe('importEnvToDefault', () => {
     registerProvider(provider);
 
     const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
-    importEnvToDefault(engine);
-    expect(importEnvMock).toHaveBeenCalledWith('default', expect.anything());
+    importEnvToMainGroup(engine, 'main');
+    expect(importEnvMock).toHaveBeenCalledWith('main', expect.anything());
   });
 
   it('skips providers without importEnv', () => {
@@ -168,7 +182,7 @@ describe('importEnvToDefault', () => {
 
     const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     // Should not throw
-    importEnvToDefault(engine);
+    importEnvToMainGroup(engine, 'main');
   });
 });
 

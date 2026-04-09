@@ -8,7 +8,6 @@ import { RESELECT } from './types.js';
 import {
   asGroupScope,
   asCredentialScope,
-  DEFAULT_CREDENTIAL_SCOPE,
 } from './oauth-types.js';
 import { setInteractionPrefix } from '../interaction/types.js';
 import { brandChat } from '../interaction/chat-io.js';
@@ -188,37 +187,6 @@ describe('runReauth', () => {
     );
 
     expect(chat.sent[0]).toContain('Group: *test-group*');
-  });
-
-  it('shows default scope warning when options target default scope', async () => {
-    // Provider whose authOptions return credentialScope = DEFAULT_CREDENTIAL_SCOPE
-    const provider: CredentialProvider = {
-      id: 'test',
-      displayName: 'Test Provider',
-      provision: () => ({ env: {} }),
-      storeResult: vi.fn(),
-      authOptions: () => [
-        {
-          label: 'Option A',
-          credentialScope: DEFAULT_CREDENTIAL_SCOPE,
-          provider,
-          run: async () => null,
-        },
-      ],
-    };
-    mockProviders.push(provider);
-
-    const chat = createChat(['1']);
-    await runReauth(
-      TEST_GROUP_SCOPE,
-      chat,
-      'test',
-      'Test Provider',
-      mockEngine,
-    );
-
-    expect(chat.sent[0]).toContain('default');
-    expect(chat.sent[0]).toContain('all groups');
   });
 
   it('shows options with descriptions separated by blank lines', async () => {

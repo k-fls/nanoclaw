@@ -10,10 +10,12 @@ import {
   TIMEZONE,
   triggerToName,
 } from './config.js';
+import { initAuthSystem } from './auth/init.js';
+import { NEW_GROUPS_USE_DEFAULT_CREDENTIALS } from './config.js';
 import {
-  initAuthSystem,
-  NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
-} from './auth/init.js';
+  distributeAllManifests,
+  createBorrowedLink,
+} from './auth/manifest.js';
 import { createAuthGuard } from './auth/guard.js';
 import { runReauth } from './auth/reauth.js';
 import { getProxy } from './auth/credential-proxy.js';
@@ -155,16 +157,40 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     return;
   }
 
-  // Apply global default for useDefaultCredentials if not explicitly set
-  if (group.containerConfig?.useDefaultCredentials === undefined) {
-    group.containerConfig = {
-      ...group.containerConfig,
-      useDefaultCredentials: NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
-    };
-  }
-
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
+
+  // Auto grant+borrow from main when NEW_GROUPS_USE_DEFAULT_CREDENTIALS is true
+  if (
+    NEW_GROUPS_USE_DEFAULT_CREDENTIALS &&
+    !group.isMain &&
+    !group.containerConfig?.credentialSource
+  ) {
+    const mainEntry = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain,
+    );
+    if (mainEntry) {
+      const [mainJid, mainGroup] = mainEntry;
+      // Add this group to main's grantees
+      const grantees = mainGroup.containerConfig?.credentialGrantees ?? [];
+      if (!grantees.includes(group.folder)) {
+        mainGroup.containerConfig = {
+          ...mainGroup.containerConfig,
+          credentialGrantees: [...grantees, group.folder],
+        };
+        setRegisteredGroup(mainJid, mainGroup);
+      }
+      // Set this group's credentialSource to main
+      group.containerConfig = {
+        ...group.containerConfig,
+        credentialSource: mainGroup.folder,
+      };
+      setRegisteredGroup(jid, group);
+      // Distribute manifests and create borrowed symlink
+      distributeAllManifests(mainGroup.folder, group.folder);
+      createBorrowedLink(group.folder, mainGroup.folder);
+    }
+  }
 
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
