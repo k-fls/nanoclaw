@@ -503,6 +503,97 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+// ── SSH tools ────────────────────────────────────────────────────
+
+const proxyHost = process.env.PROXY_HOST || 'host.docker.internal';
+const proxyPort = process.env.PROXY_PORT || '3001';
+const proxyBase = `http://${proxyHost}:${proxyPort}`;
+
+async function sshProxyCall(endpoint: string, body: object): Promise<any> {
+  const res = await fetch(`${proxyBase}${endpoint}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+server.tool(
+  'ssh_request_credential',
+  `Request SSH credentials from the user. Two modes:
+• "generate": Generate an ed25519 keypair on the host. Returns the public key for the user to add to authorized_keys.
+• "ask": Notify the user to provide credentials via /ssh add. Returns "pending" — you'll receive an IPC message when fulfilled.
+
+If the credential already exists, returns { status: "ok" } regardless of mode.`,
+  {
+    alias: z.string().describe('Credential alias (e.g., "prod-db", "staging")'),
+    mode: z.enum(['generate', 'ask']).describe('generate=create keypair, ask=request from user'),
+    connection_host: z.string().describe('Remote host to connect to'),
+    connection_port: z.number().optional().describe('SSH port (default 22)'),
+    connection_username: z.string().optional().describe('SSH username (required for generate mode)'),
+  },
+  async (args) => {
+    const result = await sshProxyCall('/ssh/request-credential', {
+      alias: args.alias,
+      mode: args.mode,
+      connection_host: args.connection_host,
+      connection_port: args.connection_port,
+      connection_username: args.connection_username,
+    });
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+      isError: result.status === 'error',
+    };
+  },
+);
+
+server.tool(
+  'ssh_connect',
+  `Establish an SSH connection to a remote server using stored credentials.
+The connection is multiplexed via ControlMaster — after connecting, use standard ssh/scp/rsync commands with the provided ControlPath socket.
+Returns usage examples on success.`,
+  {
+    alias: z.string().describe('Credential alias to connect with'),
+    timeout: z.number().optional().describe('Connection timeout in seconds (default 5)'),
+  },
+  async (args) => {
+    const result = await sshProxyCall('/ssh/connect', {
+      alias: args.alias,
+      timeout: args.timeout,
+    });
+
+    if (result.status === 'ok') {
+      return {
+        content: [{ type: 'text' as const, text: result.usage }],
+      };
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+      isError: true,
+    };
+  },
+);
+
+server.tool(
+  'ssh_disconnect',
+  'Disconnect an SSH ControlMaster connection.',
+  {
+    alias: z.string().describe('Credential alias to disconnect'),
+  },
+  async (args) => {
+    const result = await sshProxyCall('/ssh/disconnect', {
+      alias: args.alias,
+    });
+
+    return {
+      content: [{ type: 'text' as const, text: result.status === 'ok' ? `Disconnected '${args.alias}'.` : JSON.stringify(result) }],
+      isError: result.status === 'error',
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

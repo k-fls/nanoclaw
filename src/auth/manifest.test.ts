@@ -26,9 +26,13 @@ vi.mock('./store.js', async () => {
 vi.mock('../group-folder.js', async () => {
   const _os = await import('os');
   const _path = await import('path');
-  const _tmp = _path.default.join(_os.default.tmpdir(), `manifest-test-${process.pid}`);
+  const _tmp = _path.default.join(
+    _os.default.tmpdir(),
+    `manifest-test-${process.pid}`,
+  );
   return {
-    resolveGroupFolderPath: (folder: string) => _path.default.join(_tmp, 'groups', folder),
+    resolveGroupFolderPath: (folder: string) =>
+      _path.default.join(_tmp, 'groups', folder),
   };
 });
 
@@ -80,7 +84,11 @@ describe('manifest builder registry', () => {
 
   it('custom builder overrides default', () => {
     const scope = 'custom-scope' as unknown as CredentialScope;
-    const customLine = JSON.stringify({ provider: 'ssh', type: 'pubkey', host: '*' });
+    const customLine = JSON.stringify({
+      provider: 'ssh',
+      type: 'pubkey',
+      host: '*',
+    });
 
     registerManifestBuilder('ssh', () => [customLine]);
 
@@ -93,7 +101,11 @@ describe('manifest builder registry', () => {
 
     const lines = readManifestFile('custom-scope', 'ssh');
     expect(lines).toHaveLength(1);
-    expect(JSON.parse(lines[0])).toEqual({ provider: 'ssh', type: 'pubkey', host: '*' });
+    expect(JSON.parse(lines[0])).toEqual({
+      provider: 'ssh',
+      type: 'pubkey',
+      host: '*',
+    });
   });
 
   it('builder returning [] suppresses manifest', () => {

@@ -34,7 +34,6 @@ export function asCredentialScope(scope: string): CredentialScope {
   return scope as unknown as CredentialScope;
 }
 
-
 // ---------------------------------------------------------------------------
 // Intercept rules (3-level matching: anchor → host regex → path regex)
 // ---------------------------------------------------------------------------

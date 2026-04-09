@@ -37,6 +37,8 @@ export interface CommandRunContext {
   group: RegisteredGroup;
   chatJid: string;
   sender: string;
+  /** Send an IPC input message to the group's active agent container. Best-effort. */
+  sendMessageToAgent: (text: string) => boolean;
   /** Opaque extension data for branch-specific commands. */
   extra?: Record<string, unknown>;
 }
@@ -49,6 +51,8 @@ export interface CommandContext {
   chat: ChatIO;
   getContainerName: () => string | null;
   stopContainer: () => void;
+  /** Send an IPC input message to the group's active agent container. Best-effort. */
+  sendMessageToAgent: (text: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------

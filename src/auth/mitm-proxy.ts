@@ -133,8 +133,7 @@ function generateHostCert(
   // Unconditional '00' prefix causes "illegal padding" errors on strict
   // DER parsers (OpenSSL 3.x / Node 21+) when the next byte is < 0x80.
   const rnd = forge.random.getBytesSync(16);
-  const masked =
-    String.fromCharCode(rnd.charCodeAt(0) & 0x7f) + rnd.slice(1);
+  const masked = String.fromCharCode(rnd.charCodeAt(0) & 0x7f) + rnd.slice(1);
   cert.serialNumber = forge.util.bytesToHex(masked);
   cert.validity.notBefore = new Date();
   cert.validity.notAfter = new Date();

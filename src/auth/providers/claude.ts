@@ -11,7 +11,12 @@ import net from 'net';
 import path from 'path';
 
 import { readKeysFile, writeKeysFile } from '../token-substitute.js';
-import { asCredentialScope, asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js';
+import {
+  asCredentialScope,
+  asGroupScope,
+  CRED_OAUTH,
+  CRED_OAUTH_REFRESH,
+} from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
 import type { CredentialScope, GroupScope } from '../oauth-types.js';
 import { authSessionDir, scopeClaudeDir } from '../exec.js';
@@ -663,7 +668,12 @@ export const claudeProvider: CredentialProvider = {
 
   importEnv(
     scope: CredentialScope,
-    store: (providerId: string, credentialScope: CredentialScope, credentialId: string, credential: import('../oauth-types.js').Credential) => void,
+    store: (
+      providerId: string,
+      credentialScope: CredentialScope,
+      credentialId: string,
+      credential: import('../oauth-types.js').Credential,
+    ) => void,
   ): void {
     const envVars = readEnvFile(ENV_FALLBACK_KEYS);
     if (Object.keys(envVars).length === 0) return;
@@ -677,7 +687,8 @@ export const claudeProvider: CredentialProvider = {
         updated_ts: now,
       });
     } else {
-      const oauthToken = envVars.CLAUDE_CODE_OAUTH_TOKEN ?? envVars.ANTHROPIC_AUTH_TOKEN;
+      const oauthToken =
+        envVars.CLAUDE_CODE_OAUTH_TOKEN ?? envVars.ANTHROPIC_AUTH_TOKEN;
       if (oauthToken) {
         store(PROVIDER_ID, scope, CRED_OAUTH, {
           value: oauthToken,
@@ -735,7 +746,9 @@ export const claudeProvider: CredentialProvider = {
 
     // Write .credentials.json with substitute tokens + real expiresAt
     // Engine resolves the source scope (own or borrowed from default)
-    const expiresAt = tokenEngine.resolveCredential(scope, PROVIDER_ID, CRED_OAUTH)?.expires_ts ?? 0;
+    const expiresAt =
+      tokenEngine.resolveCredential(scope, PROVIDER_ID, CRED_OAUTH)
+        ?.expires_ts ?? 0;
     const credentialsJson = JSON.stringify({
       claudeAiOauth: {
         accessToken: subAccess,

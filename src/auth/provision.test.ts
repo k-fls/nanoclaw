@@ -96,9 +96,9 @@ describe('createAccessCheck', () => {
       'grantor',
       makeGroup('grantor', { credentialGrantees: ['borrower'] }),
     );
-    expect(
-      check(asGroupScope('borrower'), asCredentialScope('grantor')),
-    ).toBe(true);
+    expect(check(asGroupScope('borrower'), asCredentialScope('grantor'))).toBe(
+      true,
+    );
   });
 
   it('denies when borrower claims source but grantor has not granted', () => {
@@ -107,9 +107,9 @@ describe('createAccessCheck', () => {
       makeGroup('borrower', { credentialSource: 'grantor' }),
     );
     groups.set('grantor', makeGroup('grantor'));
-    expect(
-      check(asGroupScope('borrower'), asCredentialScope('grantor')),
-    ).toBe(false);
+    expect(check(asGroupScope('borrower'), asCredentialScope('grantor'))).toBe(
+      false,
+    );
   });
 
   it('denies when grantor has granted but borrower has not set source', () => {
@@ -118,9 +118,9 @@ describe('createAccessCheck', () => {
       'grantor',
       makeGroup('grantor', { credentialGrantees: ['borrower'] }),
     );
-    expect(
-      check(asGroupScope('borrower'), asCredentialScope('grantor')),
-    ).toBe(false);
+    expect(check(asGroupScope('borrower'), asCredentialScope('grantor'))).toBe(
+      false,
+    );
   });
 
   it('denies cross-group access without any sharing', () => {
@@ -165,7 +165,9 @@ describe('importEnvToMainGroup', () => {
     };
     registerProvider(provider);
 
-    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const engine = new TokenSubstituteEngine(
+      new PersistentCredentialResolver(),
+    );
     importEnvToMainGroup(engine, 'main');
     expect(importEnvMock).toHaveBeenCalledWith('main', expect.anything());
   });
@@ -180,7 +182,9 @@ describe('importEnvToMainGroup', () => {
     };
     registerProvider(provider);
 
-    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const engine = new TokenSubstituteEngine(
+      new PersistentCredentialResolver(),
+    );
     // Should not throw
     importEnvToMainGroup(engine, 'main');
   });
@@ -207,7 +211,9 @@ describe('provisionEnvVars', () => {
   });
 
   it('provisions oauth token as env var', () => {
-    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const engine = new TokenSubstituteEngine(
+      new PersistentCredentialResolver(),
+    );
     const provider = makeOAuthProvider({ GH_TOKEN: CRED_OAUTH });
     const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
 
@@ -227,7 +233,9 @@ describe('provisionEnvVars', () => {
   });
 
   it('provisions multiple env vars for the same credential', () => {
-    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const engine = new TokenSubstituteEngine(
+      new PersistentCredentialResolver(),
+    );
     const provider = makeOAuthProvider({
       GH_TOKEN: CRED_OAUTH,
       GITHUB_TOKEN: CRED_OAUTH,
@@ -251,7 +259,9 @@ describe('provisionEnvVars', () => {
   });
 
   it('skips env var when no token exists for the credential', () => {
-    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const engine = new TokenSubstituteEngine(
+      new PersistentCredentialResolver(),
+    );
     const provider = makeOAuthProvider({ GH_TOKEN: CRED_OAUTH });
 
     // No tokens stored
@@ -260,7 +270,9 @@ describe('provisionEnvVars', () => {
   });
 
   it('returns empty when provider has no envVars mapping', () => {
-    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const engine = new TokenSubstituteEngine(
+      new PersistentCredentialResolver(),
+    );
     const provider = makeOAuthProvider(); // no envVars
 
     const env = provisionEnvVars(provider, makeGroup('my-group'), engine);
@@ -268,7 +280,9 @@ describe('provisionEnvVars', () => {
   });
 
   it('provisions api_key role', () => {
-    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const engine = new TokenSubstituteEngine(
+      new PersistentCredentialResolver(),
+    );
     const provider = makeOAuthProvider({ API_KEY: 'api_key' });
     const realKey = 'key_xabcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
 

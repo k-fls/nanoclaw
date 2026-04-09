@@ -14,7 +14,11 @@ import { CREDENTIAL_PROXY_PORT } from '../config.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
 import { getProxy, type CredentialProxy } from './credential-proxy.js';
 import { getMitmCaCertPath } from './mitm-proxy.js';
-import { getAllProviders, getAllDiscoveryProviderIds, getDiscoveryProvider } from './registry.js';
+import {
+  getAllProviders,
+  getAllDiscoveryProviderIds,
+  getDiscoveryProvider,
+} from './registry.js';
 import { provisionEnvVars } from './provision.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { GroupScope } from './oauth-types.js';
@@ -91,7 +95,12 @@ export function injectSubstituteCredentials(
       const owner = claimed.get(key);
       if (owner) {
         logger.warn(
-          { envVar: key, provider: providerId, existingProvider: owner, group: group.folder },
+          {
+            envVar: key,
+            provider: providerId,
+            existingProvider: owner,
+            group: group.folder,
+          },
           'Env var already claimed by another provider, skipping',
         );
         continue;

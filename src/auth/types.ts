@@ -60,7 +60,12 @@ export interface CredentialProvider {
    */
   importEnv?(
     scope: CredentialScope,
-    store: (providerId: string, credentialScope: CredentialScope, credentialId: string, credential: import('./oauth-types.js').Credential) => void,
+    store: (
+      providerId: string,
+      credentialScope: CredentialScope,
+      credentialId: string,
+      credential: import('./oauth-types.js').Credential,
+    ) => void,
   ): void;
 }
 

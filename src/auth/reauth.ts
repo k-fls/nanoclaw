@@ -86,7 +86,12 @@ async function showMenuAndRun(
     `Reason: ${reason}`,
   ].join('\n');
 
-  const choice = await chooseOption(chat, heading, choices, 'an authentication method');
+  const choice = await chooseOption(
+    chat,
+    heading,
+    choices,
+    'an authentication method',
+  );
 
   if (choice === null) {
     await chat.send('Cancelled.');
@@ -103,9 +108,7 @@ async function showMenuAndRun(
     for (const provider of providers) {
       engine.revokeByScope(groupScope, provider.id);
     }
-    await chat.send(
-      `Credentials deleted for scope *${groupScope}*.`,
-    );
+    await chat.send(`Credentials deleted for scope *${groupScope}*.`);
     logger.info({ groupScope }, 'Credentials deleted via reauth menu');
     return false;
   }
@@ -136,9 +139,7 @@ async function showMenuAndRun(
     }
 
     selected.provider.storeResult(selected.credentialScope, result, engine);
-    await chat.send(
-      `Credentials stored for ${selected.provider.displayName}.`,
-    );
+    await chat.send(`Credentials stored for ${selected.provider.displayName}.`);
     logger.info(
       { groupScope, provider: selected.provider.id },
       'Reauth completed',
@@ -157,4 +158,3 @@ async function showMenuAndRun(
     return false;
   }
 }
-

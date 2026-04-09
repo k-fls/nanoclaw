@@ -18,7 +18,10 @@ const mockBuiltinProviders: Array<{
   provision: () => { env: Record<string, string> };
 }> = [];
 const mockDiscoveryIds: string[] = [];
-const mockDiscoveryProviders = new Map<string, { id: string; envVars?: Record<string, string>; substituteConfig: any }>();
+const mockDiscoveryProviders = new Map<
+  string,
+  { id: string; envVars?: Record<string, string>; substituteConfig: any }
+>();
 
 vi.mock('./registry.js', () => ({
   getAllProviders: () => mockBuiltinProviders,
@@ -43,7 +46,12 @@ const { injectSubstituteCredentials } = await import('./container-args.js');
 const { logger } = await import('../logger.js');
 
 function makeGroup(folder: string): RegisteredGroup {
-  return { name: folder, folder, trigger: '@test', added_at: new Date().toISOString() };
+  return {
+    name: folder,
+    folder,
+    trigger: '@test',
+    added_at: new Date().toISOString(),
+  };
 }
 
 describe('injectSubstituteCredentials', () => {
@@ -90,7 +98,9 @@ describe('injectSubstituteCredentials', () => {
     injectSubstituteCredentials(args, makeGroup('test'), {} as any);
 
     // First provider wins
-    expect(args.filter(a => a.startsWith('SHARED_TOKEN='))).toEqual(['SHARED_TOKEN=sub_a']);
+    expect(args.filter((a) => a.startsWith('SHARED_TOKEN='))).toEqual([
+      'SHARED_TOKEN=sub_a',
+    ]);
 
     // Warning logged for the duplicate
     expect(logger.warn).toHaveBeenCalledWith(

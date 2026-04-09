@@ -102,9 +102,8 @@ registerCommand('auth', {
     return {
       asyncAction: async (io) => {
         const chat = brandChat(io, AUTH_PREFIX);
-        const { runInteractiveKeySetup } = await import(
-          '../auth/key-management.js'
-        );
+        const { runInteractiveKeySetup } =
+          await import('../auth/key-management.js');
         await runInteractiveKeySetup(
           providerId,
           scopeOf(ctx.group),

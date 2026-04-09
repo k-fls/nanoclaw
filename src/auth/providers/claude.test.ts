@@ -96,14 +96,18 @@ describe('claudeProvider', () => {
       scope: import('../oauth-types.js').CredentialScope,
       result: { auth_type: string; token: string; expires_at: string | null },
     ) {
-      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const engine = new TokenSubstituteEngine(
+        new PersistentCredentialResolver(),
+      );
       claudeProvider.storeResult(scope, result, engine);
       engine.loadAllPersistedRefs();
       return claudeProvider.provision(makeGroup(scope), engine);
     }
 
     it('returns empty env when no credentials exist', () => {
-      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const engine = new TokenSubstituteEngine(
+        new PersistentCredentialResolver(),
+      );
       const result = claudeProvider.provision(makeGroup('nonexistent'), engine);
       expect(result.env).toEqual({});
     });
@@ -204,7 +208,9 @@ describe('claudeProvider', () => {
 
   describe('storeResult', () => {
     it('encrypts the token in keys file', () => {
-      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const engine = new TokenSubstituteEngine(
+        new PersistentCredentialResolver(),
+      );
       claudeProvider.storeResult(
         ENC_TEST_SCOPE,
         {
@@ -236,12 +242,19 @@ describe('claudeProvider', () => {
           'sk-ant-api03-from-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
 
-      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
-      claudeProvider.importEnv!(TEST_CRED_SCOPE, engine.storeCredential.bind(engine));
+      const engine = new TokenSubstituteEngine(
+        new PersistentCredentialResolver(),
+      );
+      claudeProvider.importEnv!(
+        TEST_CRED_SCOPE,
+        engine.storeCredential.bind(engine),
+      );
     });
 
     it('skips import if credentials already exist', () => {
-      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const engine = new TokenSubstituteEngine(
+        new PersistentCredentialResolver(),
+      );
       claudeProvider.storeResult(
         TEST_CRED_SCOPE,
         {
@@ -256,15 +269,23 @@ describe('claudeProvider', () => {
         ANTHROPIC_API_KEY: 'should-not-overwrite',
       });
 
-      claudeProvider.importEnv!(TEST_CRED_SCOPE, engine.storeCredential.bind(engine));
+      claudeProvider.importEnv!(
+        TEST_CRED_SCOPE,
+        engine.storeCredential.bind(engine),
+      );
     });
 
     it('skips import when .env has no relevant keys', () => {
       vi.mocked(readEnvFile).mockReset();
       vi.mocked(readEnvFile).mockReturnValue({});
 
-      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
-      claudeProvider.importEnv!(asCredentialScope('empty-env-scope'), engine.storeCredential.bind(engine));
+      const engine = new TokenSubstituteEngine(
+        new PersistentCredentialResolver(),
+      );
+      claudeProvider.importEnv!(
+        asCredentialScope('empty-env-scope'),
+        engine.storeCredential.bind(engine),
+      );
     });
   });
 

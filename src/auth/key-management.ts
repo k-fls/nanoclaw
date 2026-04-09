@@ -319,7 +319,10 @@ export function handleSetKey(
     msg +=
       '\n⚠️ Container restart may be needed for the new key to take effect.';
   }
-  logger.info({ groupScope, providerId, credentialId }, 'Key stored via set-key');
+  logger.info(
+    { groupScope, providerId, credentialId },
+    'Key stored via set-key',
+  );
   return msg;
 }
 

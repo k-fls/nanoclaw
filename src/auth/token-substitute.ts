@@ -92,7 +92,10 @@ export type TokenRole = string;
 function parsePath(credentialPath: string): { id: string; nested?: string } {
   const slash = credentialPath.indexOf('/');
   if (slash === -1) return { id: credentialPath };
-  return { id: credentialPath.slice(0, slash), nested: credentialPath.slice(slash + 1) };
+  return {
+    id: credentialPath.slice(0, slash),
+    nested: credentialPath.slice(slash + 1),
+  };
 }
 
 /**
@@ -111,7 +114,6 @@ function resolveCredentialPathToRealToken(
   if (!cred) return null;
   return resolver.extractToken(cred, nested);
 }
-
 
 // ---------------------------------------------------------------------------
 // Locked JSON file helpers — fd held open between read and write
@@ -233,15 +235,18 @@ function migrateKeysFile(
   providerId: string,
 ): KeysFile {
   const refreshEntry = keys['refresh'];
-  const hasLegacy =
-    refreshEntry || keys['access'] || !keys.v;
+  const hasLegacy = refreshEntry || keys['access'] || !keys.v;
 
   if (!hasLegacy && Object.keys(keys).length === 0) return keys;
 
   // Move sibling 'refresh' into its parent
   if (refreshEntry) {
     // Find parent: 'access' (or CRED_OAUTH if already renamed)
-    const parentId = keys['access'] ? 'access' : keys[CRED_OAUTH] ? CRED_OAUTH : null;
+    const parentId = keys['access']
+      ? 'access'
+      : keys[CRED_OAUTH]
+        ? CRED_OAUTH
+        : null;
     if (parentId) {
       keys[parentId].refresh = {
         value: refreshEntry.value,
@@ -329,21 +334,35 @@ function refsPath(groupScope: GroupScope, providerId: string): string {
  */
 export class PersistentCredentialResolver implements CredentialResolver {
   /** scope → provider → credentialId → Credential (encrypted values). */
-  private cache = new Map<CredentialScope, Map<string, Map<string, Credential>>>();
+  private cache = new Map<
+    CredentialScope,
+    Map<string, Map<string, Credential>>
+  >();
 
   private cacheGet(
-    scope: CredentialScope, provider: string, id: string,
+    scope: CredentialScope,
+    provider: string,
+    id: string,
   ): Credential | undefined {
     return this.cache.get(scope)?.get(provider)?.get(id);
   }
 
   private cacheSet(
-    scope: CredentialScope, provider: string, id: string, cred: Credential,
+    scope: CredentialScope,
+    provider: string,
+    id: string,
+    cred: Credential,
   ): void {
     let scopeMap = this.cache.get(scope);
-    if (!scopeMap) { scopeMap = new Map(); this.cache.set(scope, scopeMap); }
+    if (!scopeMap) {
+      scopeMap = new Map();
+      this.cache.set(scope, scopeMap);
+    }
     let provMap = scopeMap.get(provider);
-    if (!provMap) { provMap = new Map(); scopeMap.set(provider, provMap); }
+    if (!provMap) {
+      provMap = new Map();
+      scopeMap.set(provider, provMap);
+    }
     provMap.set(id, cred);
   }
 
@@ -355,7 +374,12 @@ export class PersistentCredentialResolver implements CredentialResolver {
     credentialId: string,
     credential: Credential,
   ): void {
-    const encrypted = this.persistCredential(credentialScope, providerId, credentialId, credential);
+    const encrypted = this.persistCredential(
+      credentialScope,
+      providerId,
+      credentialId,
+      credential,
+    );
     this.loadCache(credentialScope, providerId, credentialId, encrypted);
   }
 
@@ -401,13 +425,17 @@ export class PersistentCredentialResolver implements CredentialResolver {
       this.cache.get(credentialScope)?.delete(providerId);
       try {
         fs.unlinkSync(keysPath(credentialScope, providerId));
-      } catch { /* already gone */ }
+      } catch {
+        /* already gone */
+      }
     } else {
       this.cache.delete(credentialScope);
       const scopeDir = path.join(CREDENTIALS_DIR, credentialScope);
       try {
         fs.rmSync(scopeDir, { recursive: true });
-      } catch { /* already gone */ }
+      } catch {
+        /* already gone */
+      }
     }
     onKeysFileDeleted(credentialScope, providerId);
   }
@@ -418,8 +446,7 @@ export class PersistentCredentialResolver implements CredentialResolver {
   get size(): number {
     let n = 0;
     for (const scopeMap of this.cache.values())
-      for (const provMap of scopeMap.values())
-        n += provMap.size;
+      for (const provMap of scopeMap.values()) n += provMap.size;
     return n;
   }
 
@@ -734,7 +761,10 @@ export class TokenSubstituteEngine {
     const sourceScope = credScope !== ownCredScope ? credScope : undefined;
 
     const realToken = resolveCredentialPathToRealToken(
-      this.resolver, credScope, providerId, credentialPath,
+      this.resolver,
+      credScope,
+      providerId,
+      credentialPath,
     );
     if (!realToken) return null;
 
@@ -908,7 +938,10 @@ export class TokenSubstituteEngine {
       ? this.effectiveScope(groupScope, ps)
       : toCredentialScope(groupScope);
     return resolveCredentialPathToRealToken(
-      this.resolver, effCredScope, providerId, credentialPath,
+      this.resolver,
+      effCredScope,
+      providerId,
+      credentialPath,
     );
   }
 
@@ -927,7 +960,6 @@ export class TokenSubstituteEngine {
       : toCredentialScope(groupScope);
     return this.resolver.resolve(effCredScope, providerId, credentialId);
   }
-
 
   /**
    * Refresh a credential. Writes to the source scope if borrowed and
@@ -963,7 +995,14 @@ export class TokenSubstituteEngine {
       targetScope = ownScope;
     }
 
-    this.storeByPath(targetScope, providerId, credentialPath, newToken, expiresTs, authFields);
+    this.storeByPath(
+      targetScope,
+      providerId,
+      credentialPath,
+      newToken,
+      expiresTs,
+      authFields,
+    );
   }
 
   /**
@@ -1157,7 +1196,10 @@ export class TokenSubstituteEngine {
 
     for (const [sub, entry] of ps.substitutes) {
       const realToken = resolveCredentialPathToRealToken(
-        this.resolver, effCredScope, providerId, entry.credentialPath,
+        this.resolver,
+        effCredScope,
+        providerId,
+        entry.credentialPath,
       );
       if (!realToken) toRemove.push(sub);
     }
@@ -1242,7 +1284,10 @@ export class TokenSubstituteEngine {
    * Each line: {"provider":"github","name":"oauth","token":"ghp_..."}
    * Includes the substitute token (safe — format-preserving fake, not real).
    */
-  private persistCredentialInfo(groupScope: GroupScope, providerId: string): void {
+  private persistCredentialInfo(
+    groupScope: GroupScope,
+    providerId: string,
+  ): void {
     let groupDir: string;
     try {
       groupDir = resolveGroupFolderPath(groupScope as string);
@@ -1251,10 +1296,19 @@ export class TokenSubstituteEngine {
     }
 
     const ps = this.scopes.get(groupScope)?.get(providerId);
-    const filePath = path.join(groupDir, 'credentials', 'tokens', `${providerId}.jsonl`);
+    const filePath = path.join(
+      groupDir,
+      'credentials',
+      'tokens',
+      `${providerId}.jsonl`,
+    );
 
     if (!ps || ps.substitutes.size === 0) {
-      try { fs.unlinkSync(filePath); } catch { /* already gone */ }
+      try {
+        fs.unlinkSync(filePath);
+      } catch {
+        /* already gone */
+      }
       return;
     }
 
@@ -1269,7 +1323,11 @@ export class TokenSubstituteEngine {
     const lines: string[] = [];
     for (const [name, subs] of byCredential) {
       subs.sort();
-      const obj: Record<string, unknown> = { provider: providerId, name, token: subs[0] };
+      const obj: Record<string, unknown> = {
+        provider: providerId,
+        name,
+        token: subs[0],
+      };
       if (borrowed) obj.borrowed = true;
       lines.push(JSON.stringify(obj));
     }
@@ -1278,12 +1336,18 @@ export class TokenSubstituteEngine {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, lines.join('\n') + '\n');
     } catch (err) {
-      logger.warn({ err, groupScope, providerId }, 'Credential info write failed');
+      logger.warn(
+        { err, groupScope, providerId },
+        'Credential info write failed',
+      );
     }
   }
 
   /** Remove a provider's credential info file from the group folder. */
-  private deleteCredentialInfo(groupScope: GroupScope, providerId: string): void {
+  private deleteCredentialInfo(
+    groupScope: GroupScope,
+    providerId: string,
+  ): void {
     let groupDir: string;
     try {
       groupDir = resolveGroupFolderPath(groupScope as string);
@@ -1291,7 +1355,9 @@ export class TokenSubstituteEngine {
       return;
     }
     try {
-      fs.unlinkSync(path.join(groupDir, 'credentials', 'tokens', `${providerId}.jsonl`));
+      fs.unlinkSync(
+        path.join(groupDir, 'credentials', 'tokens', `${providerId}.jsonl`),
+      );
     } catch {
       /* already gone */
     }
@@ -1351,7 +1417,8 @@ export class TokenSubstituteEngine {
       this.persistRefs(groupScope, providerId);
     }
 
-    const loadedCount = this.scopes.get(groupScope)?.get(providerId)?.substitutes.size ?? 0;
+    const loadedCount =
+      this.scopes.get(groupScope)?.get(providerId)?.substitutes.size ?? 0;
     logger.debug(
       { groupScope, providerId, count: loadedCount, sourceScope },
       'Loaded persisted substitute refs',
@@ -1398,11 +1465,14 @@ export class TokenSubstituteEngine {
       try {
         const dir = path.join(
           resolveGroupFolderPath(groupScope as string),
-          'credentials', 'tokens',
+          'credentials',
+          'tokens',
         );
         fs.rmSync(dir, { recursive: true, force: true });
         fs.mkdirSync(dir, { recursive: true });
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
 
       for (const providerId of pmap.keys()) {
         this.persistCredentialInfo(groupScope, providerId);

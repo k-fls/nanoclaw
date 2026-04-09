@@ -24,6 +24,7 @@ import {
   registerBuiltinProviders,
   registerDiscoveryProviders,
   getTokenEngine,
+  getTokenResolver,
 } from './index.js';
 import { createAccessCheck } from './provision.js';
 import {
@@ -31,13 +32,18 @@ import {
   regenerateAllManifests,
 } from './manifest.js';
 import { wireAuthCallbacks } from './oauth-flow.js';
-import type { TokenSubstituteEngine, GroupResolver } from './token-substitute.js';
+import { initSSHSystem, type SSHManager } from './ssh/index.js';
+import type {
+  TokenSubstituteEngine,
+  GroupResolver,
+} from './token-substitute.js';
 import type { RegisteredGroup } from '../types.js';
 import type { Server as NetServer } from 'net';
 import { logger } from '../logger.js';
 
 export interface AuthSystem {
   tokenEngine: TokenSubstituteEngine;
+  sshManager: SSHManager;
   proxyServer: NetServer;
   shutdown: () => void;
 }
@@ -66,13 +72,7 @@ export async function initAuthSystem(
   const tapFilter = createTapFilterFromEnv();
   if (tapFilter) proxy.setTapFilter(tapFilter);
 
-  // Register built-in auth providers first (takes priority in first-match dispatch),
-  // then discovery-file providers to fill gaps for other OAuth services.
-  registerBuiltinProviders();
-  registerDiscoveryProviders(undefined, DISCOVERY_CACHE_DIR);
-
   // Wire token engine with group resolver and access check.
-  // Must happen after providers are registered and before any provision calls.
   const tokenEngine = getTokenEngine();
 
   const resolveGroup: GroupResolver = (folder) => {
@@ -82,11 +82,26 @@ export async function initAuthSystem(
     return undefined;
   };
 
+  const accessCheck = createAccessCheck(resolveGroup);
+
   tokenEngine.setGroupResolver(resolveGroup);
-  tokenEngine.setAccessCheck(createAccessCheck(resolveGroup));
+  tokenEngine.setAccessCheck(accessCheck);
   setManifestGroupResolver(resolveGroup);
 
-  // Regenerate all manifests at startup
+  // Reserve SSH provider IDs before OAuth/discovery providers load
+  // (manifest-extensibility §3 — provider ID collision enforcement).
+  const sshManager = initSSHSystem(
+    getTokenResolver(),
+    resolveGroup,
+    accessCheck,
+    proxy,
+  );
+
+  // Register built-in auth providers, then discovery-file providers.
+  registerBuiltinProviders();
+  registerDiscoveryProviders(undefined, DISCOVERY_CACHE_DIR);
+
+  // Regenerate all manifests at startup (includes SSH manifests now)
   regenerateAllManifests();
 
   // Import .env credentials into main group's scope
@@ -135,8 +150,8 @@ export async function initAuthSystem(
 
   return {
     tokenEngine,
+    sshManager,
     proxyServer,
     shutdown: () => proxyServer.close(),
   };
 }
-

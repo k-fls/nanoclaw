@@ -3,7 +3,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { asGroupScope, asCredentialScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
+import {
+  asGroupScope,
+  asCredentialScope,
+  CRED_OAUTH,
+  CRED_OAUTH_REFRESH,
+} from './oauth-types.js';
 import type { ChatIO } from './types.js';
 import type { OAuthProvider } from './oauth-types.js';
 
@@ -158,8 +163,18 @@ function mockTokenEngine(opts?: {
       resolveCredentialScope: vi.fn(() => TEST_CRED_SCOPE),
       getSubstitute: vi.fn(() => opts?.existingSubstitute ?? null),
       storeGroupCredential: vi.fn(
-        (_groupScope: any, providerId: string, credentialId: string, credential: any) => {
-          stored.push({ providerId, credentialScope: String(_groupScope), credentialId, credential });
+        (
+          _groupScope: any,
+          providerId: string,
+          credentialId: string,
+          credential: any,
+        ) => {
+          stored.push({
+            providerId,
+            credentialScope: String(_groupScope),
+            credentialId,
+            credential,
+          });
         },
       ),
       clearCredentials: vi.fn(),
@@ -232,7 +247,11 @@ describe('getProviderCredentialIds', () => {
     const { engine } = mockTokenEngine({
       existingRoles: [CRED_OAUTH, 'api_key'],
     });
-    const ids = getProviderCredentialIds('test-provider', TEST_GROUP_SCOPE, engine);
+    const ids = getProviderCredentialIds(
+      'test-provider',
+      TEST_GROUP_SCOPE,
+      engine,
+    );
     expect(ids.has(CRED_OAUTH)).toBe(true);
     expect(ids.has('api_key')).toBe(true);
   });

@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     curl \
     git \
+    openssh-client \
     iptables \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

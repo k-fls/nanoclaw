@@ -13,10 +13,7 @@ import type {
   GroupScope,
   CredentialScope,
 } from './oauth-types.js';
-import {
-  asGroupScope,
-  asCredentialScope,
-} from './oauth-types.js';
+import { asGroupScope, asCredentialScope } from './oauth-types.js';
 import type {
   TokenSubstituteEngine,
   GroupResolver,
@@ -58,7 +55,9 @@ export function provisionEnvVars(
   const scope = scopeOf(group);
   const env: Record<string, string> = {};
 
-  for (const [envName, credentialPath] of Object.entries(oauthProvider.envVars)) {
+  for (const [envName, credentialPath] of Object.entries(
+    oauthProvider.envVars,
+  )) {
     const sub = tokenEngine.getOrCreateSubstitute(
       oauthProvider.id,
       {},

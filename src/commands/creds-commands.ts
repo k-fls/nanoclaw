@@ -48,7 +48,6 @@ registerCommand('creds', {
         lines.push('Sharing with: (none)');
       }
 
-
       return reply(lines.join('\n'));
     }
 
@@ -58,8 +57,7 @@ registerCommand('creds', {
 
     switch (subcommand) {
       case 'share': {
-        if (!target)
-          return reply('Usage: /creds share <target-group-folder>');
+        if (!target) return reply('Usage: /creds share <target-group-folder>');
 
         // Access: must be in main group or the grantor group itself
         if (!ctx.group.isMain) {
@@ -68,12 +66,10 @@ registerCommand('creds', {
         }
 
         const targetEntry = findGroupByFolder(target);
-        if (!targetEntry)
-          return reply(`Unknown group folder: ${target}`);
+        if (!targetEntry) return reply(`Unknown group folder: ${target}`);
 
         const grantorGroup = ctx.group;
-        const grantees =
-          grantorGroup.containerConfig?.credentialGrantees ?? [];
+        const grantees = grantorGroup.containerConfig?.credentialGrantees ?? [];
         if (grantees.includes(target))
           return reply(`${target} is already in the grantee list.`);
 
@@ -94,12 +90,10 @@ registerCommand('creds', {
       }
 
       case 'borrow': {
-        if (!target)
-          return reply('Usage: /creds borrow <source-group-folder>');
+        if (!target) return reply('Usage: /creds borrow <source-group-folder>');
 
         const sourceEntry = findGroupByFolder(target);
-        if (!sourceEntry)
-          return reply(`Unknown group folder: ${target}`);
+        if (!sourceEntry) return reply(`Unknown group folder: ${target}`);
 
         const borrower = ctx.group;
 
@@ -148,13 +142,11 @@ registerCommand('creds', {
       }
 
       case 'revoke': {
-        if (!target)
-          return reply('Usage: /creds revoke <target-group-folder>');
+        if (!target) return reply('Usage: /creds revoke <target-group-folder>');
 
         // Access: must be in main group or the grantor group
         const grantorGroup = ctx.group;
-        const grantees =
-          grantorGroup.containerConfig?.credentialGrantees ?? [];
+        const grantees = grantorGroup.containerConfig?.credentialGrantees ?? [];
         if (!grantees.includes(target))
           return reply(`${target} is not in the grantee list.`);
 

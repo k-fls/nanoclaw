@@ -336,6 +336,12 @@ export type ProxyTapResolver = (
 ) => ProxyTapResult | null;
 export type ProxyTapCallback = (event: ProxyTapEvent) => void;
 
+export type InternalRequestHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  scope: GroupScope,
+) => boolean;
+
 export class CredentialProxy {
   /**
    * Anchor-indexed rules: domain suffix → rules for that anchor.
@@ -347,6 +353,7 @@ export class CredentialProxy {
   private sessionContexts = new Map<GroupScope, ContainerSessionContext>();
   private _mitmCtx: MitmContext | null = null;
   private _tapFilter: ProxyTapFilter | null = null;
+  private _internalHandlers: InternalRequestHandler[] = [];
 
   /**
    * Shared HTTP server for dispatching all MITM'd requests (both transparent
@@ -413,6 +420,11 @@ export class CredentialProxy {
   /** Set a tap filter for observing raw MITM traffic. Pass null to disable. */
   setTapFilter(filter: ProxyTapFilter | null): void {
     this._tapFilter = filter;
+  }
+
+  /** Register an internal request handler for custom endpoints (e.g. SSH). */
+  addInternalHandler(handler: InternalRequestHandler): void {
+    this._internalHandlers.push(handler);
   }
 
   hasContainerIP(ip: string): boolean {
@@ -753,12 +765,26 @@ export class CredentialProxy {
       // Interaction endpoints: status, SSE events, list
       if (req.url?.startsWith('/interaction/') || req.url === '/interactions') {
         const ctx = this.sessionContexts.get(scope);
-        if (ctx && routeInteractionRequest(ctx.statusRegistry, req.url, req.method || '', req, res)) {
+        if (
+          ctx &&
+          routeInteractionRequest(
+            ctx.statusRegistry,
+            req.url,
+            req.method || '',
+            req,
+            res,
+          )
+        ) {
           return;
         }
         res.writeHead(404);
         res.end();
         return;
+      }
+
+      // Internal extension handlers (e.g. SSH endpoints)
+      for (const handler of this._internalHandlers) {
+        if (handler(req, res, scope)) return;
       }
 
       // Standard HTTP proxy: forward the request to the target URL.
