@@ -6,19 +6,10 @@
  * import from this file (ensureGpgKey, exportPublicKey, gpgDecrypt,
  * isPgpMessage, isGpgAvailable) keep working with the same signatures.
  */
-import os from 'os';
-import path from 'path';
-
 import { initGpg, gpg, isGpgAvailable, isPgpMessage } from '../crypto/index.js';
+import { CREDENTIALS_DIR } from './store.js';
 
 export { isGpgAvailable, isPgpMessage } from '../crypto/index.js';
-
-const CONFIG_DIR = path.join(
-  process.env.HOME || os.homedir(),
-  '.config',
-  'nanoclaw',
-);
-const CREDENTIALS_DIR = path.join(CONFIG_DIR, 'credentials');
 
 // Eagerly bind the default base dir so callers never need to pass it.
 initGpg(CREDENTIALS_DIR);

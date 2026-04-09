@@ -20,7 +20,7 @@ import {
   gpgDecrypt,
   isPgpMessage,
 } from './gpg.js';
-import { chooseName, IDLE_TIMEOUT } from './chat-prompts.js';
+import { chooseName, AUTH_PROMPT_TIMEOUT } from './chat-prompts.js';
 import { logger } from '../logger.js';
 
 const PGP_BEGIN = '-----BEGIN PGP MESSAGE-----';
@@ -188,7 +188,7 @@ export async function runInteractiveKeySetup(
       '*Step 3.* Paste the encrypted output here, or reply *0* to abort.',
   );
 
-  const reply = await chat.receive(IDLE_TIMEOUT);
+  const reply = await chat.receive(AUTH_PROMPT_TIMEOUT);
   if (!reply || reply.trim() === '0') {
     await chat.send(`Cancelled.`);
     return false;

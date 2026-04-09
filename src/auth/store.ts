@@ -13,7 +13,7 @@ import type { StoredCredential } from './types.js';
 
 export { encrypt, decrypt } from '../crypto/index.js';
 
-const CONFIG_DIR = path.join(
+export const CONFIG_DIR = path.join(
   process.env.HOME || os.homedir(),
   '.config',
   'nanoclaw',

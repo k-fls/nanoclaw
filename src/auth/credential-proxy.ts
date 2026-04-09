@@ -61,8 +61,8 @@ export type HostHandler = (
   sourceIP?: string,
 ) => Promise<void>;
 
-/** Pluggable credential resolver. */
-export type CredentialResolver = (scope: string) => Record<string, string>;
+/** Pluggable credential resolver for proxy host handlers. */
+export type ProxyCredentialResolver = (scope: string) => Record<string, string>;
 
 interface HostRule {
   hostPattern: RegExp;

@@ -3,7 +3,7 @@
  */
 import type { ChatIO } from './types.js';
 
-export const IDLE_TIMEOUT = 120_000;
+export const AUTH_PROMPT_TIMEOUT = 120_000;
 export const AUTH_PREFIX = '🔑';
 const VALID_ID_RE = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
 
@@ -61,7 +61,7 @@ export async function chooseOption(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     await chat.send(`${heading}\n\n${menu}\n\n${tail}`);
-    const reply = await chat.receive(IDLE_TIMEOUT);
+    const reply = await chat.receive(AUTH_PROMPT_TIMEOUT);
     if (!reply) return null; // timeout or session aborted
     chat.hideMessage();
     chat.advanceCursor();
