@@ -30,6 +30,9 @@ import { logger } from '../logger.js';
 const registry = new Map<string, CredentialProvider>();
 
 export function registerProvider(provider: CredentialProvider): void {
+  if (registry.has(provider.id) || _discoveryProviders.has(provider.id)) {
+    throw new Error(`Provider ID '${provider.id}' already registered`);
+  }
   registry.set(provider.id, provider);
   // Register host rules for transparent proxy routing
   if (provider.hostRules) {
@@ -206,6 +209,14 @@ export function registerDiscoveryProviders(
       typeof data.authorization_endpoint === 'string'
     ) {
       registerAuthorizationEndpoint(data.authorization_endpoint, providerId);
+    }
+  }
+
+  // Check for collisions with builtin providers
+  for (const [id] of providers) {
+    if (registry.has(id)) {
+      logger.warn({ providerId: id }, 'Discovery provider conflicts with builtin, skipping');
+      providers.delete(id);
     }
   }
 

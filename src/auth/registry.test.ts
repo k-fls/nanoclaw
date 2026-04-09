@@ -45,12 +45,14 @@ describe('auth provider registry', () => {
     expect(all.some((p) => p.id === 'all-test')).toBe(true);
   });
 
-  it('later registration overwrites earlier', () => {
-    const first = makeStub('overwrite');
-    const second = makeStub('overwrite');
+  it('throws on duplicate provider ID', () => {
+    const first = makeStub('dup-test');
+    const second = makeStub('dup-test');
     registerProvider(first);
-    registerProvider(second);
-    expect(getProvider('overwrite')).toBe(second);
+    expect(() => registerProvider(second)).toThrow(
+      "Provider ID 'dup-test' already registered",
+    );
+    expect(getProvider('dup-test')).toBe(first);
   });
 
   it('registers hostRules with the proxy when provided', () => {

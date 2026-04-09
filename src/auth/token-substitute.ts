@@ -138,7 +138,7 @@ function readJsonFile<T extends object>(filePath: string): T {
  * Note: no advisory lock (flock) — safe within single-threaded Node
  * but not across multiple NanoClaw processes.
  */
-function updateJsonFile<T extends object>(
+export function updateJsonFile<T extends object>(
   filePath: string,
   update: (data: T) => void,
 ): void {

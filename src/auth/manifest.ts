@@ -17,6 +17,37 @@ import { asGroupScope } from './oauth-types.js';
 import type { GroupResolver } from './token-substitute.js';
 import { readKeysFile } from './token-substitute.js';
 
+// ── Manifest builder registry ───────────────────────────────────────
+
+/**
+ * Custom manifest builder — returns JSONL lines for a provider's credentials.
+ * Return [] to suppress manifest generation for this provider.
+ */
+export type ManifestBuilder = (credentialScope: CredentialScope, providerId: string) => string[];
+
+/** Lifecycle hook called after a source manifest is written or deleted. */
+export type ManifestHandler = (credentialScope: CredentialScope, providerId: string) => void;
+
+export interface ManifestRegistration {
+  builder: ManifestBuilder;
+  onWrite?: ManifestHandler;
+  onDelete?: ManifestHandler;
+}
+
+const registrations = new Map<string, ManifestRegistration>();
+
+/**
+ * Register a custom manifest builder (and optional lifecycle hooks) for a provider.
+ * Providers that need no manifests should register a builder returning [].
+ */
+export function registerManifestBuilder(
+  providerId: string,
+  builder: ManifestBuilder,
+  handlers?: { onWrite?: ManifestHandler; onDelete?: ManifestHandler },
+): void {
+  registrations.set(providerId, { builder, ...handlers });
+}
+
 // ── Manifest I/O ────────────────────────────────────────────────────
 
 interface ManifestEntry {
@@ -27,12 +58,16 @@ interface ManifestEntry {
 
 /**
  * Derive manifest content from a keys file.
- * Returns one entry per top-level credential (skips version marker).
+ * Checks the builder registry first; falls back to default logic.
  */
 function buildManifestLines(
   credentialScope: CredentialScope,
   providerId: string,
 ): string[] {
+  const reg = registrations.get(providerId);
+  if (reg) return reg.builder(credentialScope, providerId);
+
+  // Default: one entry per top-level credential (skips version marker)
   const keys = readKeysFile(credentialScope, providerId);
   const lines: string[] = [];
   for (const [id, entry] of Object.entries(keys)) {
@@ -177,6 +212,9 @@ export function onKeysFileWritten(
     logger.warn({ err, credentialScope, providerId }, 'Manifest generation failed');
     return;
   }
+
+  registrations.get(providerId)?.onWrite?.(credentialScope, providerId);
+
   if (_groupResolver) {
     asyncDistribute(credentialScope, providerId, _groupResolver, 'copy');
   }
@@ -192,6 +230,7 @@ export function onKeysFileDeleted(
 ): void {
   if (providerId) {
     deleteManifest(credentialScope, providerId);
+    registrations.get(providerId)?.onDelete?.(credentialScope, providerId);
     if (_groupResolver) {
       asyncDistribute(credentialScope, providerId, _groupResolver, 'delete');
     }
