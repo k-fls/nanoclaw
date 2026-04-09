@@ -986,4 +986,317 @@ describe('TokenSubstituteEngine', () => {
       ]);
     });
   });
+
+  // ── resolveCredentialScope with borrowing ──────────────────────────
+
+  describe('resolveCredentialScope', () => {
+    it('returns own scope when group has its own keys', () => {
+      const groupA = asGroupScope('own-keys-grp');
+      engine.setGroupResolver(() => ({
+        name: 'Own',
+        folder: 'own-keys-grp',
+        trigger: '',
+        added_at: '',
+      }));
+
+      resolver.store('claude', asCredentialScope('own-keys-grp'), CRED_OAUTH, {
+        value: 'tok_own_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.resolveCredentialScope(groupA, 'claude')).toBe(
+        asCredentialScope('own-keys-grp'),
+      );
+    });
+
+    it('falls back to credentialSource when own scope has no keys', () => {
+      const borrower = asGroupScope('borrower-grp');
+      engine.setGroupResolver((folder) => {
+        if (folder === 'borrower-grp') {
+          return {
+            name: 'Borrower',
+            folder: 'borrower-grp',
+            trigger: '',
+            added_at: '',
+            containerConfig: { credentialSource: 'source-grp' },
+          };
+        }
+        return undefined;
+      });
+
+      // No keys in borrower's own scope — only in source
+      resolver.store('claude', asCredentialScope('source-grp'), CRED_OAUTH, {
+        value: 'tok_source_xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.resolveCredentialScope(borrower, 'claude')).toBe(
+        asCredentialScope('source-grp'),
+      );
+    });
+
+    it('prefers own scope over credentialSource when both have keys', () => {
+      const groupX = asGroupScope('both-grp');
+      engine.setGroupResolver(() => ({
+        name: 'Both',
+        folder: 'both-grp',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'shared-src' },
+      }));
+
+      resolver.store('claude', asCredentialScope('both-grp'), CRED_OAUTH, {
+        value: 'tok_own_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+      resolver.store('claude', asCredentialScope('shared-src'), CRED_OAUTH, {
+        value: 'tok_shared_xxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.resolveCredentialScope(groupX, 'claude')).toBe(
+        asCredentialScope('both-grp'),
+      );
+    });
+
+    it('returns own scope when credentialSource has no keys either', () => {
+      const empty = asGroupScope('empty-borrow');
+      engine.setGroupResolver(() => ({
+        name: 'Empty',
+        folder: 'empty-borrow',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'also-empty' },
+      }));
+
+      // Neither scope has keys
+      expect(engine.resolveCredentialScope(empty, 'claude')).toBe(
+        asCredentialScope('empty-borrow'),
+      );
+    });
+  });
+
+  // ── hasAnyCredential with borrowing ────────────────────────────────
+
+  describe('hasAnyCredential with borrowing', () => {
+    it('finds credentials through credentialSource fallback', () => {
+      const borrower = asGroupScope('has-borrow');
+      engine.setGroupResolver((folder) => {
+        if (folder === 'has-borrow') {
+          return {
+            name: 'Borrower',
+            folder: 'has-borrow',
+            trigger: '',
+            added_at: '',
+            containerConfig: { credentialSource: 'has-source' },
+          };
+        }
+        return undefined;
+      });
+
+      // Credentials only in source scope
+      resolver.store('claude', asCredentialScope('has-source'), CRED_OAUTH, {
+        value: 'tok_borrowed_xxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.hasAnyCredential(borrower, 'claude')).toBe(true);
+    });
+
+    it('returns false when neither own nor source has credentials', () => {
+      const borrower = asGroupScope('has-empty');
+      engine.setGroupResolver(() => ({
+        name: 'Empty',
+        folder: 'has-empty',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'empty-source' },
+      }));
+
+      expect(engine.hasAnyCredential(borrower, 'claude')).toBe(false);
+    });
+
+    it('finds own credentials even without credentialSource', () => {
+      const own = asGroupScope('has-own');
+      engine.setGroupResolver(() => ({
+        name: 'Own',
+        folder: 'has-own',
+        trigger: '',
+        added_at: '',
+      }));
+
+      resolver.store('claude', asCredentialScope('has-own'), CRED_OAUTH, {
+        value: 'tok_my_own_xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.hasAnyCredential(own, 'claude')).toBe(true);
+    });
+
+    it('nonExpired rejects expired credentials from source scope', () => {
+      const borrower = asGroupScope('has-expired');
+      engine.setGroupResolver((folder) => {
+        if (folder === 'has-expired') {
+          return {
+            name: 'Borrower',
+            folder: 'has-expired',
+            trigger: '',
+            added_at: '',
+            containerConfig: { credentialSource: 'expired-source' },
+          };
+        }
+        return undefined;
+      });
+
+      resolver.store('claude', asCredentialScope('expired-source'), CRED_OAUTH, {
+        value: 'tok_expired_xxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 1000, // long expired
+        updated_ts: Date.now(),
+      });
+
+      // Without nonExpired flag — found (value exists)
+      expect(engine.hasAnyCredential(borrower, 'claude', false)).toBe(true);
+      // With nonExpired flag — rejected (expired)
+      expect(engine.hasAnyCredential(borrower, 'claude', true)).toBe(false);
+    });
+  });
+
+  // ── revokeByScope with borrowed credentials ────────────────────────
+
+  describe('revokeByScope with borrowed credentials', () => {
+    it('does not delete keys from source scope (non-writable)', () => {
+      const borrower = asGroupScope('revoke-borrow');
+      const sourceCredScope = asCredentialScope('revoke-source');
+      const real = 'tok_borrowed_revoke_xxxxxxxxxxxxxxxxxxxx';
+
+      engine.setGroupResolver((folder) => {
+        if (folder === 'revoke-borrow') {
+          return {
+            name: 'Borrower',
+            folder: 'revoke-borrow',
+            trigger: '',
+            added_at: '',
+            containerConfig: { credentialSource: 'revoke-source' },
+          };
+        }
+        return undefined;
+      });
+
+      // Store credentials in source scope
+      resolver.store('claude', sourceCredScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      // Generate substitute with sourceScope (borrowed)
+      engine.generateSubstitute(
+        real, 'claude', {}, borrower, DEFAULT_SUBSTITUTE_CONFIG,
+        CRED_OAUTH, sourceCredScope,
+      );
+      expect(engine.size).toBe(1);
+
+      // Revoke borrower's substitutes
+      const revoked = engine.revokeByScope(borrower, 'claude');
+      expect(revoked).toBe(1);
+      expect(engine.size).toBe(0);
+
+      // Source credentials should still exist
+      expect(
+        resolver.resolve(sourceCredScope, 'claude', CRED_OAUTH),
+      ).not.toBeNull();
+    });
+
+    it('deletes keys from own scope (writable)', () => {
+      const owner = asGroupScope('revoke-own');
+      const ownCredScope = asCredentialScope('revoke-own');
+      const real = 'tok_owned_revoke_xxxxxxxxxxxxxxxxxxxxxxx';
+
+      engine.setGroupResolver(() => ({
+        name: 'Owner',
+        folder: 'revoke-own',
+        trigger: '',
+        added_at: '',
+      }));
+
+      resolver.store('claude', ownCredScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      storeAndGenerate(real, 'claude', {}, owner, DEFAULT_SUBSTITUTE_CONFIG);
+      expect(engine.size).toBe(1);
+
+      engine.revokeByScope(owner, 'claude');
+      expect(engine.size).toBe(0);
+
+      // Own credentials should be deleted
+      expect(
+        resolver.resolve(ownCredScope, 'claude', CRED_OAUTH),
+      ).toBeNull();
+    });
+  });
+
+  // ── getOrCreateSubstitute with borrowing ───────────────────────────
+
+  describe('getOrCreateSubstitute with borrowing', () => {
+    it('generates substitute from source scope when borrowing', () => {
+      const borrower = asGroupScope('orcreate-borrow');
+      const sourceCredScope = asCredentialScope('orcreate-source');
+      const real = 'tok_orcreate_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+
+      engine.setGroupResolver((folder) => {
+        if (folder === 'orcreate-borrow') {
+          return {
+            name: 'Borrower',
+            folder: 'orcreate-borrow',
+            trigger: '',
+            added_at: '',
+            containerConfig: { credentialSource: 'orcreate-source' },
+          };
+        }
+        return undefined;
+      });
+
+      resolver.store('claude', sourceCredScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      const sub = engine.getOrCreateSubstitute(
+        'claude', {}, borrower, DEFAULT_SUBSTITUTE_CONFIG,
+      );
+      expect(sub).not.toBeNull();
+
+      // The substitute should resolve to the source's real token
+      const resolved = engine.resolveSubstitute(sub!, borrower);
+      expect(resolved).not.toBeNull();
+      expect(resolved!.realToken).toBe(real);
+    });
+
+    it('returns null when neither own nor source has credentials', () => {
+      const empty = asGroupScope('orcreate-empty');
+
+      engine.setGroupResolver(() => ({
+        name: 'Empty',
+        folder: 'orcreate-empty',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'nowhere' },
+      }));
+
+      const sub = engine.getOrCreateSubstitute(
+        'claude', {}, empty, DEFAULT_SUBSTITUTE_CONFIG,
+      );
+      expect(sub).toBeNull();
+    });
+  });
 });
