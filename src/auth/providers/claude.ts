@@ -963,6 +963,7 @@ export const claudeProvider: CredentialProvider = {
           );
 
           const reply = await ctx.chat.receive(IDLE_TIMEOUT - 30_000);
+          if (reply) ctx.chat.hideMessage();
           if (!reply || isCancelReply(reply)) return null;
 
           if (!isPgpMessage(reply)) {
