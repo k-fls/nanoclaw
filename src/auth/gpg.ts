@@ -9,7 +9,7 @@
 import { initGpg, gpg, isGpgAvailable, isPgpMessage } from '../crypto/index.js';
 import { CREDENTIALS_DIR } from './store.js';
 
-export { isGpgAvailable, isPgpMessage } from '../crypto/index.js';
+export { isGpgAvailable, isPgpMessage, normalizeArmoredBlock } from '../crypto/index.js';
 
 // Eagerly bind the default base dir so callers never need to pass it.
 initGpg(CREDENTIALS_DIR);
