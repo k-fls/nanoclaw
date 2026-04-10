@@ -19,6 +19,7 @@ import {
   exportPublicKey,
   gpgDecrypt,
   isPgpMessage,
+  normalizeArmoredBlock,
 } from './gpg.js';
 import { chooseName, AUTH_PROMPT_TIMEOUT } from './chat-prompts.js';
 import { logger } from '../logger.js';
@@ -218,7 +219,7 @@ export async function runInteractiveKeySetup(
 
   let plaintext: string;
   try {
-    plaintext = gpgDecrypt(scope, reply.trim());
+    plaintext = gpgDecrypt(scope, normalizeArmoredBlock(reply));
   } catch (err) {
     await chat.send(
       `Failed to decrypt PGP message. ` +
@@ -311,7 +312,7 @@ export function handleSetKey(
 
   let plaintext: string;
   try {
-    plaintext = gpgDecrypt(scope, pgpBlock.trim());
+    plaintext = gpgDecrypt(scope, normalizeArmoredBlock(pgpBlock));
   } catch (err) {
     logger.error({ scope, err }, 'GPG decrypt failed in set-key');
     return 'Failed to decrypt PGP message. Make sure you encrypted with the correct public key.';

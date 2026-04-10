@@ -20,6 +20,7 @@ import {
   gpgDecrypt,
   isGpgAvailable,
   isPgpMessage,
+  normalizeArmoredBlock,
 } from '../gpg.js';
 import { IDLE_TIMEOUT } from '../../config.js';
 import { importEnvCredentials } from '../provision.js';
@@ -965,6 +966,7 @@ export const claudeProvider: CredentialProvider = {
           );
 
           const reply = await ctx.chat.receive(IDLE_TIMEOUT - 30_000);
+          if (reply) ctx.chat.hideMessage();
           if (!reply || isCancelReply(reply)) return null;
 
           if (!isPgpMessage(reply)) {
@@ -978,7 +980,7 @@ export const claudeProvider: CredentialProvider = {
 
           let apiKey: string;
           try {
-            apiKey = gpgDecrypt(ctx.scope, reply.trim());
+            apiKey = gpgDecrypt(ctx.scope, normalizeArmoredBlock(reply));
           } catch (err) {
             await ctx.chat.send(
               'Failed to decrypt PGP message. Make sure you encrypted with the public key shown above.',

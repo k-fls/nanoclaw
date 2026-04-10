@@ -51,6 +51,7 @@ vi.mock('./gpg.js', () => ({
   exportPublicKey: mockExportPublicKey,
   gpgDecrypt: mockGpgDecrypt,
   isPgpMessage: (text: string) => text.includes('-----BEGIN PGP MESSAGE-----'),
+  normalizeArmoredBlock: (block: string) => block.trim(),
 }));
 
 // Mock discovery registry
