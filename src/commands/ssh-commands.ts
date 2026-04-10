@@ -31,6 +31,7 @@ import {
   ensureGpgKey,
   exportPublicKey,
   gpgDecrypt,
+  normalizeArmoredBlock,
 } from '../auth/gpg.js';
 import { removePendingRequest, clearAllPending } from '../auth/ssh/pending.js';
 import { SSHError, SSHHostKeyMismatchError } from '../auth/ssh/manager.js';
@@ -53,33 +54,21 @@ function extractSecretBlock(text: string): string | null {
   const pgpMatch = text.match(
     /-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----/,
   );
-  if (pgpMatch) return normalizeBlock(pgpMatch[0]);
+  if (pgpMatch) return normalizeArmoredBlock(pgpMatch[0]);
 
   // OpenSSH private key
   const sshMatch = text.match(
     /-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?-----END OPENSSH PRIVATE KEY-----/,
   );
-  if (sshMatch) return normalizeBlock(sshMatch[0]);
+  if (sshMatch) return normalizeArmoredBlock(sshMatch[0]);
 
   // RSA private key
   const rsaMatch = text.match(
     /-----BEGIN (?:RSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA )?PRIVATE KEY-----/,
   );
-  if (rsaMatch) return normalizeBlock(rsaMatch[0]);
+  if (rsaMatch) return normalizeArmoredBlock(rsaMatch[0]);
 
   return null;
-}
-
-/**
- * Normalize a PGP/PEM block: rejoin lines that might have been split
- * by whitespace in the chat message.
- */
-function normalizeBlock(block: string): string {
-  return block
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    .join('\n');
 }
 
 /**
@@ -347,9 +336,10 @@ function handleSshAdd(
       }
       ensureGpgKey(scope);
       const pubKey = exportPublicKey(scope);
+      await io.sendRaw(pubKey);
       await io.send(
         SSH_PREFIX +
-          `Encrypt your password or private key with this GPG key and paste it:\n\n${pubKey}\n\n` +
+          'Encrypt your password or private key with the GPG key above and paste it.\n\n' +
           'Passphrase-protected PEMs can be pasted directly (if passphrase is registered via `/pem add`).',
       );
 
