@@ -50,7 +50,7 @@ describe('task scheduler', () => {
     );
 
     startSchedulerLoop({
-      registeredGroups: () => ({}),
+      getGroupByFolder: () => undefined,
       getSessions: () => ({}),
       queue: { enqueueTask } as any,
       onProcess: () => {},
@@ -130,7 +130,7 @@ describe('task scheduler', () => {
 
     startSchedulerLoop({
       // Return empty groups — task's group_folder won't match anything
-      registeredGroups: () => ({}),
+      getGroupByFolder: () => undefined,
       getSessions: () => ({}),
       queue: { enqueueTask } as any,
       onProcess: () => {},
@@ -237,14 +237,10 @@ describe('task scheduler', () => {
     );
 
     startSchedulerLoop({
-      registeredGroups: () => ({
-        'success@g.us': {
-          name: 'Success Group',
-          folder: 'whatsapp_success-test',
-          trigger: '@Andy',
-          added_at: '2024-01-01T00:00:00.000Z',
-        },
-      }),
+      getGroupByFolder: (f: string) =>
+        f === 'whatsapp_success-test'
+          ? { name: 'Success Group', folder: 'whatsapp_success-test', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' }
+          : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
@@ -285,14 +281,10 @@ describe('task scheduler', () => {
     );
 
     startSchedulerLoop({
-      registeredGroups: () => ({
-        'error@g.us': {
-          name: 'Error Group',
-          folder: 'whatsapp_error-test',
-          trigger: '@Andy',
-          added_at: '2024-01-01T00:00:00.000Z',
-        },
-      }),
+      getGroupByFolder: (f: string) =>
+        f === 'whatsapp_error-test'
+          ? { name: 'Error Group', folder: 'whatsapp_error-test', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' }
+          : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
@@ -345,14 +337,10 @@ describe('task scheduler', () => {
     );
 
     startSchedulerLoop({
-      registeredGroups: () => ({
-        'stream@g.us': {
-          name: 'Stream Group',
-          folder: 'whatsapp_stream-test',
-          trigger: '@Andy',
-          added_at: '2024-01-01T00:00:00.000Z',
-        },
-      }),
+      getGroupByFolder: (f: string) =>
+        f === 'whatsapp_stream-test'
+          ? { name: 'Stream Group', folder: 'whatsapp_stream-test', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' }
+          : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
