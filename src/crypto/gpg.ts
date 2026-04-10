@@ -210,6 +210,28 @@ export function isPgpMessage(text: string): boolean {
   return text.includes('-----BEGIN PGP MESSAGE-----');
 }
 
+/**
+ * Normalize a PGP/PEM armored block: trim whitespace from each line and
+ * drop empty lines — except the mandatory blank line after a BEGIN header
+ * (required by the PGP armor format).
+ */
+export function normalizeArmoredBlock(block: string): string {
+  const lines = block.split('\n');
+  const result: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.length === 0) {
+      const prev = result[result.length - 1];
+      if (prev && /^-----BEGIN /.test(prev)) {
+        result.push('');
+      }
+      continue;
+    }
+    result.push(line);
+  }
+  return result.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Module-level init + scope-only convenience wrappers
 // ---------------------------------------------------------------------------

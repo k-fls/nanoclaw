@@ -27,6 +27,7 @@ export {
   initGpg,
   gpg,
   DEFAULT_KEY_MAX_AGE_DAYS,
+  normalizeArmoredBlock,
 } from './gpg.js';
 
 // ── Defaults ────────────────────────────────────────────────────────────────
