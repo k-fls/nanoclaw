@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('./container-runner.js', () => ({
+  runContainerAgent: vi.fn(),
+  writeTasksSnapshot: vi.fn(),
+}));
+
 import { _initTestDatabase, createTask, getTaskById } from './db.js';
 import {
   _resetSchedulerLoopForTests,
@@ -39,7 +44,7 @@ describe('task scheduler', () => {
     );
 
     startSchedulerLoop({
-      registeredGroups: () => ({}),
+      getGroupByFolder: () => undefined,
       getSessions: () => ({}),
       queue: { enqueueTask } as any,
       onProcess: () => {},
@@ -94,6 +99,64 @@ describe('task scheduler', () => {
     };
 
     expect(computeNextRun(task)).toBeNull();
+  });
+
+  it('logs error and records run when group is not found for task', async () => {
+    createTask({
+      id: 'task-no-group',
+      group_folder: 'whatsapp_test',
+      chat_jid: 'test@g.us',
+      prompt: 'run me',
+      schedule_type: 'once',
+      schedule_value: '2026-02-22T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-02-22T00:00:00.000Z',
+    });
+
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      // Return empty groups — task's group_folder won't match anything
+      getGroupByFolder: () => undefined,
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage: async () => {},
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Task should remain active (not paused — folder is valid, just not registered)
+    const task = getTaskById('task-no-group');
+    expect(task?.status).toBe('active');
+  });
+
+  it('computeNextRun returns fallback for invalid interval value', () => {
+    const task = {
+      id: 'bad-interval',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'interval' as const,
+      schedule_value: 'not-a-number',
+      context_mode: 'isolated' as const,
+      next_run: new Date().toISOString(),
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
+
+    const nextRun = computeNextRun(task);
+    expect(nextRun).not.toBeNull();
+    // Should be ~60s fallback, in the future
+    expect(new Date(nextRun!).getTime()).toBeGreaterThan(Date.now());
   });
 
   it('computeNextRun skips missed intervals without infinite loop', () => {

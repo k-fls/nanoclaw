@@ -82,6 +82,8 @@ export { escapeXml, formatMessages } from './router.js';
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
+/** O(1) folder→group lookup. Kept in sync with registeredGroups. */
+const folderIndex = new Map<string, RegisteredGroup>();
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
@@ -120,6 +122,8 @@ function loadState(): void {
   }
   sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
+  folderIndex.clear();
+  for (const g of Object.values(registeredGroups)) folderIndex.set(g.folder, g);
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
     'State loaded',
@@ -165,6 +169,7 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   }
 
   registeredGroups[jid] = group;
+  folderIndex.set(group.folder, group);
   setRegisteredGroup(jid, group);
 
   // Create group folder
@@ -218,11 +223,18 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
     }));
 }
 
+/** O(1) group lookup by folder name. Used by auth resolvers. */
+export function getGroupByFolder(folder: string): RegisteredGroup | undefined {
+  return folderIndex.get(folder);
+}
+
 /** @internal - exported for testing */
 export function _setRegisteredGroups(
   groups: Record<string, RegisteredGroup>,
 ): void {
   registeredGroups = groups;
+  folderIndex.clear();
+  for (const g of Object.values(groups)) folderIndex.set(g.folder, g);
 }
 
 /** Bridge index.ts state into ChatIODeps for the interaction module. */
@@ -709,7 +721,7 @@ async function main(): Promise<void> {
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
-    registeredGroups: () => registeredGroups,
+    getGroupByFolder,
     getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder, controls) =>

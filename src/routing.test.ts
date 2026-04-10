@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+vi.mock('@onecli-sh/sdk', () => ({
+  OneCLI: class {
+    applyContainerConfig = vi.fn().mockResolvedValue(true);
+    ensureAgent = vi.fn().mockResolvedValue({ name: 'test', identifier: 'test', created: true });
+  },
+}));
 
 import { _initTestDatabase, storeChatMetadata } from './db.js';
 import { getAvailableGroups, _setRegisteredGroups } from './index.js';
