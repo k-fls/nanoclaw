@@ -131,16 +131,15 @@ export interface SubstituteEntry {
   /** Path to the token within the keys file, e.g. 'oauth', 'api_key', 'oauth/refresh'. */
   credentialPath: string;
   scopeAttrs: Record<string, string>;
+  /** Per-entry source scope for borrowed credentials. Absent = owned by this group. */
+  sourceScope?: CredentialScope;
 }
 
 /**
  * All substitutes for one provider within one group scope.
- * sourceScope tracks cross-scope credential borrowing:
- *   - absent (undefined) = credentials belong to this group's own scope
- *   - present = credentials are borrowed from another scope (e.g. 'default')
+ * Cross-scope borrowing is tracked per-entry via SubstituteEntry.sourceScope.
  */
 export interface ProviderSubstitutes {
-  sourceScope?: CredentialScope;
   substitutes: Map<string, SubstituteEntry>;
 }
 

@@ -7,6 +7,7 @@ import { logger } from '../logger.js';
 import { getAllProviders } from './registry.js';
 import { startExecInContainer, authSessionDir } from './exec.js';
 import type { CredentialScope, GroupScope } from './oauth-types.js';
+import { asCredentialScope } from './oauth-types.js';
 import type {
   AuthContext,
   AuthExecOpts,
@@ -32,8 +33,9 @@ export async function runReauth(
   const allOptions: AuthOption[] = [];
 
   for (const provider of providers) {
-    const credScope = engine.resolveCredentialScope(groupScope, provider.id);
-    allOptions.push(...provider.authOptions(credScope));
+    // Auth writes to own scope — always use the group's own scope
+    const ownScope = asCredentialScope(groupScope);
+    allOptions.push(...provider.authOptions(ownScope));
   }
 
   if (allOptions.length === 0) {

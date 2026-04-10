@@ -33,13 +33,11 @@ import {
 } from './manifest.js';
 import { wireAuthCallbacks } from './oauth-flow.js';
 import { initSSHSystem, type SSHManager } from './ssh/index.js';
-import type {
-  TokenSubstituteEngine,
-  GroupResolver,
-} from './token-substitute.js';
-import type { RegisteredGroup } from '../types.js';
+import type { TokenSubstituteEngine, GroupResolver } from './token-substitute.js';
+import { scopeOf, type RegisteredGroup } from '../types.js';
 import type { Server as NetServer } from 'net';
 import { logger } from '../logger.js';
+import { asCredentialScope } from './oauth-types.js';
 
 export interface AuthSystem {
   tokenEngine: TokenSubstituteEngine;
@@ -56,6 +54,7 @@ export interface AuthSystem {
  */
 export async function initAuthSystem(
   getGroups: () => Record<string, RegisteredGroup>,
+  resolveGroup: GroupResolver,
 ): Promise<AuthSystem> {
   setInteractionPrefix('🤖');
   registerAuthHandlers();
@@ -75,12 +74,6 @@ export async function initAuthSystem(
   // Wire token engine with group resolver and access check.
   const tokenEngine = getTokenEngine();
 
-  const resolveGroup: GroupResolver = (folder) => {
-    for (const g of Object.values(getGroups())) {
-      if (g.folder === folder) return g;
-    }
-    return undefined;
-  };
 
   const accessCheck = createAccessCheck(resolveGroup);
 
@@ -107,7 +100,7 @@ export async function initAuthSystem(
   // Import .env credentials into main group's scope
   const mainGroup = Object.values(getGroups()).find((g) => g.isMain);
   if (mainGroup) {
-    importEnvToMainGroup(tokenEngine, mainGroup.folder);
+    importEnvToMainGroup(tokenEngine, asCredentialScope(scopeOf(mainGroup)));
   }
 
   // Wire auth error resolver, OAuth initiation, and browser-open callbacks

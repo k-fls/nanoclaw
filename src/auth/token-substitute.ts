@@ -305,13 +305,22 @@ interface RefsFileV2 {
   >;
 }
 
-/** V3 refs file format. */
+/** V3 refs file format (legacy — provider-level sourceScope). */
 interface RefsFileV3 {
   v: 3;
   sourceScope?: string;
   substitutes: Record<
     string,
     { credentialPath: string; scopeAttrs: Record<string, string> }
+  >;
+}
+
+/** V4 refs file format — per-entry sourceScope. */
+interface RefsFileV4 {
+  v: 4;
+  substitutes: Record<
+    string,
+    { credentialPath: string; scopeAttrs: Record<string, string>; sourceScope?: string }
   >;
 }
 
@@ -586,22 +595,26 @@ export class TokenSubstituteEngine {
     this.groupResolver = resolver;
   }
 
+  /** Expose group resolver for callers that need group config without scope resolution. */
+  get groupResolverFn(): GroupResolver | null {
+    return this.groupResolver;
+  }
+
   // ── Concurrency ─────────────────────────────────────────────────
 
   /**
    * Run an async operation at most once per (credentialScope, providerId, op) key.
    * Concurrent callers for the same key share the result of the first caller.
-   * Resolves groupScope → credentialScope internally so two groups borrowing
-   * from the same scope coalesce automatically.
+   *
+   * @param credentialScope — already-resolved scope (caller does resolution).
    */
   sharedOp<T>(
-    groupScope: GroupScope,
+    credentialScope: CredentialScope,
     providerId: string,
     op: string,
     fn: () => Promise<T>,
   ): Promise<T> {
-    const credScope = this.resolveCredentialScope(groupScope, providerId);
-    const key = `${credScope}\0${providerId}\0${op}`;
+    const key = `${credentialScope}\0${providerId}\0${op}`;
     const existing = this.inflight.get(key);
     if (existing) return existing as Promise<T>;
     const p = fn().finally(() => this.inflight.delete(key));
@@ -640,12 +653,11 @@ export class TokenSubstituteEngine {
   private getOrCreateProvSubs(
     groupScope: GroupScope,
     providerId: string,
-    sourceScope?: CredentialScope,
   ): ProviderSubstitutes {
     const pmap = this.providerMap(groupScope);
     let ps = pmap.get(providerId);
     if (!ps) {
-      ps = { sourceScope, substitutes: new Map() };
+      ps = { substitutes: new Map() };
       pmap.set(providerId, ps);
     }
     return ps;
@@ -657,9 +669,8 @@ export class TokenSubstituteEngine {
     providerId: string,
     substitute: string,
     entry: SubstituteEntry,
-    sourceScope?: CredentialScope,
   ): void {
-    const ps = this.getOrCreateProvSubs(groupScope, providerId, sourceScope);
+    const ps = this.getOrCreateProvSubs(groupScope, providerId);
     ps.substitutes.set(substitute, entry);
     this.subToProvider.set(substitute, { groupScope, providerId });
   }
@@ -676,44 +687,98 @@ export class TokenSubstituteEngine {
   }
 
   /**
-   * Resolve where credentials live for a (group, provider) pair.
-   * Returns the credential scope and whether the group can modify it
-   * (owns it or is main managing default).
+   * Per-key credential scope resolution with bilateral access check.
+   * For a given (group, provider, credentialPath), determines whether the
+   * credential comes from the group's own scope or a borrowed source scope.
    */
-  private resolveCredentialScopeInternal(
-    groupScope: GroupScope,
-    providerId: string,
-  ): { scope: CredentialScope; writable: boolean } {
-    const ownScope = toCredentialScope(groupScope);
-    const group = this.groupResolver?.(groupScope);
-    if (!group) return { scope: ownScope, writable: true };
-    // Check own scope first
-    if (this.hasKeysInScope(ownScope, providerId))
-      return { scope: ownScope, writable: true };
-    // Fall back to credentialSource if configured
-    const sourceName = group.containerConfig?.credentialSource;
-    if (sourceName) {
-      const sourceScope = asCredentialScope(sourceName);
-      if (this.hasKeysInScope(sourceScope, providerId))
-        return { scope: sourceScope, writable: false };
-    }
-    return { scope: ownScope, writable: true };
-  }
-
-  /** Resolve where credentials live for a (group, provider) pair. */
   resolveCredentialScope(
     groupScope: GroupScope,
     providerId: string,
+    credentialPath: string,
   ): CredentialScope {
-    return this.resolveCredentialScopeInternal(groupScope, providerId).scope;
+    const { id: credentialId } = parsePath(credentialPath);
+    const ownScope = toCredentialScope(groupScope);
+
+    if (this.hasKeyInScope(ownScope, providerId, credentialId)) return ownScope;
+
+    const group = this.groupResolver?.(groupScope);
+    const sourceName = group?.containerConfig?.credentialSource;
+    if (sourceName) {
+      const sourceScope = asCredentialScope(sourceName);
+      if (
+        this.hasKeyInScope(sourceScope, providerId, credentialId) &&
+        (!this.accessCheck || this.accessCheck(groupScope, sourceScope))
+      ) {
+        return sourceScope;
+      }
+    }
+
+    return ownScope;
   }
 
-  /** Effective credential scope: sourceScope if borrowed, groupScope if own. */
-  private effectiveScope(
+  /** Effective credential scope for a specific entry (per-entry source of truth). */
+  private effectiveScopeForEntry(
     groupScope: GroupScope,
-    ps: ProviderSubstitutes,
+    entry: SubstituteEntry,
   ): CredentialScope {
-    return ps.sourceScope ?? toCredentialScope(groupScope);
+    return entry.sourceScope ?? toCredentialScope(groupScope);
+  }
+
+  /** Find the first SubstituteEntry matching a credentialPath within a ProviderSubstitutes. */
+  private findEntryByPath(
+    ps: ProviderSubstitutes,
+    credentialPath: string,
+  ): SubstituteEntry | undefined {
+    for (const entry of ps.substitutes.values()) {
+      if (entry.credentialPath === credentialPath) return entry;
+    }
+    return undefined;
+  }
+
+  /** For nested paths (e.g. oauth/refresh), inherit sourceScope from parent entry. */
+  private findParentSourceScope(
+    groupScope: GroupScope,
+    providerId: string,
+    credentialPath: string,
+  ): CredentialScope | undefined {
+    const { id, nested } = parsePath(credentialPath);
+    if (!nested) return undefined;
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    if (!ps) return undefined;
+    return this.findEntryByPath(ps, id)?.sourceScope;
+  }
+
+  /**
+   * Revoke only borrowed entries whose sourceScope matches the denied scope.
+   * Owned entries are preserved.
+   */
+  private revokeBorrowedFromScope(
+    groupScope: GroupScope,
+    providerId: string,
+    sourceScope: CredentialScope,
+  ): void {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    if (!ps) return;
+
+    const toRemove: string[] = [];
+    for (const [sub, entry] of ps.substitutes) {
+      if (entry.sourceScope && (entry.sourceScope as string) === (sourceScope as string)) {
+        toRemove.push(sub);
+      }
+    }
+
+    for (const sub of toRemove) {
+      ps.substitutes.delete(sub);
+      this.subToProvider.delete(sub);
+    }
+
+    if (ps.substitutes.size === 0) {
+      this.scopes.get(groupScope)?.delete(providerId);
+      if (this.scopes.get(groupScope)?.size === 0) this.scopes.delete(groupScope);
+      this.deleteRefs(groupScope, providerId);
+    } else {
+      this.persistRefs(groupScope, providerId);
+    }
   }
 
   // ── Public query methods ─────────────────────────────────────────
@@ -742,8 +807,7 @@ export class TokenSubstituteEngine {
    * Get existing substitute, or generate one from the resolver's keys file.
    * Used by providers at container startup — never needs a real token arg.
    *
-   * The engine resolves the credential source scope internally using
-   * the group's flags and the provider's hasValidCredentials().
+   * The engine resolves the credential source scope internally.
    */
   getOrCreateSubstitute(
     providerId: string,
@@ -755,8 +819,8 @@ export class TokenSubstituteEngine {
     const existing = this.getSubstitute(providerId, groupScope, credentialPath);
     if (existing) return existing;
 
-    // Resolve which scope holds the real credentials
-    const credScope = this.resolveCredentialScope(groupScope, providerId);
+    // Per-key scope resolution with bilateral access check
+    const credScope = this.resolveCredentialScope(groupScope, providerId, credentialPath);
     const ownCredScope = toCredentialScope(groupScope);
     const sourceScope = credScope !== ownCredScope ? credScope : undefined;
 
@@ -833,9 +897,13 @@ export class TokenSubstituteEngine {
       if (substitute === realToken) continue;
       if (this.subToProvider.has(substitute)) continue;
 
-      // Store in the engine
+      // Store in the engine — nested paths inherit parent's sourceScope
+      const effectiveSource = sourceScope ?? this.findParentSourceScope(
+        groupScope, providerId, credentialPath,
+      );
       const entry: SubstituteEntry = { credentialPath, scopeAttrs };
-      this.insertSub(groupScope, providerId, substitute, entry, sourceScope);
+      if (effectiveSource) entry.sourceScope = effectiveSource;
+      this.insertSub(groupScope, providerId, substitute, entry);
 
       // Persist substitute → role mapping (no secrets)
       this.persistRefs(groupScope, providerId);
@@ -866,16 +934,15 @@ export class TokenSubstituteEngine {
     const entry = ps.substitutes.get(substitute);
     if (!entry) return null;
 
-    // Access check for borrowed credentials
-    if (ps.sourceScope && this.accessCheck) {
-      if (!this.accessCheck(groupScope, ps.sourceScope)) {
-        // Revoke all substitutes for this borrowed provider
-        this.revokeProvider(groupScope, ref.providerId);
+    // Per-entry access check for borrowed credentials
+    if (entry.sourceScope && this.accessCheck) {
+      if (!this.accessCheck(groupScope, entry.sourceScope)) {
+        this.revokeBorrowedFromScope(groupScope, ref.providerId, entry.sourceScope);
         return null;
       }
     }
 
-    const effCredScope = this.effectiveScope(groupScope, ps);
+    const effCredScope = this.effectiveScopeForEntry(groupScope, entry);
     const realToken = resolveCredentialPathToRealToken(
       this.resolver,
       effCredScope,
@@ -933,15 +1000,9 @@ export class TokenSubstituteEngine {
     providerId: string,
     credentialPath: string,
   ): string | null {
-    const ps = this.scopes.get(groupScope)?.get(providerId);
-    const effCredScope = ps
-      ? this.effectiveScope(groupScope, ps)
-      : toCredentialScope(groupScope);
+    const credScope = this.resolveCredentialScope(groupScope, providerId, credentialPath);
     return resolveCredentialPathToRealToken(
-      this.resolver,
-      effCredScope,
-      providerId,
-      credentialPath,
+      this.resolver, credScope, providerId, credentialPath,
     );
   }
 
@@ -954,11 +1015,8 @@ export class TokenSubstituteEngine {
     providerId: string,
     credentialId: string,
   ): Credential | null {
-    const ps = this.scopes.get(groupScope)?.get(providerId);
-    const effCredScope = ps
-      ? this.effectiveScope(groupScope, ps)
-      : toCredentialScope(groupScope);
-    return this.resolver.resolve(effCredScope, providerId, credentialId);
+    const credScope = this.resolveCredentialScope(groupScope, providerId, credentialId);
+    return this.resolver.resolve(credScope, providerId, credentialId);
   }
 
   /**
@@ -975,24 +1033,21 @@ export class TokenSubstituteEngine {
   ): void {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     const ownScope = toCredentialScope(groupScope);
+    const entry = ps ? this.findEntryByPath(ps, credentialPath) : undefined;
 
     let targetScope: CredentialScope;
-    if (!ps) {
+    if (!entry?.sourceScope) {
       targetScope = ownScope;
-    } else if (ps.sourceScope) {
-      if (this.accessCheck && !this.accessCheck(groupScope, ps.sourceScope)) {
-        targetScope = ownScope;
-        ps.sourceScope = undefined;
-        this.persistRefs(groupScope, providerId);
-        logger.info(
-          { groupScope, providerId },
-          'Credential promoted to own scope (access revoked on refresh)',
-        );
-      } else {
-        targetScope = ps.sourceScope;
-      }
+    } else if (this.accessCheck && !this.accessCheck(groupScope, entry.sourceScope)) {
+      targetScope = ownScope;
+      entry.sourceScope = undefined;
+      this.persistRefs(groupScope, providerId);
+      logger.info(
+        { groupScope, providerId, credentialPath },
+        'Credential promoted to own scope (access revoked on refresh)',
+      );
     } else {
-      targetScope = ownScope;
+      targetScope = entry.sourceScope;
     }
 
     this.storeByPath(
@@ -1057,9 +1112,21 @@ export class TokenSubstituteEngine {
     credentialId: string,
     credential: Credential,
   ): void {
+    // Revoke only borrowed substitutes for this specific credentialId
     const ps = this.scopes.get(groupScope)?.get(providerId);
-    if (ps?.sourceScope) {
-      this.revokeProvider(groupScope, providerId);
+    if (ps) {
+      const toRemove: string[] = [];
+      for (const [sub, entry] of ps.substitutes) {
+        const topLevel = parsePath(entry.credentialPath).id;
+        if (topLevel === credentialId && entry.sourceScope) {
+          toRemove.push(sub);
+        }
+      }
+      for (const sub of toRemove) {
+        ps.substitutes.delete(sub);
+        this.subToProvider.delete(sub);
+      }
+      if (toRemove.length > 0) this.persistRefs(groupScope, providerId);
     }
     this.resolver.store(
       providerId,
@@ -1067,20 +1134,6 @@ export class TokenSubstituteEngine {
       credentialId,
       credential,
     );
-  }
-
-  /**
-   * Check if any credential role (access, api_key) exists for a provider
-   * in the resolved credential scope. When nonExpired is true, also checks
-   * expires_ts — rejects tokens past expiry.
-   */
-  hasAnyCredential(
-    groupScope: GroupScope,
-    providerId: string,
-    nonExpired = false,
-  ): boolean {
-    const credScope = this.resolveCredentialScope(groupScope, providerId);
-    return this.hasKeysInScope(credScope, providerId, nonExpired);
   }
 
   /**
@@ -1105,12 +1158,27 @@ export class TokenSubstituteEngine {
     return false;
   }
 
+  /**
+   * Per-key existence check: does this credential scope have a specific
+   * credential ID for the provider? O(1) direct lookup via resolver.
+   */
+  hasKeyInScope(
+    credentialScope: CredentialScope,
+    providerId: string,
+    credentialId: string,
+  ): boolean {
+    return this.resolver.resolve(credentialScope, providerId, credentialId) !== null;
+  }
+
   // ── Revocation ───────────────────────────────────────────────────
 
   /** Revoke all substitutes for a single provider within a group scope. */
   private revokeProvider(groupScope: GroupScope, providerId: string): void {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     if (!ps) return;
+
+    // Check if any entries are owned (no sourceScope) before clearing
+    const hasOwned = [...ps.substitutes.values()].some((e) => !e.sourceScope);
 
     for (const sub of ps.substitutes.keys()) {
       this.subToProvider.delete(sub);
@@ -1119,8 +1187,8 @@ export class TokenSubstituteEngine {
     this.scopes.get(groupScope)!.delete(providerId);
     if (this.scopes.get(groupScope)!.size === 0) this.scopes.delete(groupScope);
 
-    // Don't revoke from resolver if borrowed (those tokens belong to the source scope)
-    if (!ps.sourceScope) {
+    // Only delete from resolver if group owns credentials
+    if (hasOwned) {
       this.resolver.delete(toCredentialScope(groupScope), providerId);
     }
 
@@ -1139,11 +1207,11 @@ export class TokenSubstituteEngine {
       const ps = this.scopes.get(groupScope)?.get(providerId);
       if (!ps) return 0;
       const count = ps.substitutes.size;
+      // Only delete keys from own scope (borrowed keys belong to source)
+      const hasOwned = [...ps.substitutes.values()].some((e) => !e.sourceScope);
       this.revokeProvider(groupScope, providerId);
-      const { scope: credScope, writable } =
-        this.resolveCredentialScopeInternal(groupScope, providerId);
-      if (writable) {
-        this.resolver.delete(credScope, providerId);
+      if (hasOwned) {
+        this.resolver.delete(toCredentialScope(groupScope), providerId);
       }
       return count;
     }
@@ -1158,10 +1226,10 @@ export class TokenSubstituteEngine {
       }
       count += ps.substitutes.size;
       this.deleteRefs(groupScope, pid);
-      const { scope: credScope, writable } =
-        this.resolveCredentialScopeInternal(groupScope, pid);
-      if (writable) {
-        this.resolver.delete(credScope, pid);
+      // Only delete keys from own scope
+      const hasOwned = [...ps.substitutes.values()].some((e) => !e.sourceScope);
+      if (hasOwned) {
+        this.resolver.delete(toCredentialScope(groupScope), pid);
       }
     }
     this.scopes.delete(groupScope);
@@ -1175,11 +1243,16 @@ export class TokenSubstituteEngine {
    * orphaned refs for roles that no longer have keys.
    */
   clearCredentials(groupScope: GroupScope, providerId: string): void {
+    // Collect all unique effective scopes across entries
     const ps = this.scopes.get(groupScope)?.get(providerId);
-    const effCredScope = ps
-      ? this.effectiveScope(groupScope, ps)
-      : toCredentialScope(groupScope);
-    this.resolver.delete(effCredScope, providerId);
+    const scopes = new Set<CredentialScope>();
+    if (ps) {
+      for (const entry of ps.substitutes.values()) {
+        scopes.add(this.effectiveScopeForEntry(groupScope, entry));
+      }
+    }
+    if (scopes.size === 0) scopes.add(toCredentialScope(groupScope));
+    for (const s of scopes) this.resolver.delete(s, providerId);
   }
 
   /**
@@ -1191,10 +1264,10 @@ export class TokenSubstituteEngine {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     if (!ps) return;
 
-    const effCredScope = this.effectiveScope(groupScope, ps);
     const toRemove: string[] = [];
 
     for (const [sub, entry] of ps.substitutes) {
+      const effCredScope = this.effectiveScopeForEntry(groupScope, entry);
       const realToken = resolveCredentialPathToRealToken(
         this.resolver,
         effCredScope,
@@ -1241,24 +1314,27 @@ export class TokenSubstituteEngine {
     const ps = this.scopes.get(groupScope)?.get(providerId);
     if (!ps) return;
 
-    const data: RefsFileV3 = {
-      v: 3,
+    const data: RefsFileV4 = {
+      v: 4,
       substitutes: {},
     };
-    if (ps.sourceScope) data.sourceScope = ps.sourceScope;
     for (const [sub, entry] of ps.substitutes) {
-      data.substitutes[sub] = {
+      const ref: RefsFileV4['substitutes'][string] = {
         credentialPath: entry.credentialPath,
         scopeAttrs: entry.scopeAttrs,
       };
+      if (entry.sourceScope && (entry.sourceScope as string) !== (groupScope as string)) {
+        ref.sourceScope = entry.sourceScope as string;
+      } else {
+        ref.sourceScope = undefined
+      }
+      data.substitutes[sub] = ref;
     }
 
     try {
       const filePath = refsPath(groupScope, providerId);
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', {
-        mode: 0o600,
-      });
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n');
     } catch (err) {
       logger.warn({ err, groupScope, providerId }, 'Refs persistence failed');
     }
@@ -1312,16 +1388,16 @@ export class TokenSubstituteEngine {
       return;
     }
 
-    const borrowed = !!ps.sourceScope;
-    const byCredential = new Map<string, string[]>();
+    const byCredential = new Map<string, { subs: string[]; borrowed: boolean }>();
     for (const [sub, entry] of ps.substitutes) {
       const topLevel = entry.credentialPath.split('/')[0];
-      if (!byCredential.has(topLevel)) byCredential.set(topLevel, []);
-      byCredential.get(topLevel)!.push(sub);
+      let bucket = byCredential.get(topLevel);
+      if (!bucket) { bucket = { subs: [], borrowed: !!entry.sourceScope }; byCredential.set(topLevel, bucket); }
+      bucket.subs.push(sub);
     }
 
     const lines: string[] = [];
-    for (const [name, subs] of byCredential) {
+    for (const [name, { subs, borrowed }] of byCredential) {
       subs.sort();
       const obj: Record<string, unknown> = {
         provider: providerId,
@@ -1378,10 +1454,13 @@ export class TokenSubstituteEngine {
       return 0;
     }
 
-    const isV3 = raw.v === 3;
-    const sourceScope = (raw.sourceScope as string | undefined)
-      ? asCredentialScope(raw.sourceScope as string)
-      : undefined;
+    const version = raw.v as number | undefined;
+    // V3 provider-level sourceScope — promote into each entry during migration
+    const rawProviderSource = version === 3 ? (raw.sourceScope as string | undefined) : undefined;
+    const providerSourceScope =
+      rawProviderSource && rawProviderSource !== (groupScope as string)
+        ? asCredentialScope(rawProviderSource)
+        : undefined;
 
     const subs = raw.substitutes as Record<string, Record<string, unknown>>;
     const entries = Object.entries(subs);
@@ -1390,29 +1469,36 @@ export class TokenSubstituteEngine {
     let needsRepersist = false;
     for (const [substitute, entryRaw] of entries) {
       let credentialPath: string;
-      if (isV3) {
+      let entrySourceScope: CredentialScope | undefined;
+
+      if (version === 4) {
         credentialPath = entryRaw.credentialPath as string;
+        const rawSource = entryRaw.sourceScope as string | undefined;
+        entrySourceScope = rawSource && rawSource !== (groupScope as string)
+          ? asCredentialScope(rawSource)
+          : undefined;
+      } else if (version === 3) {
+        credentialPath = entryRaw.credentialPath as string;
+        entrySourceScope = providerSourceScope;
+        needsRepersist = true; // V3 → V4 migration
       } else {
         // V2 migration: role → credentialPath, skip standalone refresh refs
         const role = entryRaw.role as string;
         if (role === 'refresh') continue; // drop — refresh is nested now
         credentialPath = LEGACY_ROLE_MAP[role] ?? role;
+        entrySourceScope = providerSourceScope;
         needsRepersist = true;
       }
 
-      this.insertSub(
-        groupScope,
-        providerId,
-        substitute,
-        {
-          credentialPath,
-          scopeAttrs: (entryRaw.scopeAttrs as Record<string, string>) ?? {},
-        },
-        sourceScope,
-      );
+      const entry: SubstituteEntry = {
+        credentialPath,
+        scopeAttrs: (entryRaw.scopeAttrs as Record<string, string>) ?? {},
+      };
+      if (entrySourceScope) entry.sourceScope = entrySourceScope;
+      this.insertSub(groupScope, providerId, substitute, entry);
     }
 
-    // Re-persist as V3 if we migrated from V2
+    // Re-persist as V4 if we migrated from V2 or V3
     if (needsRepersist) {
       this.persistRefs(groupScope, providerId);
     }
@@ -1420,7 +1506,7 @@ export class TokenSubstituteEngine {
     const loadedCount =
       this.scopes.get(groupScope)?.get(providerId)?.substitutes.size ?? 0;
     logger.debug(
-      { groupScope, providerId, count: loadedCount, sourceScope },
+      { groupScope, providerId, count: loadedCount },
       'Loaded persisted substitute refs',
     );
     return loadedCount;

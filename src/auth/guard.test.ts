@@ -15,12 +15,10 @@ vi.mock('./reauth.js', () => ({
   runReauth: vi.fn(async () => true),
 }));
 
-// Mock the token engine's hasAnyCredential method used by guard.start()
-const mockHasAnyCredential = vi.fn(() => true);
+// Mock the token engine used by guard.start() — passed to provider.hasAuthCredentials()
+const mockEngine = {};
 vi.mock('./registry.js', () => ({
-  getTokenEngine: vi.fn(() => ({
-    hasAnyCredential: mockHasAnyCredential,
-  })),
+  getTokenEngine: vi.fn(() => mockEngine),
 }));
 
 // Mock consumeInteractions — just resolve immediately
@@ -86,6 +84,7 @@ function mockProvider(
   return {
     id: 'claude',
     displayName: 'Claude',
+    hasAuthCredentials: vi.fn(() => true),
     provision: vi.fn(() => ({ env: { ANTHROPIC_API_KEY: 'sk-test' } })),
     storeResult: vi.fn(),
     authOptions: vi.fn(() => []),
@@ -126,7 +125,6 @@ describe('createAuthGuard', () => {
 
   describe('start', () => {
     it('returns true when credentials are available', async () => {
-      mockHasAnyCredential.mockReturnValue(true);
       const guard = createAuthGuard(
         group,
         mockProxy(),
@@ -141,14 +139,13 @@ describe('createAuthGuard', () => {
     });
 
     it('goes straight to reauth when no credentials', async () => {
-      mockHasAnyCredential.mockReturnValue(false);
       const guard = createAuthGuard(
         group,
         mockProxy(),
         () => mockChat(),
         vi.fn(),
         mockSession(),
-        mockProvider(),
+        mockProvider({ hasAuthCredentials: vi.fn(() => false) }),
       );
 
       await guard.start();
@@ -157,7 +154,6 @@ describe('createAuthGuard', () => {
     });
 
     it('registers session context with proxy', async () => {
-      mockHasAnyCredential.mockReturnValue(true);
       const proxy = mockProxy();
       const guard = createAuthGuard(
         group,

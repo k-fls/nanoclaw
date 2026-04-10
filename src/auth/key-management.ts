@@ -5,7 +5,7 @@
  * and credential deletion for any bearer-swap-capable provider.
  */
 import type { GroupScope, CredentialScope } from './oauth-types.js';
-import { CRED_OAUTH } from './oauth-types.js';
+import { CRED_OAUTH, asCredentialScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import { readKeysFile, type Credential } from './token-substitute.js';
 import type { ChatIO } from './types.js';
@@ -52,15 +52,27 @@ export function getProviderCredentialIds(
 ): Set<string> {
   const ids = new Set<string>();
 
-  // Source 1: existing keys on disk
-  const credScope = tokenEngine.resolveCredentialScope(groupScope, providerId);
-  const keys = readKeysFile(credScope, providerId);
-  for (const [id, entry] of Object.entries(keys)) {
+  // Source 1: own scope keys on disk
+  const ownScope = asCredentialScope(groupScope);
+  const ownKeys = readKeysFile(ownScope, providerId);
+  for (const [id, entry] of Object.entries(ownKeys)) {
     if (id === 'v') continue;
     if (entry && typeof entry === 'object' && 'value' in entry) ids.add(id);
   }
 
-  // Source 2: envVars from discovery provider
+  // Source 2: borrowed scope keys on disk (if configured)
+  const group = tokenEngine.groupResolverFn?.(groupScope);
+  const sourceName = group?.containerConfig?.credentialSource;
+  if (sourceName) {
+    const sourceScope = asCredentialScope(sourceName);
+    const sourceKeys = readKeysFile(sourceScope, providerId);
+    for (const [id, entry] of Object.entries(sourceKeys)) {
+      if (id === 'v') continue;
+      if (entry && typeof entry === 'object' && 'value' in entry) ids.add(id);
+    }
+  }
+
+  // Source 3: envVars from discovery provider
   const provider = getDiscoveryProvider(providerId);
   if (provider?.envVars) {
     for (const credPath of Object.values(provider.envVars)) {

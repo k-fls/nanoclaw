@@ -32,7 +32,7 @@ registerCommand('creds', {
       // Show status
       const group = ctx.group;
       const source = group.containerConfig?.credentialSource;
-      const grantees = group.containerConfig?.credentialGrantees ?? [];
+      const grantees = group.containerConfig?.credentialGrantees ?? new Set<string>();
 
       const lines: string[] = [`*Credentials for ${group.folder}*`, ''];
 
@@ -42,8 +42,8 @@ registerCommand('creds', {
         lines.push('Borrowing from: (none)');
       }
 
-      if (grantees.length > 0) {
-        lines.push(`Sharing with: ${grantees.map((g) => `*${g}*`).join(', ')}`);
+      if (grantees.size > 0) {
+        lines.push(`Sharing with: ${[...grantees].map((g) => `*${g}*`).join(', ')}`);
       } else {
         lines.push('Sharing with: (none)');
       }
@@ -69,14 +69,16 @@ registerCommand('creds', {
         if (!targetEntry) return reply(`Unknown group folder: ${target}`);
 
         const grantorGroup = ctx.group;
-        const grantees = grantorGroup.containerConfig?.credentialGrantees ?? [];
-        if (grantees.includes(target))
+        const grantees =
+          grantorGroup.containerConfig?.credentialGrantees ?? new Set<string>();
+        if (grantees.has(target))
           return reply(`${target} is already in the grantee list.`);
 
         // Update grantor's grantee list
+        grantees.add(target);
         grantorGroup.containerConfig = {
           ...grantorGroup.containerConfig,
-          credentialGrantees: [...grantees, target],
+          credentialGrantees: grantees,
         };
         setRegisteredGroup(ctx.chatJid, grantorGroup);
 
@@ -121,7 +123,7 @@ registerCommand('creds', {
         // Check if grantor has granted
         const sourceGroup = sourceEntry.group;
         const granted =
-          sourceGroup.containerConfig?.credentialGrantees?.includes(
+          sourceGroup.containerConfig?.credentialGrantees?.has(
             borrower.folder,
           ) === true;
 
@@ -146,14 +148,16 @@ registerCommand('creds', {
 
         // Access: must be in main group or the grantor group
         const grantorGroup = ctx.group;
-        const grantees = grantorGroup.containerConfig?.credentialGrantees ?? [];
-        if (!grantees.includes(target))
+        const grantees =
+          grantorGroup.containerConfig?.credentialGrantees ?? new Set<string>();
+        if (!grantees.has(target))
           return reply(`${target} is not in the grantee list.`);
 
         // Remove from grantee list
+        grantees.delete(target);
         grantorGroup.containerConfig = {
           ...grantorGroup.containerConfig,
-          credentialGrantees: grantees.filter((g) => g !== target),
+          credentialGrantees: grantees,
         };
         setRegisteredGroup(ctx.chatJid, grantorGroup);
 

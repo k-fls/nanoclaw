@@ -32,8 +32,14 @@ vi.mock('../env.js', () => ({
 
 const { initCredentialStore } = await import('./store.js');
 const { registerProvider } = await import('./registry.js');
-const { importEnvToMainGroup, createAccessCheck, provisionEnvVars } =
-  await import('./provision.js');
+const {
+  importEnvToMainGroup,
+  importEnvCredentials,
+  provisionFromMapping,
+  createAccessCheck,
+  provisionEnvVars,
+} = await import('./provision.js');
+const { readEnvFile } = await import('../env.js');
 
 import type { CredentialProvider } from './types.js';
 import type { RegisteredGroup } from '../types.js';
@@ -66,7 +72,9 @@ function makeGroup(
       opts?.credentialSource || opts?.credentialGrantees
         ? {
             credentialSource: opts.credentialSource,
-            credentialGrantees: opts.credentialGrantees,
+            credentialGrantees: opts.credentialGrantees
+              ? new Set(opts.credentialGrantees)
+              : undefined,
           }
         : undefined,
     isMain: opts?.isMain,
@@ -165,11 +173,9 @@ describe('importEnvToMainGroup', () => {
     };
     registerProvider(provider);
 
-    const engine = new TokenSubstituteEngine(
-      new PersistentCredentialResolver(),
-    );
-    importEnvToMainGroup(engine, 'main');
-    expect(importEnvMock).toHaveBeenCalledWith('main', expect.anything());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    importEnvToMainGroup(engine, asCredentialScope('main'));
+    expect(importEnvMock).toHaveBeenCalledWith(asCredentialScope('main'), engine);
   });
 
   it('skips providers without importEnv', () => {
@@ -186,7 +192,214 @@ describe('importEnvToMainGroup', () => {
       new PersistentCredentialResolver(),
     );
     // Should not throw
-    importEnvToMainGroup(engine, 'main');
+    importEnvToMainGroup(engine, asCredentialScope('main'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// importEnvCredentials
+// ---------------------------------------------------------------------------
+
+describe('importEnvCredentials', () => {
+  beforeEach(() => {
+    initCredentialStore();
+  });
+
+  it('imports env vars into credential store by mapping', () => {
+    vi.mocked(readEnvFile).mockReturnValueOnce({
+      MY_TOKEN: 'tok_abcdefghijklmnopqrstuvwxyz12345678',
+    });
+
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const scope = asCredentialScope('import-test');
+    const imported = importEnvCredentials(
+      { MY_TOKEN: 'oauth' },
+      'test-prov',
+      scope,
+      engine,
+    );
+
+    expect(imported).toEqual(new Set(['oauth']));
+    const cred = engine.resolveCredential(asGroupScope('import-test'), 'test-prov', 'oauth');
+    expect(cred?.value).toBe('tok_abcdefghijklmnopqrstuvwxyz12345678');
+  });
+
+  it('skips when substitute already exists', () => {
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const scope = asCredentialScope('skip-test');
+    const realToken = 'tok_abcdefghijklmnopqrstuvwxyz12345678';
+
+    // Pre-store and generate substitute
+    engine.storeCredential('test-prov', scope, 'oauth', {
+      value: realToken,
+      expires_ts: 0,
+      updated_ts: Date.now(),
+    });
+    engine.generateSubstitute(
+      realToken, 'test-prov', {}, asGroupScope('skip-test'),
+      DEFAULT_SUBSTITUTE_CONFIG, 'oauth',
+    );
+
+    vi.mocked(readEnvFile).mockReturnValueOnce({
+      MY_TOKEN: 'tok_should_not_overwrite_xxxxxxxxxxxx',
+    });
+
+    const imported = importEnvCredentials(
+      { MY_TOKEN: 'oauth' },
+      'test-prov',
+      scope,
+      engine,
+    );
+
+    expect(imported).toEqual(new Set());
+  });
+
+  it('first env var wins when multiple map to same credentialPath', () => {
+    vi.mocked(readEnvFile).mockReturnValueOnce({
+      PRIMARY: 'tok_primary_xxxxxxxxxxxxxxxxxxxxxxxx',
+      FALLBACK: 'tok_fallback_xxxxxxxxxxxxxxxxxxxxxx',
+    });
+
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const scope = asCredentialScope('alias-test');
+    const imported = importEnvCredentials(
+      { PRIMARY: 'oauth', FALLBACK: 'oauth' },
+      'test-prov',
+      scope,
+      engine,
+    );
+
+    expect(imported).toEqual(new Set(['oauth']));
+    const cred = engine.resolveCredential(asGroupScope('alias-test'), 'test-prov', 'oauth');
+    expect(cred?.value).toBe('tok_primary_xxxxxxxxxxxxxxxxxxxxxxxx');
+  });
+
+  it('uses custom buildCredential callback', () => {
+    vi.mocked(readEnvFile).mockReturnValueOnce({
+      MY_TOKEN: 'tok_custom_xxxxxxxxxxxxxxxxxxxxxxxxx',
+    });
+
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const scope = asCredentialScope('custom-test');
+    importEnvCredentials(
+      { MY_TOKEN: 'oauth' },
+      'test-prov',
+      scope,
+      engine,
+      (value, _path) => ({
+        value,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+        authFields: { client_id: 'test-client' },
+      }),
+    );
+
+    const cred = engine.resolveCredential(asGroupScope('custom-test'), 'test-prov', 'oauth');
+    expect(cred?.authFields).toEqual({ client_id: 'test-client' });
+  });
+
+  it('returns empty set when no env vars match', () => {
+    vi.mocked(readEnvFile).mockReturnValueOnce({});
+
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const imported = importEnvCredentials(
+      { MISSING: 'oauth' },
+      'test-prov',
+      asCredentialScope('empty-test'),
+      engine,
+    );
+
+    expect(imported).toEqual(new Set());
+  });
+
+  it('returns empty set for empty mapping', () => {
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const imported = importEnvCredentials(
+      {},
+      'test-prov',
+      asCredentialScope('empty-map'),
+      engine,
+    );
+    expect(imported).toEqual(new Set());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// provisionFromMapping
+// ---------------------------------------------------------------------------
+
+describe('provisionFromMapping', () => {
+  beforeEach(() => {
+    initCredentialStore();
+  });
+
+  it('produces env vars from stored credentials', () => {
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+
+    engine.storeCredential('test-prov', asCredentialScope('prov-test'), CRED_OAUTH, {
+      value: realToken,
+      expires_ts: 0,
+      updated_ts: Date.now(),
+    });
+
+    const env = provisionFromMapping(
+      { GH_TOKEN: CRED_OAUTH },
+      'test-prov',
+      asGroupScope('prov-test'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      engine,
+    );
+
+    expect(env.GH_TOKEN).toBeDefined();
+    expect(env.GH_TOKEN).not.toBe(realToken);
+    expect(env.GH_TOKEN.length).toBe(realToken.length);
+  });
+
+  it('multiple env vars for same credential get same substitute', () => {
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+
+    engine.storeCredential('test-prov', asCredentialScope('multi-test'), CRED_OAUTH, {
+      value: realToken,
+      expires_ts: 0,
+      updated_ts: Date.now(),
+    });
+
+    const env = provisionFromMapping(
+      { GH_TOKEN: CRED_OAUTH, GITHUB_TOKEN: CRED_OAUTH },
+      'test-prov',
+      asGroupScope('multi-test'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      engine,
+    );
+
+    expect(env.GH_TOKEN).toBe(env.GITHUB_TOKEN);
+  });
+
+  it('skips env var when no credential exists', () => {
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const env = provisionFromMapping(
+      { GH_TOKEN: CRED_OAUTH },
+      'test-prov',
+      asGroupScope('missing-test'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      engine,
+    );
+
+    expect(env).toEqual({});
+  });
+
+  it('returns empty for empty mapping', () => {
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+    const env = provisionFromMapping(
+      {},
+      'test-prov',
+      asGroupScope('empty-map'),
+      DEFAULT_SUBSTITUTE_CONFIG,
+      engine,
+    );
+    expect(env).toEqual({});
   });
 });
 

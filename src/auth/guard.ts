@@ -108,9 +108,9 @@ export function createAuthGuard(
     async start(): Promise<boolean> {
       proxy.registerSessionContext(scope, sessionCtx);
 
-      // Check credentials
+      // Check credentials via provider-specific logic
       const engine = getTokenEngine();
-      if (engine.hasAnyCredential(scope, provider.id)) return true;
+      if (provider.hasAuthCredentials?.(scope, engine)) return true;
 
       logger.warn(
         { group: group.name },

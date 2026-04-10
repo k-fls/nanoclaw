@@ -7,15 +7,15 @@ vi.mock('../../logger.js', () => ({
 }));
 
 // Mock pending module
-const mockAddPending = vi.fn(() => ({ accepted: true, capReached: false }));
+const mockAddPending = vi.fn((..._args: any[]) => ({ accepted: true, capReached: false }));
 vi.mock('./pending.js', () => ({
-  addPendingRequest: (...args: unknown[]) => mockAddPending(...args),
+  addPendingRequest: (...args: any[]) => mockAddPending(...args),
 }));
 
 // Mock manager
 const mockConnect = vi.fn();
 const mockDisconnect = vi.fn();
-const mockListConnections = vi.fn(() => []);
+const mockListConnections = vi.fn((): any[] => []);
 
 vi.mock('./manager.js', () => ({
   SSHManager: vi.fn(),
@@ -313,7 +313,7 @@ describe('routeSSHRequest', () => {
   describe('GET /ssh/connections', () => {
     it('returns active connections', async () => {
       mockListConnections.mockReturnValue([
-        { alias: 'db', host: 'h', port: 22, username: 'u' },
+        { alias: 'db', host: 'h', port: 22, username: 'u', socketPath: '/tmp/s', scope: 'test' as any, hostKeyAction: 'accepted' },
       ]);
       const deps = makeDeps();
       const res = await request(deps, 'GET', '/ssh/connections');
