@@ -198,6 +198,8 @@ export async function runInteractiveKeySetup(
       '```\n' +
       'echo "your-api-key" | gpg --encrypt --armor --recipient nanoclaw\n' +
       '```\n\n' +
+      "If you don't have GPG installed locally, use this online tool:\n" +
+      '• https://k-fls.github.io/pgp-encrypt/\n\n' +
       '*Step 3.* Paste the encrypted output here, or reply *0* to abort.',
   );
 

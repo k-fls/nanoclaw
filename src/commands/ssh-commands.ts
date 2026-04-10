@@ -38,12 +38,13 @@ import { SSHError, SSHHostKeyMismatchError } from '../auth/ssh/manager.js';
 import type { GroupScope, CredentialScope } from '../auth/oauth-types.js';
 import { asCredentialScope } from '../auth/oauth-types.js';
 import type { ChatIO } from '../interaction/types.js';
+import { brandChat } from '../interaction/chat-io.js';
 import { reply } from './helpers.js';
 import { registerCommand } from './registry.js';
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-const SSH_PREFIX = '🔑 ';
+const SSH_BRAND = '🔑';
 
 /**
  * Extract a PGP/PEM block from text (possibly after command args).
@@ -309,6 +310,7 @@ function handleSshAdd(
     // Inline secret — process immediately
     return {
       asyncAction: async (io: ChatIO) => {
+        const chat = brandChat(io, SSH_BRAND);
         const result = processSecret(
           secretBlock,
           parsed.alias,
@@ -319,7 +321,7 @@ function handleSshAdd(
           parsed.hostKeyOverride,
           parsed.pemHint,
         );
-        await io.send(SSH_PREFIX + result);
+        await chat.send(result);
       },
     };
   }
@@ -327,32 +329,33 @@ function handleSshAdd(
   // No inline secret — prompt for it
   return {
     asyncAction: async (io: ChatIO) => {
+      const chat = brandChat(io, SSH_BRAND);
       if (!isGpgAvailable()) {
-        await io.send(
-          SSH_PREFIX +
-            'GPG is not available. Paste the secret inline with the command.',
+        await chat.send(
+          'GPG is not available. Paste the secret inline with the command.',
         );
         return;
       }
       ensureGpgKey(scope);
       const pubKey = exportPublicKey(scope);
-      await io.sendRaw(pubKey);
-      await io.send(
-        SSH_PREFIX +
-          'Encrypt your password or private key with the GPG key above and paste it.\n\n' +
+      await chat.sendRaw(pubKey);
+      await chat.send(
+        'Encrypt your password or private key with the GPG key above and paste it.\n\n' +
+          "If you don't have GPG installed locally, use this online tool:\n" +
+          '• https://k-fls.github.io/pgp-encrypt/\n\n' +
           'Passphrase-protected PEMs can be pasted directly (if passphrase is registered via `/pem add`).',
       );
 
-      const response = await io.receive(120000);
+      const response = await chat.receive(120000);
       if (!response) {
-        await io.send(SSH_PREFIX + 'Timed out waiting for secret.');
+        await chat.send('Timed out waiting for secret.');
         return;
       }
-      io.hideMessage();
+      chat.hideMessage();
 
       const block = extractSecretBlock(response);
       if (!block) {
-        await io.send(SSH_PREFIX + 'No PGP/PEM block found in your message.');
+        await chat.send('No PGP/PEM block found in your message.');
         return;
       }
 
@@ -366,7 +369,7 @@ function handleSshAdd(
         parsed.hostKeyOverride,
         parsed.pemHint,
       );
-      await io.send(SSH_PREFIX + result);
+      await chat.send(result);
     },
   };
 }
@@ -482,6 +485,7 @@ function handleSshDelete(args: string, scope: GroupScope) {
 
   return {
     asyncAction: async (io: ChatIO) => {
+      const chat = brandChat(io, SSH_BRAND);
       const sshManager = getSSHManager();
       const credScope = asCredentialScope(scope);
 
@@ -498,7 +502,7 @@ function handleSshDelete(args: string, scope: GroupScope) {
       resolver.unloadCache(credScope, SSH_PROVIDER_ID);
       logger.info({ alias, scope }, 'ssh.credential_deleted');
 
-      await io.send(SSH_PREFIX + `SSH credential '${alias}' deleted.`);
+      await chat.send(`SSH credential '${alias}' deleted.`);
     },
   };
 }
@@ -527,6 +531,7 @@ function handleSshGen(args: string, scope: GroupScope) {
 
   return {
     asyncAction: async (io: ChatIO) => {
+      const chat = brandChat(io, SSH_BRAND);
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-keygen-'));
       const keyPath = path.join(tmpDir, 'key');
       try {
@@ -556,9 +561,8 @@ function handleSshGen(args: string, scope: GroupScope) {
         );
         logger.info({ alias, scope, authType: 'key' }, 'ssh.credential_stored');
 
-        await io.send(
-          SSH_PREFIX +
-            `SSH keypair generated for '${alias}'.\n` +
+        await chat.send(
+          `SSH keypair generated for '${alias}'.\n` +
             `Add this public key to the remote server's \`authorized_keys\`:\n\n\`${publicKey}\``,
         );
       } finally {
@@ -586,6 +590,7 @@ function handleSshTest(args: string, scope: GroupScope) {
 
   return {
     asyncAction: async (io: ChatIO) => {
+      const chat = brandChat(io, SSH_BRAND);
       const sshManager = getSSHManager();
       try {
         const conn = await sshManager.connect(scope, alias, {
@@ -596,29 +601,25 @@ function handleSshTest(args: string, scope: GroupScope) {
         const hkStatus = conn.hostKeyFingerprint
           ? `Host key: ${conn.hostKeyFingerprint} (${conn.hostKeyAction})`
           : `Host key: (${conn.hostKeyAction})`;
-        await io.send(
-          SSH_PREFIX +
-            `Connection test for '${alias}' (${conn.username}@${conn.host}:${conn.port}): ✓ Success\n${hkStatus}`,
+        await chat.send(
+          `Connection test for '${alias}' (${conn.username}@${conn.host}:${conn.port}): ✓ Success\n${hkStatus}`,
         );
       } catch (err) {
         if (err instanceof SSHHostKeyMismatchError) {
-          await io.send(
-            SSH_PREFIX +
-              `HOST KEY MISMATCH for '${err.alias}' (${err.host}:${err.port}).\n` +
+          await chat.send(
+            `HOST KEY MISMATCH for '${err.alias}' (${err.host}:${err.port}).\n` +
               `Stored: ${err.storedFingerprint}\nScanned: ${err.scannedFingerprint}`,
           );
           return;
         }
         if (err instanceof SSHError) {
-          await io.send(
-            SSH_PREFIX +
-              `Connection test for '${alias}' failed: ${err.message}`,
+          await chat.send(
+            `Connection test for '${alias}' failed: ${err.message}`,
           );
           return;
         }
-        await io.send(
-          SSH_PREFIX +
-            `Connection test for '${alias}' failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        await chat.send(
+          `Connection test for '${alias}' failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
         );
       }
     },
@@ -669,13 +670,13 @@ function handleSshResetHost(args: string, scope: GroupScope) {
     msg = `Host key pinned for '${alias}'.`;
   }
 
-  return reply(SSH_PREFIX + msg);
+  return reply(msg);
 }
 
 function handleSshClearPending(scope: GroupScope) {
   const count = clearAllPending(scope);
   return reply(
-    SSH_PREFIX + `Cleared ${count} pending SSH credential request(s).`,
+    `Cleared ${count} pending SSH credential request(s).`,
   );
 }
 
@@ -736,13 +737,14 @@ function handlePemAdd(args: string, scope: GroupScope) {
       return reply('Expected a GPG-encrypted block.');
     return {
       asyncAction: async (io: ChatIO) => {
+        const chat = brandChat(io, SSH_BRAND);
         const passphrase = gpgDecrypt(scope, inlineBlock).trim();
         resolver.store(PEM_PASSWORDS_PROVIDER_ID, credScope, id, {
           value: passphrase,
           expires_ts: 0,
           updated_ts: Date.now(),
         });
-        await io.send(SSH_PREFIX + `PEM passphrase '${id}' stored.`);
+        await chat.send(`PEM passphrase '${id}' stored.`);
       },
     };
   }
@@ -750,28 +752,30 @@ function handlePemAdd(args: string, scope: GroupScope) {
   // Prompt for GPG-encrypted passphrase
   return {
     asyncAction: async (io: ChatIO) => {
+      const chat = brandChat(io, SSH_BRAND);
       if (!isGpgAvailable()) {
-        await io.send(
-          SSH_PREFIX + 'GPG is not available. Paste the GPG block inline.',
-        );
+        await chat.send('GPG is not available. Paste the GPG block inline.');
         return;
       }
       ensureGpgKey(scope);
       const pubKey = exportPublicKey(scope);
-      await io.send(
-        SSH_PREFIX + `Encrypt the PEM passphrase with this key:\n\n${pubKey}`,
+      await chat.sendRaw(pubKey);
+      await chat.send(
+        'Encrypt the PEM passphrase with the GPG key above and paste it.\n\n' +
+          "If you don't have GPG installed locally, use this online tool:\n" +
+          '• https://k-fls.github.io/pgp-encrypt/',
       );
 
-      const response = await io.receive(120000);
+      const response = await chat.receive(120000);
       if (!response) {
-        await io.send(SSH_PREFIX + 'Timed out.');
+        await chat.send('Timed out.');
         return;
       }
-      io.hideMessage();
+      chat.hideMessage();
 
       const block = extractSecretBlock(response);
       if (!block || !isPgpMessage(block)) {
-        await io.send(SSH_PREFIX + 'No GPG block found.');
+        await chat.send('No GPG block found.');
         return;
       }
 
@@ -781,7 +785,7 @@ function handlePemAdd(args: string, scope: GroupScope) {
         expires_ts: 0,
         updated_ts: Date.now(),
       });
-      await io.send(SSH_PREFIX + `PEM passphrase '${id}' stored.`);
+      await chat.send(`PEM passphrase '${id}' stored.`);
     },
   };
 }
@@ -802,5 +806,5 @@ function handlePemDelete(args: string, scope: GroupScope) {
   const resolver = getTokenResolver();
   resolver.unloadCache(credScope, PEM_PASSWORDS_PROVIDER_ID);
 
-  return reply(SSH_PREFIX + `PEM passphrase '${id}' deleted.`);
+  return reply(`PEM passphrase '${id}' deleted.`);
 }

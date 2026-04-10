@@ -957,11 +957,9 @@ export const claudeProvider: CredentialProvider = {
               '```\n' +
               'echo "sk-ant-api..." | gpg --encrypt --armor --recipient nanoclaw\n' +
               '```\n\n' +
-              "If you don't have GPG installed locally, you can use an online PGP tool " +
-              '(import the public key, encrypt your API key, copy the armored output):\n' +
-              '• https://www.devglan.com/online-tools/pgp-encryption-decryption\n' +
-              '• https://keychainpgp.github.io/\n' +
-              '⚠️ Online tools see your key in plaintext — use only if you trust the site.\n\n' +
+              "If you don't have GPG installed locally, use this online tool " +
+              '(paste the public key, encrypt your API key, copy the armored output):\n' +
+              '• https://k-fls.github.io/pgp-encrypt/\n\n' +
               '*Step 3.* Paste the encrypted output here. Reply "cancel" to abort.',
           );
 
