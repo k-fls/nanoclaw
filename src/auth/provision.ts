@@ -1,14 +1,18 @@
 /**
  * Credential provisioning helpers.
  *
- * importEnvToDefault() — bootstrap .env credentials at startup.
- * canAccessScope() — access check callback for the token engine.
+ * importEnvCredentials() — read .env values into credential store by mapping.
+ * provisionFromMapping() — produce container env vars from stored credentials.
+ * importEnvToMainGroup() — bootstrap .env credentials at startup.
+ * createAccessCheck() — access check callback for the token engine.
  */
 import type { RegisteredGroup } from '../types.js';
 import { scopeOf } from '../types.js';
 import { getAllProviders } from './registry.js';
 import type {
+  Credential,
   OAuthProvider,
+  SubstituteConfig,
   ScopeAccessCheck,
   GroupScope,
   CredentialScope,
@@ -21,37 +25,102 @@ import type {
   TokenSubstituteEngine,
   GroupResolver,
 } from './token-substitute.js';
+import { readEnvFile } from '../env.js';
+import { logger } from '../logger.js';
+
+// ---------------------------------------------------------------------------
+// Reusable env ↔ creds helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Import credentials from .env by a declared mapping.
+ * Reads env vars, skips if a substitute already exists for that credentialPath,
+ * stores the credential, and logs each import.
+ *
+ * @returns Set of credentialPaths that were imported.
+ */
+export function importEnvCredentials(
+  mapping: Record<string, string>,
+  providerId: string,
+  credScope: CredentialScope,
+  engine: TokenSubstituteEngine,
+  buildCredential?: (envValue: string, credentialPath: string) => Credential,
+): Set<string> {
+  const envVarNames = Object.keys(mapping);
+  if (envVarNames.length === 0) return new Set();
+
+  const envValues = readEnvFile(envVarNames);
+  const groupScope = asGroupScope(credScope);
+  const imported = new Set<string>();
+
+  for (const [envName, credentialPath] of Object.entries(mapping)) {
+    const value = envValues[envName];
+    if (!value) continue;
+    if (imported.has(credentialPath)) continue; // first env var wins for same path
+
+    // Skip if a substitute already exists (credential already stored)
+    if (engine.getSubstitute(providerId, groupScope, credentialPath) !== null) {
+      continue;
+    }
+
+    const credential = buildCredential
+      ? buildCredential(value, credentialPath)
+      : { value, expires_ts: 0, updated_ts: Date.now() };
+
+    engine.storeCredential(providerId, credScope, credentialPath, credential);
+    imported.add(credentialPath);
+
+    logger.info(
+      { providerId, credScope, envVar: envName, credentialPath },
+      'Imported .env credential',
+    );
+  }
+
+  return imported;
+}
+
+/**
+ * Produce container env vars from stored credentials using a declared mapping.
+ * For each envVar → credentialPath, calls getOrCreateSubstitute and sets
+ * the env var to the substitute token.
+ */
+export function provisionFromMapping(
+  mapping: Record<string, string>,
+  providerId: string,
+  groupScope: GroupScope,
+  config: SubstituteConfig,
+  engine: TokenSubstituteEngine,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [envName, credentialPath] of Object.entries(mapping)) {
+    const sub = engine.getOrCreateSubstitute(
+      providerId, {}, groupScope, config, credentialPath,
+    );
+    if (sub) env[envName] = sub;
+  }
+  return env;
+}
+
+// ---------------------------------------------------------------------------
+// Startup + provision wrappers
+// ---------------------------------------------------------------------------
 
 /**
  * Import .env values into the main group's scope via each provider's importEnv().
- * Called once at startup. Skips providers that already have keys stored.
+ * Called once at startup.
  */
 export function importEnvToMainGroup(
   engine: TokenSubstituteEngine,
-  mainGroupFolder: string,
+  credScope: CredentialScope,
 ): void {
-  const mainScope = asGroupScope(mainGroupFolder);
-  const mainCredScope = asCredentialScope(mainGroupFolder);
   for (const provider of getAllProviders()) {
-    // Skip if own scope already has any key or a substitute exists for any credential path
-    const hasKey = provider.credentialPaths.some((cp) =>
-      engine.hasKeyInScope(mainCredScope, provider.id, cp)
-      || engine.getSubstitute(provider.id, mainScope, cp) !== null,
-    );
-    if (hasKey) continue;
-    provider.importEnv?.(mainCredScope, engine.storeCredential.bind(engine));
+    provider.importEnv?.(credScope, engine);
   }
 }
 
 /**
- * Create a ScopeAccessCheck callback that uses a group resolver.
- * The returned function checks whether a group is allowed to access
- * credentials from the given sourceScope.
- */
-/**
  * Provision env vars from an OAuthProvider's envVars mapping.
- * Each env var maps to a credentialPath (e.g. 'oauth', 'api_key').
- * Skips absent credentials silently — no env var emitted if no token exists.
+ * Thin wrapper over provisionFromMapping for discovery providers.
  */
 export function provisionEnvVars(
   oauthProvider: OAuthProvider,
@@ -59,22 +128,13 @@ export function provisionEnvVars(
   tokenEngine: TokenSubstituteEngine,
 ): Record<string, string> {
   if (!oauthProvider.envVars) return {};
-
-  const scope = scopeOf(group);
-  const env: Record<string, string> = {};
-
-  for (const [envName, credentialPath] of Object.entries(oauthProvider.envVars)) {
-    const sub = tokenEngine.getOrCreateSubstitute(
-      oauthProvider.id,
-      {},
-      scope,
-      oauthProvider.substituteConfig,
-      credentialPath,
-    );
-    if (sub) env[envName] = sub;
-  }
-
-  return env;
+  return provisionFromMapping(
+    oauthProvider.envVars,
+    oauthProvider.id,
+    scopeOf(group),
+    oauthProvider.substituteConfig,
+    tokenEngine,
+  );
 }
 
 export function createAccessCheck(

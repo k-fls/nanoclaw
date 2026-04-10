@@ -7,13 +7,12 @@
  * 3. auth_login  — OAuth login via `claude auth login`, stores entire .credentials.json
  */
 import fs from 'fs';
-import net from 'net';
 import path from 'path';
 
-import { readKeysFile, writeKeysFile } from '../token-substitute.js';
-import { asCredentialScope, asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js';
+import { readKeysFile } from '../token-substitute.js';
+import { asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
-import type { CredentialScope, GroupScope } from '../oauth-types.js';
+import type { CredentialScope } from '../oauth-types.js';
 import { authSessionDir, scopeClaudeDir } from '../exec.js';
 import {
   ensureGpgKey,
@@ -23,10 +22,10 @@ import {
   isPgpMessage,
 } from '../gpg.js';
 import { IDLE_TIMEOUT } from '../../config.js';
-import { readEnvFile } from '../../env.js';
+import { importEnvCredentials } from '../provision.js';
 import { logger } from '../../logger.js';
 import { CONTAINER_RUNTIME_BIN } from '../../container-runtime.js';
-import { proxyPipe, getProxy } from '../credential-proxy.js';
+import { getProxy } from '../credential-proxy.js';
 import {
   RESELECT,
   type AuthContext,
@@ -138,13 +137,16 @@ function isCancelReply(reply: string): boolean {
   return ['cancel', 'abort', 'no', 'skip', 'quit', 'exit'].includes(lower);
 }
 
-/** .env keys this provider can import into the default scope. */
-const ENV_FALLBACK_KEYS = [
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_AUTH_TOKEN',
-];
+/** Env var → credential path mapping for .env import and provisioning. */
+const CLAUDE_ENV_VARS: Record<string, string> = {
+  ANTHROPIC_API_KEY: 'api_key',
+  CLAUDE_CODE_OAUTH_TOKEN: CRED_OAUTH,
+  ANTHROPIC_AUTH_TOKEN: CRED_OAUTH, // fallback alias — first wins via importEnvCredentials
+};
+
+/** Credential paths that satisfy auth for Claude. At least one must have a usable credential. */
+const AUTH_CREDS = ['api_key', CRED_OAUTH] as const;
+
 
 /** Claude CLI session dir mount — provider-specific. */
 function claudeExecOpts(sessionDir: string): AuthExecOpts {
@@ -660,38 +662,29 @@ export function hasSubscriptionCredential(scope: CredentialScope): boolean {
 export const claudeProvider: CredentialProvider = {
   id: PROVIDER_ID,
   displayName: 'Claude',
-  credentialPaths: ['api_key', CRED_OAUTH],
 
-  importEnv(
-    scope: CredentialScope,
-    store: (providerId: string, credentialScope: CredentialScope, credentialId: string, credential: import('../oauth-types.js').Credential) => void,
-  ): void {
-    const envVars = readEnvFile(ENV_FALLBACK_KEYS);
-    if (Object.keys(envVars).length === 0) return;
-
-    const now = Date.now();
-    // API key takes priority over OAuth tokens (mode exclusivity)
-    if (envVars.ANTHROPIC_API_KEY) {
-      store(PROVIDER_ID, scope, 'api_key', {
-        value: envVars.ANTHROPIC_API_KEY,
-        expires_ts: 0,
-        updated_ts: now,
-      });
-    } else {
-      const oauthToken = envVars.CLAUDE_CODE_OAUTH_TOKEN ?? envVars.ANTHROPIC_AUTH_TOKEN;
-      if (oauthToken) {
-        store(PROVIDER_ID, scope, CRED_OAUTH, {
-          value: oauthToken,
-          expires_ts: 0,
-          updated_ts: now,
-          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
-        });
+  hasAuthCredentials(groupScope, tokenEngine) {
+    let found = false;
+    for (const cp of AUTH_CREDS) {
+      if (tokenEngine.getOrCreateSubstitute(PROVIDER_ID, {}, groupScope, CLAUDE_SUBSTITUTE_CONFIG, cp) !== null) {
+        found = true;
       }
     }
+    return found;
+  },
 
-    logger.info(
-      { scope, keys: Object.keys(envVars) },
-      'Imported .env credentials into credential store',
+  importEnv(scope: CredentialScope, engine: import('../token-substitute.js').TokenSubstituteEngine): void {
+    importEnvCredentials(
+      CLAUDE_ENV_VARS,
+      PROVIDER_ID,
+      scope,
+      engine,
+      (_value, credentialPath) => ({
+        value: _value,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+        ...(credentialPath === CRED_OAUTH && { authFields: CLAUDE_DEFAULT_AUTH_FIELDS }),
+      }),
     );
   },
 

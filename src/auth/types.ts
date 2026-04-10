@@ -20,8 +20,6 @@ export interface CredentialProvider {
   /** Provider ID matching the keys file name: 'claude', etc. */
   id: string;
   displayName: string;
-  /** Top-level credential paths this provider can use (e.g. ['api_key', 'oauth']). Guard checks at least one resolves. */
-  credentialPaths: string[];
 
   /**
    * Host rules for transparent proxy routing.
@@ -57,12 +55,22 @@ export interface CredentialProvider {
   authOptions(scope: CredentialScope): AuthOption[];
 
   /**
+   * Check if auth credentials are available for a group scope.
+   * Default: false (generic providers don't participate in guard checks).
+   */
+  hasAuthCredentials?(
+    groupScope: GroupScope,
+    tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
+  ): boolean;
+
+  /**
    * Import credentials from .env into the given scope.
-   * Called once at startup for the 'default' scope.
+   * Called once at startup for the main group's scope.
+   * Use importEnvCredentials() for the generic env→creds loop.
    */
   importEnv?(
     scope: CredentialScope,
-    store: (providerId: string, credentialScope: CredentialScope, credentialId: string, credential: import('./oauth-types.js').Credential) => void,
+    engine: import('./token-substitute.js').TokenSubstituteEngine,
   ): void;
 }
 

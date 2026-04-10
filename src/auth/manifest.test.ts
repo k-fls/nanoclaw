@@ -580,7 +580,7 @@ describe('provider ID collision in registry', () => {
     const stub = {
       id: 'collision-test',
       displayName: 'test',
-      credentialPaths: ['oauth'],
+
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],

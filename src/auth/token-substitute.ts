@@ -780,8 +780,7 @@ export class TokenSubstituteEngine {
    * Get existing substitute, or generate one from the resolver's keys file.
    * Used by providers at container startup — never needs a real token arg.
    *
-   * The engine resolves the credential source scope internally using
-   * the group's flags and the provider's hasValidCredentials().
+   * The engine resolves the credential source scope internally.
    */
   getOrCreateSubstitute(
     providerId: string,
