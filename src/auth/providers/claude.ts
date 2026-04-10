@@ -141,7 +141,7 @@ function isCancelReply(reply: string): boolean {
 const CLAUDE_ENV_VARS: Record<string, string> = {
   ANTHROPIC_API_KEY: 'api_key',
   CLAUDE_CODE_OAUTH_TOKEN: CRED_OAUTH,
-  ANTHROPIC_AUTH_TOKEN: CRED_OAUTH, // fallback alias — first wins via importEnvCredentials
+  // ANTHROPIC_AUTH_TOKEN: CRED_OAUTH, // fallback alias — first wins via importEnvCredentials
 };
 
 /** Credential paths that satisfy auth for Claude. At least one must have a usable credential. */
