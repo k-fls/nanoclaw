@@ -21,6 +21,10 @@ chmod -R a-w /tmp/dist
 # If HOST_UID/HOST_GID are set (transparent proxy mode, started as root),
 # use setpriv to drop privileges. Otherwise already running as the right user.
 if [ -n "$HOST_UID" ]; then
+  # Ensure the target uid exists in /etc/passwd — SSH refuses to run otherwise.
+  if ! getent passwd "$HOST_UID" >/dev/null 2>&1; then
+    echo "agent:x:${HOST_UID}:${HOST_GID:-$HOST_UID}::/home/node:/bin/bash" >> /etc/passwd
+  fi
   exec setpriv --reuid=$HOST_UID --regid=${HOST_GID:-$HOST_UID} --clear-groups --inh-caps=-all \
     -- node /tmp/dist/index.js
 else
