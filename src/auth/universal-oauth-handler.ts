@@ -18,7 +18,7 @@ import { join } from 'path';
 
 import type { InterceptRule, OAuthProvider, Credential } from './oauth-types.js';
 import { CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
-import type { GroupScope } from './oauth-types.js';
+import type { GroupScope, CredentialScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
 import type { HostHandler } from './credential-proxy.js';
 import { proxyBuffered } from './credential-proxy.js';
@@ -397,6 +397,7 @@ function createBearerSwapHandler(
       substitute: string;
       prefix: string; // e.g. "Bearer " — text before the token in the header value
       credentialId: string;
+      credentialScope: CredentialScope;
     }> = [];
     let proactiveRefreshAttempted = false;
 
@@ -430,6 +431,7 @@ function createBearerSwapHandler(
         substitute: candidate,
         prefix,
         credentialId: entry.mapping.credentialPath,
+        credentialScope: entry.mapping.credentialScope,
       });
     }
 
@@ -437,11 +439,13 @@ function createBearerSwapHandler(
     // (have a refresh sub-token) and which are near expiry.
     const refreshable = new Set<string>();
     const nearExpiry: string[] = [];
+    const scopeByCredential = new Map<string, CredentialScope>();
     {
       const seen = new Set<string>();
       for (const swap of swappedHeaders) {
         if (seen.has(swap.credentialId)) continue;
         seen.add(swap.credentialId);
+        scopeByCredential.set(swap.credentialId, swap.credentialScope);
         const cred = tokenEngine.resolveCredential(
           groupScope, provider.id, swap.credentialId,
         );
@@ -459,7 +463,7 @@ function createBearerSwapHandler(
       const results = await Promise.all(
         paths.map((cp) =>
           tokenEngine.sharedOp(
-            groupScope,
+            scopeByCredential.get(cp)!,
             provider.id,
             `refresh:${cp}`,
             () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),

@@ -38,6 +38,7 @@ describe('TokenSubstituteEngine', () => {
 
   const defaultAttrs = {};
   const scope = asGroupScope('test-group');
+  const credScope = asCredentialScope('test-group');
 
   /** Store a credential then generate a substitute. */
   function storeAndGenerate(
@@ -721,7 +722,7 @@ describe('TokenSubstituteEngine', () => {
   describe('sharedOp', () => {
     it('runs the operation and returns its result', async () => {
       const result = await engine.sharedOp(
-        scope,
+        credScope,
         'provider',
         'refresh',
         async () => 42,
@@ -741,8 +742,8 @@ describe('TokenSubstituteEngine', () => {
         return blocker;
       };
 
-      const p1 = engine.sharedOp(scope, 'provider', 'refresh', fn);
-      const p2 = engine.sharedOp(scope, 'provider', 'refresh', fn);
+      const p1 = engine.sharedOp(credScope, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(credScope, 'provider', 'refresh', fn);
 
       resolve(true);
 
@@ -758,8 +759,8 @@ describe('TokenSubstituteEngine', () => {
         return true;
       };
 
-      await engine.sharedOp(scope, 'provider', 'refresh', fn);
-      await engine.sharedOp(scope, 'provider', 'refresh', fn);
+      await engine.sharedOp(credScope, 'provider', 'refresh', fn);
+      await engine.sharedOp(credScope, 'provider', 'refresh', fn);
 
       expect(callCount).toBe(2);
     });
@@ -776,8 +777,8 @@ describe('TokenSubstituteEngine', () => {
         return blocker;
       };
 
-      const p1 = engine.sharedOp(scope, 'provider', 'refresh', fn);
-      const p2 = engine.sharedOp(scope, 'provider', 'store', fn);
+      const p1 = engine.sharedOp(credScope, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(credScope, 'provider', 'store', fn);
 
       resolve(true);
 
@@ -798,8 +799,8 @@ describe('TokenSubstituteEngine', () => {
         return blocker;
       };
 
-      const p1 = engine.sharedOp(scope, 'providerA', 'refresh', fn);
-      const p2 = engine.sharedOp(scope, 'providerB', 'refresh', fn);
+      const p1 = engine.sharedOp(credScope, 'providerA', 'refresh', fn);
+      const p2 = engine.sharedOp(credScope, 'providerB', 'refresh', fn);
 
       resolve(true);
 
@@ -808,28 +809,9 @@ describe('TokenSubstituteEngine', () => {
       expect(callCount).toBe(2);
     });
 
-    it('coalesces groups that resolve to the same credential scope', async () => {
-      // group-b borrows from group-a, so both resolve to group-a's scope
-      // when group-a has keys and group-b does not.
-      const groupA = asGroupScope('group-a');
-      const groupB = asGroupScope('group-b');
-      engine.setGroupResolver((folder) => ({
-        name: folder as string,
-        folder: folder as string,
-        trigger: '',
-        added_at: '',
-        containerConfig:
-          folder === 'group-b'
-            ? { credentialSource: 'group-a' }
-            : {},
-      }));
-
-      // Store a credential in group-a's scope so hasKeysInScope returns true
-      resolver.store('provider', asCredentialScope('group-a'), 'oauth', {
-        value: 'dummy-token',
-        expires_ts: 0,
-        updated_ts: Date.now(),
-      });
+    it('coalesces calls with the same resolved credential scope', async () => {
+      // Both callers pass the same resolved scope — they coalesce.
+      const sharedScope = asCredentialScope('group-a');
 
       let callCount = 0;
       let resolve!: (v: boolean) => void;
@@ -842,8 +824,8 @@ describe('TokenSubstituteEngine', () => {
         return blocker;
       };
 
-      const p1 = engine.sharedOp(groupA, 'provider', 'refresh', fn);
-      const p2 = engine.sharedOp(groupB, 'provider', 'refresh', fn);
+      const p1 = engine.sharedOp(sharedScope, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(sharedScope, 'provider', 'refresh', fn);
 
       resolve(true);
 
@@ -858,8 +840,8 @@ describe('TokenSubstituteEngine', () => {
         resolve = () => reject(new Error('boom'));
       });
 
-      const p1 = engine.sharedOp(scope, 'provider', 'refresh', () => blocker);
-      const p2 = engine.sharedOp(scope, 'provider', 'refresh', () => blocker);
+      const p1 = engine.sharedOp(credScope, 'provider', 'refresh', () => blocker);
+      const p2 = engine.sharedOp(credScope, 'provider', 'refresh', () => blocker);
 
       resolve();
 
@@ -871,13 +853,13 @@ describe('TokenSubstituteEngine', () => {
       let callCount = 0;
 
       await engine
-        .sharedOp(scope, 'provider', 'refresh', async () => {
+        .sharedOp(credScope, 'provider', 'refresh', async () => {
           callCount++;
           throw new Error('fail');
         })
         .catch(() => {});
 
-      await engine.sharedOp(scope, 'provider', 'refresh', async () => {
+      await engine.sharedOp(credScope, 'provider', 'refresh', async () => {
         callCount++;
         return true;
       });
@@ -987,10 +969,10 @@ describe('TokenSubstituteEngine', () => {
     });
   });
 
-  // ── resolveCredentialScope with borrowing ──────────────────────────
+  // ── resolveCredentialScope with per-key borrowing ─────────────────
 
-  describe('resolveCredentialScope', () => {
-    it('returns own scope when group has its own keys', () => {
+  describe('resolveCredentialScope (per-key)', () => {
+    it('returns own scope when group has its own key for that credentialPath', () => {
       const groupA = asGroupScope('own-keys-grp');
       engine.setGroupResolver(() => ({
         name: 'Own',
@@ -1005,12 +987,12 @@ describe('TokenSubstituteEngine', () => {
         updated_ts: Date.now(),
       });
 
-      expect(engine.resolveCredentialScope(groupA, 'claude')).toBe(
+      expect(engine.resolveCredentialScope(groupA, 'claude', CRED_OAUTH)).toBe(
         asCredentialScope('own-keys-grp'),
       );
     });
 
-    it('falls back to credentialSource when own scope has no keys', () => {
+    it('falls back to credentialSource for a key the group does not own', () => {
       const borrower = asGroupScope('borrower-grp');
       engine.setGroupResolver((folder) => {
         if (folder === 'borrower-grp') {
@@ -1032,12 +1014,12 @@ describe('TokenSubstituteEngine', () => {
         updated_ts: Date.now(),
       });
 
-      expect(engine.resolveCredentialScope(borrower, 'claude')).toBe(
+      expect(engine.resolveCredentialScope(borrower, 'claude', CRED_OAUTH)).toBe(
         asCredentialScope('source-grp'),
       );
     });
 
-    it('prefers own scope over credentialSource when both have keys', () => {
+    it('prefers own scope over credentialSource when own has the key', () => {
       const groupX = asGroupScope('both-grp');
       engine.setGroupResolver(() => ({
         name: 'Both',
@@ -1058,12 +1040,12 @@ describe('TokenSubstituteEngine', () => {
         updated_ts: Date.now(),
       });
 
-      expect(engine.resolveCredentialScope(groupX, 'claude')).toBe(
+      expect(engine.resolveCredentialScope(groupX, 'claude', CRED_OAUTH)).toBe(
         asCredentialScope('both-grp'),
       );
     });
 
-    it('returns own scope when credentialSource has no keys either', () => {
+    it('returns own scope when credentialSource has no key either', () => {
       const empty = asGroupScope('empty-borrow');
       engine.setGroupResolver(() => ({
         name: 'Empty',
@@ -1074,96 +1056,56 @@ describe('TokenSubstituteEngine', () => {
       }));
 
       // Neither scope has keys
-      expect(engine.resolveCredentialScope(empty, 'claude')).toBe(
+      expect(engine.resolveCredentialScope(empty, 'claude', CRED_OAUTH)).toBe(
         asCredentialScope('empty-borrow'),
+      );
+    });
+
+    it('borrows oauth from source but uses own api_key (per-key)', () => {
+      const group = asGroupScope('mixed-grp');
+      engine.setGroupResolver(() => ({
+        name: 'Mixed',
+        folder: 'mixed-grp',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'mixed-src' },
+      }));
+
+      // Group owns api_key
+      resolver.store('claude', asCredentialScope('mixed-grp'), 'api_key', {
+        value: 'sk-ant-api00-xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+      // Source owns oauth
+      resolver.store('claude', asCredentialScope('mixed-src'), CRED_OAUTH, {
+        value: 'tok_src_oauth_xxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.resolveCredentialScope(group, 'claude', 'api_key')).toBe(
+        asCredentialScope('mixed-grp'),
+      );
+      expect(engine.resolveCredentialScope(group, 'claude', CRED_OAUTH)).toBe(
+        asCredentialScope('mixed-src'),
       );
     });
   });
 
-  // ── hasAnyCredential with borrowing ────────────────────────────────
+  // ── hasKeyInScope ─────────────────────────────────────────────────
 
-  describe('hasAnyCredential with borrowing', () => {
-    it('finds credentials through credentialSource fallback', () => {
-      const borrower = asGroupScope('has-borrow');
-      engine.setGroupResolver((folder) => {
-        if (folder === 'has-borrow') {
-          return {
-            name: 'Borrower',
-            folder: 'has-borrow',
-            trigger: '',
-            added_at: '',
-            containerConfig: { credentialSource: 'has-source' },
-          };
-        }
-        return undefined;
-      });
-
-      // Credentials only in source scope
-      resolver.store('claude', asCredentialScope('has-source'), CRED_OAUTH, {
+  describe('hasKeyInScope', () => {
+    it('finds credentials through resolver', () => {
+      const credScope = asCredentialScope('has-key-scope');
+      resolver.store('claude', credScope, CRED_OAUTH, {
         value: 'tok_borrowed_xxxxxxxxxxxxxxxxxxxxxxxx',
         expires_ts: 0,
         updated_ts: Date.now(),
       });
 
-      expect(engine.hasAnyCredential(borrower, 'claude')).toBe(true);
-    });
-
-    it('returns false when neither own nor source has credentials', () => {
-      const borrower = asGroupScope('has-empty');
-      engine.setGroupResolver(() => ({
-        name: 'Empty',
-        folder: 'has-empty',
-        trigger: '',
-        added_at: '',
-        containerConfig: { credentialSource: 'empty-source' },
-      }));
-
-      expect(engine.hasAnyCredential(borrower, 'claude')).toBe(false);
-    });
-
-    it('finds own credentials even without credentialSource', () => {
-      const own = asGroupScope('has-own');
-      engine.setGroupResolver(() => ({
-        name: 'Own',
-        folder: 'has-own',
-        trigger: '',
-        added_at: '',
-      }));
-
-      resolver.store('claude', asCredentialScope('has-own'), CRED_OAUTH, {
-        value: 'tok_my_own_xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-        expires_ts: 0,
-        updated_ts: Date.now(),
-      });
-
-      expect(engine.hasAnyCredential(own, 'claude')).toBe(true);
-    });
-
-    it('nonExpired rejects expired credentials from source scope', () => {
-      const borrower = asGroupScope('has-expired');
-      engine.setGroupResolver((folder) => {
-        if (folder === 'has-expired') {
-          return {
-            name: 'Borrower',
-            folder: 'has-expired',
-            trigger: '',
-            added_at: '',
-            containerConfig: { credentialSource: 'expired-source' },
-          };
-        }
-        return undefined;
-      });
-
-      resolver.store('claude', asCredentialScope('expired-source'), CRED_OAUTH, {
-        value: 'tok_expired_xxxxxxxxxxxxxxxxxxxxxxxxx',
-        expires_ts: 1000, // long expired
-        updated_ts: Date.now(),
-      });
-
-      // Without nonExpired flag — found (value exists)
-      expect(engine.hasAnyCredential(borrower, 'claude', false)).toBe(true);
-      // With nonExpired flag — rejected (expired)
-      expect(engine.hasAnyCredential(borrower, 'claude', true)).toBe(false);
+      expect(engine.hasKeyInScope(credScope, 'claude', CRED_OAUTH)).toBe(true);
+      expect(engine.hasKeyInScope(credScope, 'claude', 'api_key')).toBe(false);
     });
   });
 

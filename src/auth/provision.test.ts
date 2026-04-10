@@ -66,7 +66,9 @@ function makeGroup(
       opts?.credentialSource || opts?.credentialGrantees
         ? {
             credentialSource: opts.credentialSource,
-            credentialGrantees: opts.credentialGrantees,
+            credentialGrantees: opts.credentialGrantees
+              ? new Set(opts.credentialGrantees)
+              : undefined,
           }
         : undefined,
     isMain: opts?.isMain,
@@ -158,6 +160,7 @@ describe('importEnvToMainGroup', () => {
     const provider: CredentialProvider = {
       id: 'test-import',
       displayName: 'Test',
+      credentialPaths: ['oauth'],
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],
@@ -174,6 +177,7 @@ describe('importEnvToMainGroup', () => {
     const provider: CredentialProvider = {
       id: 'test-no-import',
       displayName: 'Test',
+      credentialPaths: ['oauth'],
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],

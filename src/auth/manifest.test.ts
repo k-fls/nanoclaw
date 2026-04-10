@@ -245,7 +245,7 @@ describe('manifest distribution to grantees', () => {
           folder: 'grantor-g',
           trigger: '',
           added_at: '',
-          containerConfig: { credentialGrantees: ['grantee-a', 'grantee-b'] },
+          containerConfig: { credentialGrantees: new Set(['grantee-a', 'grantee-b']) },
         };
       }
       return undefined;
@@ -280,7 +280,7 @@ describe('manifest distribution to grantees', () => {
           folder: 'grantor-del',
           trigger: '',
           added_at: '',
-          containerConfig: { credentialGrantees: ['grantee-del'] },
+          containerConfig: { credentialGrantees: new Set(['grantee-del']) },
         };
       }
       return undefined;
@@ -315,7 +315,7 @@ describe('manifest distribution to grantees', () => {
           folder: 'grantor-whole',
           trigger: '',
           added_at: '',
-          containerConfig: { credentialGrantees: ['grantee-whole'] },
+          containerConfig: { credentialGrantees: new Set(['grantee-whole']) },
         };
       }
       return undefined;
@@ -580,6 +580,7 @@ describe('provider ID collision in registry', () => {
     const stub = {
       id: 'collision-test',
       displayName: 'test',
+      credentialPaths: ['oauth'],
       provision: () => ({ env: {} }),
       storeResult: () => {},
       authOptions: () => [],

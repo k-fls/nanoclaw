@@ -168,7 +168,7 @@ function asyncDistribute(
   const grantor = groupResolver(asGroupScope(credentialScope));
   if (!grantor) return;
   const grantees = grantor.containerConfig?.credentialGrantees;
-  if (!grantees?.length) return;
+  if (!grantees?.size) return;
 
   // Fire and forget
   Promise.resolve().then(() => {
@@ -244,7 +244,7 @@ export function onKeysFileDeleted(
     // Clean up from all grantees
     const grantor = _groupResolver?.(asGroupScope(credentialScope));
     const grantees = grantor?.containerConfig?.credentialGrantees;
-    if (grantees?.length) {
+    if (grantees?.size) {
       Promise.resolve().then(() => {
         for (const grantee of grantees) {
           try {

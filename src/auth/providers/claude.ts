@@ -660,6 +660,7 @@ export function hasSubscriptionCredential(scope: CredentialScope): boolean {
 export const claudeProvider: CredentialProvider = {
   id: PROVIDER_ID,
   displayName: 'Claude',
+  credentialPaths: ['api_key', CRED_OAUTH],
 
   importEnv(
     scope: CredentialScope,

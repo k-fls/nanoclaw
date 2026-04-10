@@ -33,7 +33,12 @@ export function importEnvToMainGroup(
   const mainScope = asGroupScope(mainGroupFolder);
   const mainCredScope = asCredentialScope(mainGroupFolder);
   for (const provider of getAllProviders()) {
-    if (engine.hasAnyCredential(mainScope, provider.id)) continue;
+    // Skip if own scope already has any key or a substitute exists for any credential path
+    const hasKey = provider.credentialPaths.some((cp) =>
+      engine.hasKeyInScope(mainCredScope, provider.id, cp)
+      || engine.getSubstitute(provider.id, mainScope, cp) !== null,
+    );
+    if (hasKey) continue;
     provider.importEnv?.(mainCredScope, engine.storeCredential.bind(engine));
   }
 }
@@ -90,7 +95,7 @@ export function createAccessCheck(
     const grantor = groupResolver(asGroupScope(sourceScope as string));
     if (!grantor) return false;
     return (
-      grantor.containerConfig?.credentialGrantees?.includes(
+      grantor.containerConfig?.credentialGrantees?.has(
         groupScope as string,
       ) === true
     );

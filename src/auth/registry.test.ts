@@ -22,6 +22,7 @@ import type { CredentialProvider, HostHandler } from './types.js';
 const makeStub = (id: string): CredentialProvider => ({
   id,
   displayName: id,
+  credentialPaths: ['oauth'],
   provision: () => ({ env: {} }),
   storeResult: () => {},
   authOptions: () => [],

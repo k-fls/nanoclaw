@@ -177,11 +177,12 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     if (mainEntry) {
       const [mainJid, mainGroup] = mainEntry;
       // Add this group to main's grantees
-      const grantees = mainGroup.containerConfig?.credentialGrantees ?? [];
-      if (!grantees.includes(group.folder)) {
+      const grantees = mainGroup.containerConfig?.credentialGrantees ?? new Set<string>();
+      if (!grantees.has(group.folder)) {
+        grantees.add(group.folder);
         mainGroup.containerConfig = {
           ...mainGroup.containerConfig,
-          credentialGrantees: [...grantees, group.folder],
+          credentialGrantees: grantees,
         };
         setRegisteredGroup(mainJid, mainGroup);
       }
@@ -246,8 +247,8 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
 }
 
 /** O(1) group lookup by folder name. Used by auth resolvers. */
-export function getGroupByFolder(folder: string): RegisteredGroup | undefined {
-  return folderIndex.get(folder);
+export function getGroupByFolder(folder: string | import('./auth/oauth-types.js').GroupScope): RegisteredGroup | undefined {
+  return folderIndex.get(folder as string);
 }
 
 /** @internal - exported for testing */
@@ -724,7 +725,7 @@ async function main(): Promise<void> {
   updateAgentRunnerFingerprint();
 
   // Initialize the full auth/credential proxy system (providers, token engine, proxy server).
-  const auth = await initAuthSystem(() => registeredGroups);
+  const auth = await initAuthSystem(() => registeredGroups, getGroupByFolder);
   tokenEngine = auth.tokenEngine;
 
   await startUpdateManager();

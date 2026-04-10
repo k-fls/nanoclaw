@@ -108,9 +108,13 @@ export function createAuthGuard(
     async start(): Promise<boolean> {
       proxy.registerSessionContext(scope, sessionCtx);
 
-      // Check credentials
+      // Check credentials: at least one of the provider's declared paths must resolve
       const engine = getTokenEngine();
-      if (engine.hasAnyCredential(scope, provider.id)) return true;
+      const hasCredential = provider.credentialPaths.some((cp) => {
+        const credScope = engine.resolveCredentialScope(scope, provider.id, cp);
+        return engine.hasKeyInScope(credScope, provider.id, cp);
+      });
+      if (hasCredential) return true;
 
       logger.warn(
         { group: group.name },

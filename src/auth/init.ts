@@ -50,6 +50,7 @@ export interface AuthSystem {
  */
 export async function initAuthSystem(
   getGroups: () => Record<string, RegisteredGroup>,
+  resolveGroup: GroupResolver,
 ): Promise<AuthSystem> {
   setInteractionPrefix('🤖');
   registerAuthHandlers();
@@ -75,12 +76,6 @@ export async function initAuthSystem(
   // Must happen after providers are registered and before any provision calls.
   const tokenEngine = getTokenEngine();
 
-  const resolveGroup: GroupResolver = (folder) => {
-    for (const g of Object.values(getGroups())) {
-      if (g.folder === folder) return g;
-    }
-    return undefined;
-  };
 
   tokenEngine.setGroupResolver(resolveGroup);
   tokenEngine.setAccessCheck(createAccessCheck(resolveGroup));

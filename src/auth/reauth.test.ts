@@ -55,6 +55,7 @@ function makeProvider(
   const provider: CredentialProvider = {
     id: 'test',
     displayName: 'Test Provider',
+    credentialPaths: ['oauth'],
     provision: () => ({ env: {} }),
     storeResult: vi.fn(),
     authOptions: () =>
@@ -79,6 +80,7 @@ function createProvider(
   const provider: CredentialProvider = {
     id: 'test',
     displayName: 'Test Provider',
+    credentialPaths: ['oauth'],
     provision: () => ({ env: {} }),
     storeResult: vi.fn(),
     authOptions: () =>

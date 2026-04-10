@@ -236,11 +236,14 @@ describe('task scheduler', () => {
       },
     );
 
+    const successGroup = {
+      name: 'Success Group',
+      folder: 'whatsapp_success-test',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
     startSchedulerLoop({
-      getGroupByFolder: (f: string) =>
-        f === 'whatsapp_success-test'
-          ? { name: 'Success Group', folder: 'whatsapp_success-test', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' }
-          : undefined,
+      getGroupByFolder: (f) => f === 'whatsapp_success-test' ? successGroup as any : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
@@ -280,11 +283,14 @@ describe('task scheduler', () => {
       },
     );
 
+    const errorGroup = {
+      name: 'Error Group',
+      folder: 'whatsapp_error-test',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
     startSchedulerLoop({
-      getGroupByFolder: (f: string) =>
-        f === 'whatsapp_error-test'
-          ? { name: 'Error Group', folder: 'whatsapp_error-test', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' }
-          : undefined,
+      getGroupByFolder: (f) => f === 'whatsapp_error-test' ? errorGroup as any : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
@@ -336,11 +342,14 @@ describe('task scheduler', () => {
       },
     );
 
+    const streamGroup = {
+      name: 'Stream Group',
+      folder: 'whatsapp_stream-test',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
     startSchedulerLoop({
-      getGroupByFolder: (f: string) =>
-        f === 'whatsapp_stream-test'
-          ? { name: 'Stream Group', folder: 'whatsapp_stream-test', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' }
-          : undefined,
+      getGroupByFolder: (f) => f === 'whatsapp_stream-test' ? streamGroup as any : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},

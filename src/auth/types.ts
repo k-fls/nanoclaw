@@ -20,6 +20,8 @@ export interface CredentialProvider {
   /** Provider ID matching the keys file name: 'claude', etc. */
   id: string;
   displayName: string;
+  /** Top-level credential paths this provider can use (e.g. ['api_key', 'oauth']). Guard checks at least one resolves. */
+  credentialPaths: string[];
 
   /**
    * Host rules for transparent proxy routing.

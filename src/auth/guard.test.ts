@@ -15,11 +15,13 @@ vi.mock('./reauth.js', () => ({
   runReauth: vi.fn(async () => true),
 }));
 
-// Mock the token engine's hasAnyCredential method used by guard.start()
-const mockHasAnyCredential = vi.fn(() => true);
+// Mock the token engine's resolveCredentialScope + hasKeyInScope used by guard.start()
+const mockResolveCredentialScope = vi.fn(() => 'test-scope');
+const mockHasKeyInScope = vi.fn(() => true);
 vi.mock('./registry.js', () => ({
   getTokenEngine: vi.fn(() => ({
-    hasAnyCredential: mockHasAnyCredential,
+    resolveCredentialScope: mockResolveCredentialScope,
+    hasKeyInScope: mockHasKeyInScope,
   })),
 }));
 
@@ -86,6 +88,7 @@ function mockProvider(
   return {
     id: 'claude',
     displayName: 'Claude',
+    credentialPaths: ['api_key', 'oauth'],
     provision: vi.fn(() => ({ env: { ANTHROPIC_API_KEY: 'sk-test' } })),
     storeResult: vi.fn(),
     authOptions: vi.fn(() => []),
@@ -126,7 +129,7 @@ describe('createAuthGuard', () => {
 
   describe('start', () => {
     it('returns true when credentials are available', async () => {
-      mockHasAnyCredential.mockReturnValue(true);
+      mockHasKeyInScope.mockReturnValue(true);
       const guard = createAuthGuard(
         group,
         mockProxy(),
@@ -141,7 +144,7 @@ describe('createAuthGuard', () => {
     });
 
     it('goes straight to reauth when no credentials', async () => {
-      mockHasAnyCredential.mockReturnValue(false);
+      mockHasKeyInScope.mockReturnValue(false);
       const guard = createAuthGuard(
         group,
         mockProxy(),
@@ -157,7 +160,7 @@ describe('createAuthGuard', () => {
     });
 
     it('registers session context with proxy', async () => {
-      mockHasAnyCredential.mockReturnValue(true);
+      mockHasKeyInScope.mockReturnValue(true);
       const proxy = mockProxy();
       const guard = createAuthGuard(
         group,
