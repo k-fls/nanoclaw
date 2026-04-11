@@ -218,7 +218,7 @@ registerCommand('auth-gpg', {
     ensureGpgKey(groupScope);
     return {
       asyncAction: async (io) => {
-        await io.send(exportPublicKey(groupScope));
+        await io.sendRaw(exportPublicKey(groupScope));
       },
     };
   },
