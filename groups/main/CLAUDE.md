@@ -77,9 +77,23 @@ Standard Markdown: `**bold**`, `*italic*`, `[links](url)`, `# headings`.
 
 This is the **main channel**, which has elevated privileges.
 
-## Authentication
+## Authentication & Credentials
 
-Anthropic credentials must be either an API key from console.anthropic.com (`ANTHROPIC_API_KEY`) or a long-lived OAuth token from `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`). Short-lived tokens from the system keychain or `~/.claude/.credentials.json` expire within hours and can cause recurring container 401s. The `/setup` skill walks through this. OneCLI manages credentials (including Anthropic auth) — run `onecli --help`.
+You never hold real API keys or tokens. The host runs a MITM credential proxy that sits between your container and the internet. All your HTTPS traffic routes through it.
+
+**How token swapping works:**
+- When your container starts, the host generates format-preserving substitute tokens for each configured provider. These look like real tokens (same prefix, suffix, length, character classes) but the middle is cryptographically randomized. You receive them via environment variables (e.g. `GH_TOKEN`, `ANTHROPIC_API_KEY`) and use them normally.
+- On every outbound request: the proxy matches the destination host+path, looks up your substitute token, swaps it for the real credential, and forwards to the upstream API.
+- On every response: if the response body contains a real token (e.g. from an OAuth token exchange), the proxy swaps it for a substitute before you see it.
+- You never see a real credential — not in env vars, not in headers, not in response bodies.
+
+**Auto-refresh:** When the proxy gets a 401/403 from an upstream API, it automatically attempts a token refresh using stored refresh tokens. Your request retries transparently.
+
+**Supported providers:** 60+ OAuth providers are supported (GitHub, Google, Slack, Stripe, Todoist, Linear, etc.). Each group has its own encrypted credential scope — your credentials are isolated from other groups.
+
+**Adding credentials:** The user can add or update credentials for any supported provider by running `/auth` in the messaging channel. You cannot invoke `/auth` yourself. If you encounter a 401 or need credentials for a service that isn't configured, tell the user to run `/auth` to set it up.
+
+**Anthropic credentials specifically:** Must be either an API key from console.anthropic.com (`ANTHROPIC_API_KEY`) or a long-lived OAuth token from `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`). Short-lived tokens from the system keychain expire within hours and cause recurring 401s.
 
 ## Container Mounts
 
