@@ -20,6 +20,8 @@ import {
   gpgDecrypt,
   isPgpMessage,
   normalizeArmoredBlock,
+  promptGpgEncrypt,
+  formatGpgInstructions,
 } from './gpg.js';
 import { chooseName, AUTH_PROMPT_TIMEOUT } from './chat-prompts.js';
 import { logger } from '../logger.js';
@@ -164,72 +166,11 @@ export async function runInteractiveKeySetup(
     return false;
   }
 
-  // GPG setup
-  if (!isGpgAvailable()) {
-    await chat.send(
-      `GPG is not installed. ` +
-        `Install it (\`apt install gnupg\` or \`brew install gnupg\`) and try again.`,
-    );
-    return false;
-  }
-
-  const scope = String(groupScope);
-  try {
-    ensureGpgKey(scope);
-  } catch (err) {
-    await chat.send(
-      `Failed to initialize GPG keypair: ` +
-        `${err instanceof Error ? err.message : String(err)}`,
-    );
-    return false;
-  }
-
-  const pubKey = exportPublicKey(scope);
-  await chat.sendRaw(pubKey);
-  await chat.send(
-    `Paste a GPG-encrypted key for *${providerId}* (*${credentialId}*).\n\n` +
-      `*Step 1.* Import the public key above.\n` +
-      '```\n' +
-      "gpg --import <<'EOF'\n" +
-      '... (paste the key) ...\n' +
-      'EOF\n' +
-      '```\n\n' +
-      `*Step 2.* Encrypt your key:\n` +
-      '```\n' +
-      'echo "your-api-key" | gpg --encrypt --armor --recipient nanoclaw\n' +
-      '```\n\n' +
-      "If you don't have GPG installed locally, use this online tool:\n" +
-      '• https://k-fls.github.io/pgp-encrypt/\n\n' +
-      '*Step 3.* Paste the encrypted output here, or reply *0* to abort.',
-  );
-
-  const reply = await chat.receive(AUTH_PROMPT_TIMEOUT);
-  if (!reply || reply.trim() === '0') {
-    await chat.send(`Cancelled.`);
-    return false;
-  }
-  chat.hideMessage();
-  chat.advanceCursor();
-
-  if (!isPgpMessage(reply)) {
-    await chat.send(
-      `Expected a GPG-encrypted message (${PGP_BEGIN}).\n` +
-        `Plaintext keys are not accepted for security reasons.`,
-    );
-    return false;
-  }
-
-  let plaintext: string;
-  try {
-    plaintext = gpgDecrypt(scope, normalizeArmoredBlock(reply));
-  } catch (err) {
-    await chat.send(
-      `Failed to decrypt PGP message. ` +
-        `Make sure you encrypted with the public key shown above.`,
-    );
-    logger.error({ scope, err }, 'GPG decrypt failed');
-    return false;
-  }
+  // GPG prompt — sends key, instructions, loops until valid input or cancel
+  const plaintext = await promptGpgEncrypt(groupScope, chat, AUTH_PROMPT_TIMEOUT, {
+    hint: `key for ${providerId} (${credentialId})`,
+  });
+  if (!plaintext) return false;
 
   const { needsRestart } = storeProviderKey(
     providerId,
@@ -270,9 +211,17 @@ export function handleSetKey(
   // Find PGP block (may start on same line or a subsequent line)
   const pgpIdx = argsAfterSetKey.indexOf(PGP_BEGIN);
   if (pgpIdx < 0 || !isPgpMessage(argsAfterSetKey.slice(pgpIdx))) {
+    // Show the public key and encryption instructions so the user knows what to do
+    if (!isGpgAvailable()) {
+      return 'GPG is not available. Install gnupg first.';
+    }
+    ensureGpgKey(groupScope);
+    const pubKey = exportPublicKey(groupScope);
     return (
-      `Expected a GPG-encrypted message.\n` +
-      `Usage: /auth ${providerId} set-key [credential-id] [expiry=<epoch_ms>] <pgp block>`
+      pubKey + '\n\n' +
+      formatGpgInstructions(pubKey, `your ${providerId} key`) + '\n\n' +
+      `Then send:\n` +
+      `\`/auth ${providerId} set-key [credential-id] <pgp block>\``
     );
   }
 
@@ -306,17 +255,16 @@ export function handleSetKey(
   }
 
   // Decrypt
-  const scope = String(groupScope);
   if (!isGpgAvailable()) {
     return 'GPG is not available. Install gnupg first.';
   }
-  ensureGpgKey(scope);
+  ensureGpgKey(groupScope);
 
   let plaintext: string;
   try {
-    plaintext = gpgDecrypt(scope, normalizeArmoredBlock(pgpBlock));
+    plaintext = gpgDecrypt(groupScope, normalizeArmoredBlock(pgpBlock));
   } catch (err) {
-    logger.error({ scope, err }, 'GPG decrypt failed in set-key');
+    logger.error({ groupScope, err }, 'GPG decrypt failed in set-key');
     return 'Failed to decrypt PGP message. Make sure you encrypted with the correct public key.';
   }
 

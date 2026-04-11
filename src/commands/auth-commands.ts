@@ -213,11 +213,11 @@ registerCommand('auth-gpg', {
   run(_args, ctx) {
     if (!isGpgAvailable())
       return reply('GPG is not available. Install gnupg first.');
-    const scope = String(scopeOf(ctx.group));
-    ensureGpgKey(scope);
+    const groupScope = scopeOf(ctx.group);
+    ensureGpgKey(groupScope);
     return {
       asyncAction: async (io) => {
-        await io.sendRaw(exportPublicKey(scope));
+        await io.sendRaw(exportPublicKey(groupScope));
       },
     };
   },

@@ -42,7 +42,7 @@ const mockGpgAvailable = vi.fn(() => true);
 const mockGpgDecrypt = vi.fn((_scope: string, _ct: string) => 'decrypted-key');
 const mockEnsureGpgKey = vi.fn();
 const mockExportPublicKey = vi.fn(
-  () =>
+  (_scope?: string) =>
     '-----BEGIN PGP PUBLIC KEY BLOCK-----\nfake\n-----END PGP PUBLIC KEY BLOCK-----',
 );
 vi.mock('./gpg.js', () => ({
@@ -52,6 +52,59 @@ vi.mock('./gpg.js', () => ({
   gpgDecrypt: mockGpgDecrypt,
   isPgpMessage: (text: string) => text.includes('-----BEGIN PGP MESSAGE-----'),
   normalizeArmoredBlock: (block: string) => block.trim(),
+  formatGpgInstructions: (pubKey: string, hint?: string) =>
+    `Encrypt ${hint ?? 'your secret'} with the public key above.`,
+  promptGpgEncrypt: async (
+    scope: string,
+    chat: import('./types.js').ChatIO,
+    _timeoutMs: number,
+    opts?: { hint?: string; validate?: (pt: string) => string | null },
+  ): Promise<string | null> => {
+    if (!mockGpgAvailable()) {
+      await chat.send(
+        'GPG is not installed. ' +
+          'Install it (`apt install gnupg` or `brew install gnupg`) and try again.',
+      );
+      return null;
+    }
+    mockEnsureGpgKey(scope);
+    const pubKey = mockExportPublicKey(scope);
+    await chat.sendRaw(pubKey);
+    await chat.send(`Encrypt ${opts?.hint ?? 'your secret'} with the public key above.\n\nReply *0* to abort.`);
+    const reply = await chat.receive(_timeoutMs);
+    if (reply) {
+      chat.hideMessage();
+      chat.advanceCursor();
+    }
+    if (!reply || reply.trim() === '0') {
+      await chat.send('Cancelled.');
+      return null;
+    }
+    if (!reply.includes('-----BEGIN PGP MESSAGE-----')) {
+      await chat.send(
+        'Expected a GPG-encrypted message (-----BEGIN PGP MESSAGE-----).\n' +
+          'Plaintext keys are not accepted for security reasons.\n\n' +
+          'Paste the encrypted output, or reply *0* to abort.',
+      );
+      return null;
+    }
+    let plaintext: string;
+    try {
+      plaintext = mockGpgDecrypt(scope, reply.trim()).trim();
+    } catch {
+      await chat.send(
+        'Failed to decrypt. Make sure you encrypted with the public key shown above.\n\n' +
+          'Try again, or reply *0* to abort.',
+      );
+      return null;
+    }
+    const validationError = opts?.validate?.(plaintext) ?? null;
+    if (validationError) {
+      await chat.send(validationError + '\n\nTry again, or reply *0* to abort.');
+      return null;
+    }
+    return plaintext;
+  },
 }));
 
 // Mock discovery registry
@@ -451,7 +504,7 @@ describe('handleSetKey', () => {
     );
   });
 
-  it('returns error for missing PGP block', () => {
+  it('returns public key and instructions for missing PGP block', () => {
     const { engine } = mockTokenEngine();
     const result = handleSetKey(
       'github',
@@ -459,7 +512,8 @@ describe('handleSetKey', () => {
       TEST_GROUP_SCOPE,
       engine,
     );
-    expect(result).toContain('Expected a GPG-encrypted message');
+    expect(result).toContain('-----BEGIN PGP PUBLIC KEY BLOCK-----');
+    expect(result).toContain('/auth github set-key');
   });
 
   it('returns error for ineligible provider', () => {

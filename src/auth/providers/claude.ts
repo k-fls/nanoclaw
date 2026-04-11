@@ -14,14 +14,7 @@ import { asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js'
 import { scopeOf } from '../../types.js';
 import type { CredentialScope } from '../oauth-types.js';
 import { authSessionDir, scopeClaudeDir } from '../exec.js';
-import {
-  ensureGpgKey,
-  exportPublicKey,
-  gpgDecrypt,
-  isGpgAvailable,
-  isPgpMessage,
-  normalizeArmoredBlock,
-} from '../gpg.js';
+import { promptGpgEncrypt } from '../gpg.js';
 import { IDLE_TIMEOUT } from '../../config.js';
 import { importEnvCredentials } from '../provision.js';
 import { logger } from '../../logger.js';
@@ -921,81 +914,21 @@ export const claudeProvider: CredentialProvider = {
         provider: this,
         credentialScope: scope,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
-          if (!isGpgAvailable()) {
-            await ctx.chat.send(
-              'GPG is not installed on the server. ' +
-                'Install it (`apt install gnupg` or `brew install gnupg`) and try again.\n\n' +
-                'Returning to auth method selection...',
-            );
-            return RESELECT;
-          }
-
-          let pubKey: string;
-          try {
-            ensureGpgKey(ctx.scope);
-            pubKey = exportPublicKey(ctx.scope);
-          } catch (err) {
-            logger.warn({ err }, 'GPG key setup failed');
-            await ctx.chat.send(
-              'Failed to initialize GPG keypair: ' +
-                `${err instanceof Error ? err.message : String(err)}\n\n` +
-                'Returning to auth method selection...',
-            );
-            return RESELECT;
-          }
-
-          // Send public key without prefix so it's directly copy-pasteable
-          await ctx.chat.sendRaw(pubKey);
-
-          await ctx.chat.send(
-            'Paste a GPG-encrypted Anthropic API key.\n\n' +
-              '*Step 1.* Import the public key above.\n\n' +
-              'With local GPG:\n' +
-              '```\n' +
-              "gpg --import <<'EOF'\n" +
-              '... (paste the key) ...\n' +
-              'EOF\n' +
-              '```\n\n' +
-              '*Step 2.* Encrypt your API key:\n' +
-              '```\n' +
-              'echo "sk-ant-api..." | gpg --encrypt --armor --recipient nanoclaw\n' +
-              '```\n\n' +
-              "If you don't have GPG installed locally, use this online tool " +
-              '(paste the public key, encrypt your API key, copy the armored output):\n' +
-              '• https://k-fls.github.io/pgp-encrypt/\n\n' +
-              '*Step 3.* Paste the encrypted output here. Reply "cancel" to abort.',
+          // GPG keys are per-group; CredentialScope→GroupScope values are
+          // identical strings, just branded differently.
+          const apiKey = await promptGpgEncrypt(
+            asGroupScope(ctx.scope),
+            ctx.chat,
+            IDLE_TIMEOUT - 30_000,
+            {
+              hint: 'your Anthropic API key (sk-ant-api…)',
+              validate: (pt) =>
+                pt.startsWith('sk-ant-api')
+                  ? null
+                  : 'Invalid key format — expected sk-ant-api prefix after decryption.',
+            },
           );
-
-          const reply = await ctx.chat.receive(IDLE_TIMEOUT - 30_000);
-          if (reply) ctx.chat.hideMessage();
-          if (!reply || isCancelReply(reply)) return null;
-
-          if (!isPgpMessage(reply)) {
-            await ctx.chat.send(
-              'Expected a GPG-encrypted message (-----BEGIN PGP MESSAGE-----).\n' +
-                'Plaintext keys are not accepted for security reasons.\n\n' +
-                'Returning to auth method selection...',
-            );
-            return RESELECT;
-          }
-
-          let apiKey: string;
-          try {
-            apiKey = gpgDecrypt(ctx.scope, normalizeArmoredBlock(reply));
-          } catch (err) {
-            await ctx.chat.send(
-              'Failed to decrypt PGP message. Make sure you encrypted with the public key shown above.',
-            );
-            logger.error({ scope: ctx.scope, err }, 'GPG decrypt failed');
-            return null;
-          }
-
-          if (!apiKey.startsWith('sk-ant-api')) {
-            await ctx.chat.send(
-              'Invalid key format — expected sk-ant-api prefix after decryption.',
-            );
-            return null;
-          }
+          if (!apiKey) return null;
 
           return { auth_type: 'api_key', token: apiKey, expires_at: null };
         },
