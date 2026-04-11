@@ -540,7 +540,10 @@ async function runOAuthFlow(
     `Open this URL and authorize:\n${delivery.oauthUrl}\n\n${delivery.instructions}`,
   );
 
-  const userInput = await receiveOrContainerExit(ctx.chat, handle);
+  const chat = ctx.chat; // Direct URL here is to ensure that message will be hidden even if container is stopped.
+  const userInput = await receiveOrContainerExit(chat, handle);
+  if (userInput) chat.hideMessage();
+
   if (!userInput || isCancelReply(userInput)) {
     await ctx.chat.send(
       userInput ? 'Cancelled.' : 'Auth container exited or timed out.',

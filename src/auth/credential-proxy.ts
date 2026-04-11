@@ -38,6 +38,7 @@ import { createMitmContext, type MitmContext } from './mitm-proxy.js';
 import { createTransparentServer } from './transparent-proxy.js';
 import { handleBrowserOpen } from './browser-open-handler.js';
 import { routeInteractionRequest } from './auth-interactions.js';
+import { handleSubstituteRequest } from './substitute-endpoint.js';
 import type { ContainerSessionContext } from './session-context.js';
 import type { GroupScope } from './oauth-types.js';
 
@@ -759,6 +760,12 @@ export class CredentialProxy {
             res.end('Internal error');
           }
         });
+        return;
+      }
+
+      // Credential substitute endpoint: container pulls a substitute at runtime
+      if (req.url?.startsWith('/credentials/') && req.method === 'GET') {
+        handleSubstituteRequest(req, res, scope);
         return;
       }
 
