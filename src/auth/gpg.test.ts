@@ -3,10 +3,14 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { asGroupScope } from './oauth-types.js';
 
 // Keep path short to stay under Unix socket limit (107 chars for S.gpg-agent.browser)
 const tmpDir = path.join(os.tmpdir(), `nc-gpg-${process.pid}`);
 vi.stubEnv('HOME', tmpDir);
+
+const SCOPE_A = asGroupScope('scope-a');
+const SCOPE_B = asGroupScope('scope-b');
 
 beforeEach(() => {
   fs.mkdirSync(path.join(tmpDir, '.config', 'nanoclaw'), { recursive: true });
@@ -31,7 +35,29 @@ const {
   exportPublicKey,
   gpgDecrypt,
   isPgpMessage,
+  formatGpgInstructions,
+  promptGpgEncrypt,
 } = await import('./gpg.js');
+
+// Helper: create a mock ChatIO for promptGpgEncrypt tests
+function createChat(replies: Array<string | null>) {
+  let replyIndex = 0;
+  const sent: string[] = [];
+  const sentRaw: string[] = [];
+  return {
+    sent,
+    sentRaw,
+    send: vi.fn(async (text: string) => { sent.push(text); }),
+    sendRaw: vi.fn(async (text: string) => { sentRaw.push(text); }),
+    receive: vi.fn(async () => {
+      const reply = replyIndex < replies.length ? replies[replyIndex] : null;
+      replyIndex++;
+      return reply;
+    }),
+    hideMessage: vi.fn(),
+    advanceCursor: vi.fn(),
+  };
+}
 
 describe('isPgpMessage', () => {
   it('detects PGP message header', () => {
@@ -72,36 +98,35 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
   });
 
   it('ensureGpgKey creates a keypair', () => {
-    ensureGpgKey('gpg-test-scope');
+    ensureGpgKey(SCOPE_A);
 
     const gnupgDir = path.join(
       tmpDir,
       '.config',
       'nanoclaw',
       'credentials',
-      'gpg-test-scope',
+      'scope-a',
       '.gnupg',
     );
     expect(fs.existsSync(gnupgDir)).toBe(true);
   });
 
   it('ensureGpgKey is idempotent', () => {
-    ensureGpgKey('gpg-idem-scope');
-    ensureGpgKey('gpg-idem-scope');
+    ensureGpgKey(SCOPE_A);
+    ensureGpgKey(SCOPE_A);
     // No error on second call
   });
 
   it('exportPublicKey returns ASCII-armored key', () => {
-    ensureGpgKey('gpg-export-scope');
-    const pubKey = exportPublicKey('gpg-export-scope');
+    ensureGpgKey(SCOPE_A);
+    const pubKey = exportPublicKey(SCOPE_A);
     expect(pubKey).toContain('-----BEGIN PGP PUBLIC KEY BLOCK-----');
     expect(pubKey).toContain('-----END PGP PUBLIC KEY BLOCK-----');
   });
 
   it('encrypt and decrypt round-trip', () => {
-    const scope = 'gpg-roundtrip';
-    ensureGpgKey(scope);
-    const pubKey = exportPublicKey(scope);
+    ensureGpgKey(SCOPE_A);
+    const pubKey = exportPublicKey(SCOPE_A);
 
     // Import the public key into a separate temp gpg homedir to simulate user side
     const userGpgHome = path.join(tmpDir, 'user-gpg');
@@ -133,30 +158,160 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
     expect(encrypted).toContain('-----BEGIN PGP MESSAGE-----');
 
     // Decrypt on the server side
-    const decrypted = gpgDecrypt(scope, encrypted);
+    const decrypted = gpgDecrypt(SCOPE_A, encrypted);
     expect(decrypted).toBe(plaintext);
   });
 
   it('gpgDecrypt throws on invalid ciphertext', () => {
-    const scope = 'gpg-bad-decrypt';
-    ensureGpgKey(scope);
+    ensureGpgKey(SCOPE_A);
 
     expect(() =>
       gpgDecrypt(
-        scope,
+        SCOPE_A,
         '-----BEGIN PGP MESSAGE-----\ninvalid\n-----END PGP MESSAGE-----',
       ),
     ).toThrow();
   });
 
   it('different scopes have independent keys', () => {
-    ensureGpgKey('scope-a');
-    ensureGpgKey('scope-b');
+    ensureGpgKey(SCOPE_A);
+    ensureGpgKey(SCOPE_B);
 
-    const keyA = exportPublicKey('scope-a');
-    const keyB = exportPublicKey('scope-b');
+    const keyA = exportPublicKey(SCOPE_A);
+    const keyB = exportPublicKey(SCOPE_B);
 
     // Keys should be different (different keypairs)
     expect(keyA).not.toBe(keyB);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatGpgInstructions
+// ---------------------------------------------------------------------------
+
+describe('formatGpgInstructions', () => {
+  it('includes the online tool link', () => {
+    const result = formatGpgInstructions('PUBKEY', 'my key');
+    expect(result).toContain('https://k-fls.github.io/pgp-encrypt/');
+  });
+
+  it('uses hint in the message', () => {
+    const result = formatGpgInstructions('PUBKEY', 'my Todoist API key');
+    expect(result).toContain('Encrypt my Todoist API key');
+  });
+
+  it('defaults to "your secret" when no hint', () => {
+    const result = formatGpgInstructions('PUBKEY');
+    expect(result).toContain('Encrypt your secret');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// promptGpgEncrypt (integration — requires GPG)
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!gpgAvailable)('promptGpgEncrypt', () => {
+  /** Encrypt plaintext with the scope's public key (simulates user side). */
+  function encryptForScope(scope: import('./oauth-types.js').GroupScope, plaintext: string): string {
+    ensureGpgKey(scope);
+    const pubKey = exportPublicKey(scope);
+    const userGpgHome = path.join(tmpDir, `user-gpg-${Date.now()}`);
+    fs.mkdirSync(userGpgHome, { mode: 0o700, recursive: true });
+    execFileSync('gpg', ['--homedir', userGpgHome, '--batch', '--import'], {
+      input: pubKey,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return execFileSync(
+      'gpg',
+      ['--homedir', userGpgHome, '--batch', '--trust-model', 'always',
+       '--encrypt', '--armor', '--recipient', 'nanoclaw'],
+      { input: plaintext, stdio: ['pipe', 'pipe', 'pipe'] },
+    ).toString('utf-8');
+  }
+
+  it('returns decrypted plaintext on valid PGP input', async () => {
+    const encrypted = encryptForScope(SCOPE_A, 'my-secret');
+    const chat = createChat([encrypted]);
+
+    const result = await promptGpgEncrypt(SCOPE_A, chat, 5000);
+    expect(result).toBe('my-secret');
+    expect(chat.hideMessage).toHaveBeenCalled();
+    expect(chat.advanceCursor).toHaveBeenCalled();
+  });
+
+  it('sends raw public key block first', async () => {
+    const encrypted = encryptForScope(SCOPE_A, 'key');
+    const chat = createChat([encrypted]);
+
+    await promptGpgEncrypt(SCOPE_A, chat, 5000);
+    expect(chat.sentRaw[0]).toContain('-----BEGIN PGP PUBLIC KEY BLOCK-----');
+  });
+
+  it('sends instructions with abort hint', async () => {
+    const encrypted = encryptForScope(SCOPE_A, 'key');
+    const chat = createChat([encrypted]);
+
+    await promptGpgEncrypt(SCOPE_A, chat, 5000);
+    expect(chat.sent.some((m) => m.includes('Reply *0* to abort'))).toBe(true);
+  });
+
+  it('returns null on cancel (0)', async () => {
+    const chat = createChat(['0']);
+
+    const result = await promptGpgEncrypt(SCOPE_A, chat, 5000);
+    expect(result).toBeNull();
+    expect(chat.sent.some((m) => m.includes('Cancelled'))).toBe(true);
+    expect(chat.hideMessage).toHaveBeenCalled();
+    expect(chat.advanceCursor).toHaveBeenCalled();
+  });
+
+  it('returns null on timeout', async () => {
+    const chat = createChat([null]);
+
+    const result = await promptGpgEncrypt(SCOPE_A, chat, 5000);
+    expect(result).toBeNull();
+    expect(chat.sent.some((m) => m.includes('Cancelled'))).toBe(true);
+  });
+
+  it('retries on non-PGP input then accepts valid input', async () => {
+    const encrypted = encryptForScope(SCOPE_A, 'secret');
+    const chat = createChat(['plain-text', encrypted]);
+
+    const result = await promptGpgEncrypt(SCOPE_A, chat, 5000);
+    expect(result).toBe('secret');
+    expect(chat.sent.some((m) => m.includes('Expected a GPG-encrypted message'))).toBe(true);
+    // hideMessage called for both attempts
+    expect(chat.hideMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries on validation failure then accepts valid input', async () => {
+    const bad = encryptForScope(SCOPE_A, 'wrong-format');
+    const good = encryptForScope(SCOPE_A, 'sk-ant-api03-valid');
+    const chat = createChat([bad, good]);
+
+    const result = await promptGpgEncrypt(SCOPE_A, chat, 5000, {
+      validate: (pt) => pt.startsWith('sk-ant-api') ? null : 'Must start with sk-ant-api',
+    });
+    expect(result).toBe('sk-ant-api03-valid');
+    expect(chat.sent.some((m) => m.includes('Must start with sk-ant-api'))).toBe(true);
+  });
+
+  it('retries on decrypt failure then accepts cancel', async () => {
+    const chat = createChat([
+      '-----BEGIN PGP MESSAGE-----\ncorrupt\n-----END PGP MESSAGE-----',
+      '0',
+    ]);
+
+    const result = await promptGpgEncrypt(SCOPE_A, chat, 5000);
+    expect(result).toBeNull();
+    expect(chat.sent.some((m) => m.includes('Failed to decrypt'))).toBe(true);
+    expect(chat.sent.some((m) => m.includes('Cancelled'))).toBe(true);
+  });
+
+  it('uses hint in instructions', async () => {
+    const chat = createChat(['0']);
+
+    await promptGpgEncrypt(SCOPE_A, chat, 5000, { hint: 'your API token' });
+    expect(chat.sent.some((m) => m.includes('Encrypt your API token'))).toBe(true);
   });
 });
