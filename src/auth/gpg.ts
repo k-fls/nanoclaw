@@ -47,7 +47,7 @@ export function gpgDecrypt(scope: GroupScope, ciphertext: string): string {
  * prompts (which append "reply 0 to abort") and non-interactive error
  * replies (which just tell the user what to do).
  */
-export function formatGpgInstructions(pubKey: string, hint?: string): string {
+export function formatGpgInstructions(hint?: string): string {
   const what = hint ?? 'your secret';
   return (
     `Encrypt ${what} with the public key above.\n` +
@@ -113,7 +113,7 @@ export async function promptGpgEncrypt(
   await chat.sendRaw(pubKey);
 
   // Send instructions + cancel hint
-  const instructions = formatGpgInstructions(pubKey, opts?.hint);
+  const instructions = formatGpgInstructions(opts?.hint);
   await chat.send(instructions + '\n\nReply *0* to abort.');
 
   // Retry loop — user can keep trying until success or cancel

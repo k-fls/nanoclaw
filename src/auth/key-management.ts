@@ -16,12 +16,10 @@ import {
 import {
   isGpgAvailable,
   ensureGpgKey,
-  exportPublicKey,
   gpgDecrypt,
   isPgpMessage,
   normalizeArmoredBlock,
   promptGpgEncrypt,
-  formatGpgInstructions,
 } from './gpg.js';
 import { chooseName, AUTH_PROMPT_TIMEOUT } from './chat-prompts.js';
 import { logger } from '../logger.js';
@@ -198,39 +196,20 @@ export async function runInteractiveKeySetup(
 // Non-interactive set-key (scenario c)
 // ---------------------------------------------------------------------------
 
-export function handleSetKey(
+export async function handleSetKey(
   providerId: string,
   argsAfterSetKey: string,
   groupScope: GroupScope,
   tokenEngine: TokenSubstituteEngine,
-): string {
+  chat: ChatIO,
+): Promise<string | null> {
   if (!isKeyEligibleProvider(providerId)) {
     return `Provider *${providerId}* has no bearer-swap rules — cannot store keys.`;
   }
 
-  // Find PGP block (may start on same line or a subsequent line)
-  const pgpIdx = argsAfterSetKey.indexOf(PGP_BEGIN);
-  if (pgpIdx < 0 || !isPgpMessage(argsAfterSetKey.slice(pgpIdx))) {
-    // Show the public key and encryption instructions so the user knows what to do
-    if (!isGpgAvailable()) {
-      return 'GPG is not available. Install gnupg first.';
-    }
-    ensureGpgKey(groupScope);
-    const pubKey = exportPublicKey(groupScope);
-    return (
-      pubKey + '\n\n' +
-      formatGpgInstructions(pubKey, `your ${providerId} key`) + '\n\n' +
-      `Then send:\n` +
-      `\`/auth ${providerId} set-key [credential-id] <pgp block>\``
-    );
-  }
-
-  const pgpBlock = argsAfterSetKey.slice(pgpIdx);
-  const prefix = argsAfterSetKey.slice(0, pgpIdx).trim();
-
   // Parse optional credential ID and expiry from tokens before the PGP block.
-  // Any token that isn't `expiry=…` is treated as a credential ID — users can
-  // supply arbitrary names, not just pre-existing ones.
+  const pgpIdx = argsAfterSetKey.indexOf(PGP_BEGIN);
+  const prefix = pgpIdx >= 0 ? argsAfterSetKey.slice(0, pgpIdx).trim() : argsAfterSetKey.trim();
   const tokens = prefix.split(/\s+/).filter(Boolean);
   let credentialId: string | undefined;
   let expiry = 0;
@@ -254,18 +233,28 @@ export function handleSetKey(
     credentialId = knownIds.size === 1 ? [...knownIds][0] : CRED_OAUTH;
   }
 
-  // Decrypt
-  if (!isGpgAvailable()) {
-    return 'GPG is not available. Install gnupg first.';
-  }
-  ensureGpgKey(groupScope);
-
   let plaintext: string;
-  try {
-    plaintext = gpgDecrypt(groupScope, normalizeArmoredBlock(pgpBlock));
-  } catch (err) {
-    logger.error({ groupScope, err }, 'GPG decrypt failed in set-key');
-    return 'Failed to decrypt PGP message. Make sure you encrypted with the correct public key.';
+
+  if (pgpIdx >= 0 && isPgpMessage(argsAfterSetKey.slice(pgpIdx))) {
+    // PGP block provided inline — decrypt directly
+    const pgpBlock = argsAfterSetKey.slice(pgpIdx);
+    if (!isGpgAvailable()) {
+      return 'GPG is not available. Install gnupg first.';
+    }
+    ensureGpgKey(groupScope);
+    try {
+      plaintext = gpgDecrypt(groupScope, normalizeArmoredBlock(pgpBlock));
+    } catch (err) {
+      logger.error({ groupScope, err }, 'GPG decrypt failed in set-key');
+      return 'Failed to decrypt PGP message. Make sure you encrypted with the correct public key.';
+    }
+  } else {
+    // No PGP block — fall through to interactive GPG prompt
+    const result = await promptGpgEncrypt(groupScope, chat, AUTH_PROMPT_TIMEOUT, {
+      hint: `your ${providerId} key`,
+    });
+    if (!result) return null;
+    plaintext = result;
   }
 
   const { needsRestart } = storeProviderKey(

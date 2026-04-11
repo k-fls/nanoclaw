@@ -191,17 +191,17 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
 
 describe('formatGpgInstructions', () => {
   it('includes the online tool link', () => {
-    const result = formatGpgInstructions('PUBKEY', 'my key');
+    const result = formatGpgInstructions('my key');
     expect(result).toContain('https://k-fls.github.io/pgp-encrypt/');
   });
 
   it('uses hint in the message', () => {
-    const result = formatGpgInstructions('PUBKEY', 'my Todoist API key');
+    const result = formatGpgInstructions('my Todoist API key');
     expect(result).toContain('Encrypt my Todoist API key');
   });
 
   it('defaults to "your secret" when no hint', () => {
-    const result = formatGpgInstructions('PUBKEY');
+    const result = formatGpgInstructions();
     expect(result).toContain('Encrypt your secret');
   });
 });
