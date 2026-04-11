@@ -73,6 +73,24 @@ To check if a domain is covered by any provider:
 grep '<domain>' /workspace/global/credentials/providers/*.jsonl
 ```
 
+## Pulling substitute tokens at runtime
+
+Credentials added after your container started (e.g. user ran `/auth` mid-session) won't appear as env vars — those are only set at container startup. Use the `get_credential` MCP tool to pull a substitute for a newly added credential without restarting:
+
+```
+get_credential(providerId: "github", credentialPath: "oauth")
+get_credential(providerId: "todoist", credentialPath: "api_key")
+```
+
+Both parameters are required. Check the provider's `.jsonl` file in `/workspace/global/credentials/providers/` to find the correct `credentialPath` — it's listed in the `envVars` mapping (e.g. `{"GH_TOKEN":"oauth"}` means the path is `"oauth"`).
+
+The tool returns the substitute token and any env var mappings. Export the returned env vars in your shell to use them for the rest of the session.
+
+**When to use this:**
+- After the user runs `/auth` to add credentials mid-session
+- After an OAuth flow completes (device-code or browser-based) and you need the substitute
+- For providers without `envVars` mapping that weren't provisioned at startup
+
 ## When a credential is missing
 
 Follow this priority order:

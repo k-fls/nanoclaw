@@ -503,6 +503,84 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+server.tool(
+  'get_credential',
+  `Pull a substitute token for a provider's credentials. Use this when:
+- Credentials were added after your container started (e.g. user ran /auth mid-session)
+- An OAuth flow just completed and you need the substitute token
+- A provider wasn't provisioned at startup (no env var set)
+
+The substitute token works transparently — use it in Authorization headers, env vars, or CLI tools. The host proxy swaps it for the real credential on outbound HTTPS.`,
+  {
+    providerId: z
+      .string()
+      .describe(
+        'Provider identifier (e.g. "github", "todoist", "claude"). Must match a provider known to the proxy — check /workspace/global/credentials/providers/ for available providers.',
+      ),
+    credentialPath: z
+      .string()
+      .describe(
+        'Credential type path. Use "oauth" for OAuth tokens, "api_key" for API key credentials. Check the provider\'s .jsonl file in /workspace/global/credentials/providers/ for the correct path.',
+      ),
+  },
+  async (args) => {
+    const proxyHost = process.env.PROXY_HOST;
+    const proxyPort = process.env.PROXY_PORT;
+    if (!proxyHost || !proxyPort) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Credential proxy not configured (PROXY_HOST/PROXY_PORT not set).',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const params = new URLSearchParams({ path: args.credentialPath });
+    const qs = `?${params.toString()}`;
+    const url = `http://${proxyHost}:${proxyPort}/credentials/${encodeURIComponent(args.providerId)}/substitute${qs}`;
+
+    try {
+      const resp = await fetch(url);
+      const body = await resp.json();
+
+      if (!resp.ok) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `No credentials found: ${body.error || resp.statusText}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const lines = [`Substitute token for ${args.providerId}:`, `  ${body.substitute}`];
+      if (body.envVars && Object.keys(body.envVars).length > 0) {
+        lines.push('', 'Env var mapping:');
+        for (const [name, value] of Object.entries(body.envVars)) {
+          lines.push(`  export ${name}=${value}`);
+        }
+      }
+
+      return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+    } catch (err: unknown) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to reach credential proxy: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
