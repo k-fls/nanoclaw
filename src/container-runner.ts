@@ -30,6 +30,7 @@ import {
   applyCredentialProxyArgs,
   networkArgs,
 } from './auth/container-args.js';
+import { CREDENTIALS_DIR } from './auth/store.js';
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup, scopeOf } from './types.js';
@@ -170,6 +171,21 @@ export function buildVolumeMounts(
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
+    });
+  }
+
+  // Own-scope credential manifests (key IDs without real tokens) so the agent
+  // can discover which credentials exist before substitutes are generated.
+  const manifestsDir = path.join(
+    CREDENTIALS_DIR,
+    scopeOf(group) as string,
+    'manifests',
+  );
+  if (fs.existsSync(manifestsDir)) {
+    mounts.push({
+      hostPath: manifestsDir,
+      containerPath: '/workspace/group/credentials/keys',
+      readonly: true,
     });
   }
 

@@ -5,29 +5,66 @@ description: Find available credentials, authenticate with external services, an
 
 # Credentials & Authentication
 
-## Finding available credentials
+## Credential layout
 
-Each provider has its own JSONL file in the credentials/tokens subfolder:
-
-```bash
-ls /workspace/group/credentials/tokens/
+```
+/workspace/group/credentials/
+  keys/                ← own-scope credential manifest (what exists)
+  tokens/              ← substitute tokens (ready to use)
+  borrowed → granted/{grantor}/  ← active borrowed scope (symlink)
+  granted/             ← manifests pushed by grantors (not usable until borrowed)
 ```
 
-Example: `github.jsonl`, `claude.jsonl`. Each file has one JSON line per credential type:
+### Own credentials — keys and tokens
+
+**Keys** list which credentials exist for this scope (no real tokens, no substitutes):
+
+```bash
+cat /workspace/group/credentials/keys/github.jsonl
+```
+```
+{"provider":"github","name":"oauth","credScope":"my-group"}
+```
+
+**Tokens** contain substitute tokens ready for use:
 
 ```bash
 cat /workspace/group/credentials/tokens/github.jsonl
 ```
-
 ```
 {"provider":"github","name":"oauth","token":"ghp_RaNdOmFaKe..."}
 ```
 
 Fields: `provider` (service ID), `name` (credential type — `oauth` or `api_key`), `token` (substitute — safe to use in env vars and HTTP requests; the host swaps it for the real token transparently). If `borrowed` is `true`, the credential comes from a shared scope.
 
-To scan all available credentials:
+### Borrowed credentials
+
+Credential sharing is bilateral — a grantor pushes manifests, but the grantee must actively **borrow** from that grantor. The `borrowed` symlink points to the active grantor:
+
 ```bash
+ls -l /workspace/group/credentials/borrowed
+# borrowed -> granted/main-group/
+```
+
+Only credentials reachable through `borrowed/` are available. Check what's borrowed:
+
+```bash
+cat /workspace/group/credentials/borrowed/*.jsonl 2>/dev/null
+```
+
+Same format as keys — `{"provider","name","credScope"}`. The host generates substitute tokens for borrowed credentials on demand.
+
+### Scanning all available credentials
+
+```bash
+# All ready-to-use tokens (own + borrowed with substitutes)
 cat /workspace/group/credentials/tokens/*.jsonl
+
+# All own-scope keys (may not have tokens yet)
+cat /workspace/group/credentials/keys/*.jsonl 2>/dev/null
+
+# All borrowed keys from the active grantor
+cat /workspace/group/credentials/borrowed/*.jsonl 2>/dev/null
 ```
 
 The substitute token works transparently — use it in HTTP headers, env vars, or CLI tools. The host proxy intercepts outbound HTTPS and swaps the substitute for the real credential.
