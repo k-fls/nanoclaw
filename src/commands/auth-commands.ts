@@ -92,6 +92,7 @@ registerCommand('auth', {
             rest,
             scopeOf(ctx.group),
             tokenEngine,
+            chat,
           );
           if (msg) await chat.send(msg);
         },

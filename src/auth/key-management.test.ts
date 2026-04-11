@@ -3,12 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import {
-  asGroupScope,
-  asCredentialScope,
-  CRED_OAUTH,
-  CRED_OAUTH_REFRESH,
-} from './oauth-types.js';
+import { asGroupScope, asCredentialScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
 import type { ChatIO } from './types.js';
 import type { OAuthProvider } from './oauth-types.js';
 
@@ -41,70 +36,14 @@ vi.mock('../logger.js', () => ({
 const mockGpgAvailable = vi.fn(() => true);
 const mockGpgDecrypt = vi.fn((_scope: string, _ct: string) => 'decrypted-key');
 const mockEnsureGpgKey = vi.fn();
-const mockExportPublicKey = vi.fn(
-  (_scope?: string) =>
-    '-----BEGIN PGP PUBLIC KEY BLOCK-----\nfake\n-----END PGP PUBLIC KEY BLOCK-----',
-);
+const mockPromptGpgEncrypt = vi.fn().mockResolvedValue('decrypted-key');
 vi.mock('./gpg.js', () => ({
   isGpgAvailable: () => mockGpgAvailable(),
   ensureGpgKey: mockEnsureGpgKey,
-  exportPublicKey: mockExportPublicKey,
   gpgDecrypt: mockGpgDecrypt,
   isPgpMessage: (text: string) => text.includes('-----BEGIN PGP MESSAGE-----'),
   normalizeArmoredBlock: (block: string) => block.trim(),
-  formatGpgInstructions: (pubKey: string, hint?: string) =>
-    `Encrypt ${hint ?? 'your secret'} with the public key above.`,
-  promptGpgEncrypt: async (
-    scope: string,
-    chat: import('./types.js').ChatIO,
-    _timeoutMs: number,
-    opts?: { hint?: string; validate?: (pt: string) => string | null },
-  ): Promise<string | null> => {
-    if (!mockGpgAvailable()) {
-      await chat.send(
-        'GPG is not installed. ' +
-          'Install it (`apt install gnupg` or `brew install gnupg`) and try again.',
-      );
-      return null;
-    }
-    mockEnsureGpgKey(scope);
-    const pubKey = mockExportPublicKey(scope);
-    await chat.sendRaw(pubKey);
-    await chat.send(`Encrypt ${opts?.hint ?? 'your secret'} with the public key above.\n\nReply *0* to abort.`);
-    const reply = await chat.receive(_timeoutMs);
-    if (reply) {
-      chat.hideMessage();
-      chat.advanceCursor();
-    }
-    if (!reply || reply.trim() === '0') {
-      await chat.send('Cancelled.');
-      return null;
-    }
-    if (!reply.includes('-----BEGIN PGP MESSAGE-----')) {
-      await chat.send(
-        'Expected a GPG-encrypted message (-----BEGIN PGP MESSAGE-----).\n' +
-          'Plaintext keys are not accepted for security reasons.\n\n' +
-          'Paste the encrypted output, or reply *0* to abort.',
-      );
-      return null;
-    }
-    let plaintext: string;
-    try {
-      plaintext = mockGpgDecrypt(scope, reply.trim()).trim();
-    } catch {
-      await chat.send(
-        'Failed to decrypt. Make sure you encrypted with the public key shown above.\n\n' +
-          'Try again, or reply *0* to abort.',
-      );
-      return null;
-    }
-    const validationError = opts?.validate?.(plaintext) ?? null;
-    if (validationError) {
-      await chat.send(validationError + '\n\nTry again, or reply *0* to abort.');
-      return null;
-    }
-    return plaintext;
-  },
+  promptGpgEncrypt: mockPromptGpgEncrypt,
 }));
 
 // Mock discovery registry
@@ -217,18 +156,8 @@ function mockTokenEngine(opts?: {
       resolveCredentialScope: vi.fn(() => TEST_CRED_SCOPE),
       getSubstitute: vi.fn(() => opts?.existingSubstitute ?? null),
       storeGroupCredential: vi.fn(
-        (
-          _groupScope: any,
-          providerId: string,
-          credentialId: string,
-          credential: any,
-        ) => {
-          stored.push({
-            providerId,
-            credentialScope: String(_groupScope),
-            credentialId,
-            credential,
-          });
+        (_groupScope: any, providerId: string, credentialId: string, credential: any) => {
+          stored.push({ providerId, credentialScope: String(_groupScope), credentialId, credential });
         },
       ),
       clearCredentials: vi.fn(),
@@ -301,11 +230,7 @@ describe('getProviderCredentialIds', () => {
     const { engine } = mockTokenEngine({
       existingRoles: [CRED_OAUTH, 'api_key'],
     });
-    const ids = getProviderCredentialIds(
-      'test-provider',
-      TEST_GROUP_SCOPE,
-      engine,
-    );
+    const ids = getProviderCredentialIds('test-provider', TEST_GROUP_SCOPE, engine);
     expect(ids.has(CRED_OAUTH)).toBe(true);
     expect(ids.has('api_key')).toBe(true);
   });
@@ -440,6 +365,8 @@ describe('storeProviderKey', () => {
 // ---------------------------------------------------------------------------
 
 describe('handleSetKey', () => {
+  const chat = createChat([]);
+
   beforeEach(() => {
     mockProviders.clear();
     mockProviders.set(
@@ -450,15 +377,17 @@ describe('handleSetKey', () => {
     );
     mockGpgAvailable.mockReturnValue(true);
     mockGpgDecrypt.mockReturnValue('decrypted-key');
+    mockPromptGpgEncrypt.mockResolvedValue('decrypted-key');
   });
 
-  it('decrypts PGP and stores key with default role', () => {
-    const { engine, resolver } = mockTokenEngine();
-    const result = handleSetKey(
+  it('decrypts PGP and stores key with default role', async () => {
+    const { engine } = mockTokenEngine();
+    const result = await handleSetKey(
       'github',
       PGP_ENCRYPTED,
       TEST_GROUP_SCOPE,
       engine,
+      chat,
     );
 
     expect(result).toContain('Key stored');
@@ -472,16 +401,16 @@ describe('handleSetKey', () => {
     );
   });
 
-  it('parses explicit credential ID and expiry', () => {
+  it('parses explicit credential ID and expiry', async () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
         envVars: { GH_TOKEN: CRED_OAUTH, GH_API_KEY: 'api_key' },
       }),
     );
-    const { engine, resolver } = mockTokenEngine();
+    const { engine } = mockTokenEngine();
     const args = `api_key expiry=3600\n${PGP_ENCRYPTED}`;
-    handleSetKey('github', args, TEST_GROUP_SCOPE, engine);
+    await handleSetKey('github', args, TEST_GROUP_SCOPE, engine, chat);
 
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
       TEST_GROUP_SCOPE,
@@ -491,10 +420,10 @@ describe('handleSetKey', () => {
     );
   });
 
-  it('handles PGP block on the same line', () => {
-    const { engine, resolver } = mockTokenEngine();
+  it('handles PGP block on the same line', async () => {
+    const { engine } = mockTokenEngine();
     const args = `oauth ${PGP_ENCRYPTED}`;
-    handleSetKey('github', args, TEST_GROUP_SCOPE, engine);
+    await handleSetKey('github', args, TEST_GROUP_SCOPE, engine, chat);
 
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
       TEST_GROUP_SCOPE,
@@ -504,57 +433,74 @@ describe('handleSetKey', () => {
     );
   });
 
-  it('returns public key and instructions for missing PGP block', () => {
+  it('falls through to promptGpgEncrypt when no PGP block', async () => {
     const { engine } = mockTokenEngine();
-    const result = handleSetKey(
+    const result = await handleSetKey(
       'github',
       'just plain text',
       TEST_GROUP_SCOPE,
       engine,
+      chat,
     );
-    expect(result).toContain('-----BEGIN PGP PUBLIC KEY BLOCK-----');
-    expect(result).toContain('/auth github set-key');
+    expect(mockPromptGpgEncrypt).toHaveBeenCalled();
+    expect(result).toContain('Key stored');
   });
 
-  it('returns error for ineligible provider', () => {
+  it('returns null when promptGpgEncrypt is cancelled', async () => {
+    mockPromptGpgEncrypt.mockResolvedValue(null);
+    const { engine } = mockTokenEngine();
+    const result = await handleSetKey(
+      'github',
+      'no pgp here',
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('returns error for ineligible provider', async () => {
     mockProviders.set('nobs', makeProvider('nobs', { bearerSwap: false }));
     const { engine } = mockTokenEngine();
-    const result = handleSetKey(
+    const result = await handleSetKey(
       'nobs',
       PGP_ENCRYPTED,
       TEST_GROUP_SCOPE,
       engine,
+      chat,
     );
     expect(result).toContain('no bearer-swap rules');
   });
 
-  it('returns error when GPG not available', () => {
+  it('returns error when GPG not available', async () => {
     mockGpgAvailable.mockReturnValue(false);
     const { engine } = mockTokenEngine();
-    const result = handleSetKey(
+    const result = await handleSetKey(
       'github',
       PGP_ENCRYPTED,
       TEST_GROUP_SCOPE,
       engine,
+      chat,
     );
     expect(result).toContain('GPG is not available');
   });
 
-  it('returns error on decrypt failure', () => {
+  it('returns error on decrypt failure', async () => {
     mockGpgDecrypt.mockImplementation(() => {
       throw new Error('bad key');
     });
     const { engine } = mockTokenEngine();
-    const result = handleSetKey(
+    const result = await handleSetKey(
       'github',
       PGP_ENCRYPTED,
       TEST_GROUP_SCOPE,
       engine,
+      chat,
     );
     expect(result).toContain('Failed to decrypt');
   });
 
-  it('appends restart notice when needed', () => {
+  it('appends restart notice when needed', async () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
@@ -562,29 +508,29 @@ describe('handleSetKey', () => {
       }),
     );
     const { engine } = mockTokenEngine({ existingSubstitute: null });
-    const result = handleSetKey(
+    const result = await handleSetKey(
       'github',
       PGP_ENCRYPTED,
       TEST_GROUP_SCOPE,
       engine,
+      chat,
     );
     expect(result).toContain('restart');
   });
 
-  it('expiry= value is stored as epoch_ms directly', () => {
+  it('expiry= value is stored as epoch_ms directly', async () => {
     mockProviders.set(
       'github',
       makeProvider('github', {
         envVars: { GH_TOKEN: CRED_OAUTH },
       }),
     );
-    const { engine, resolver } = mockTokenEngine();
+    const { engine } = mockTokenEngine();
     const futureMs = Date.now() + 3_600_000;
     const args = `oauth expiry=${futureMs}\n${PGP_ENCRYPTED}`;
-    handleSetKey('github', args, TEST_GROUP_SCOPE, engine);
+    await handleSetKey('github', args, TEST_GROUP_SCOPE, engine, chat);
 
     const storeCall = engine.storeGroupCredential.mock.calls[0];
-    // storeGroupCredential(groupScope, providerId, credentialId, credential)
     const credential = storeCall[3] as { expires_ts: number };
     expect(credential.expires_ts).toBe(futureMs);
   });
@@ -629,13 +575,12 @@ describe('runInteractiveKeySetup', () => {
         envVars: { GH_TOKEN: CRED_OAUTH },
       }),
     );
-    mockGpgAvailable.mockReturnValue(true);
-    mockGpgDecrypt.mockReturnValue('decrypted-key');
+    mockPromptGpgEncrypt.mockResolvedValue('decrypted-key');
   });
 
-  it('sends GPG key raw and stores decrypted key', async () => {
-    const { engine, resolver } = mockTokenEngine();
-    const chat = createChat(['1', PGP_ENCRYPTED]);
+  it('stores key when promptGpgEncrypt succeeds', async () => {
+    const { engine } = mockTokenEngine();
+    const chat = createChat(['1']);
 
     const result = await runInteractiveKeySetup(
       'github',
@@ -645,9 +590,7 @@ describe('runInteractiveKeySetup', () => {
     );
 
     expect(result).toBe(true);
-    expect(chat.sendRaw).toHaveBeenCalled();
-    const rawMsg = (chat.sendRaw as any).mock.calls[0][0];
-    expect(rawMsg).toContain('BEGIN PGP PUBLIC KEY BLOCK');
+    expect(mockPromptGpgEncrypt).toHaveBeenCalled();
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
       TEST_GROUP_SCOPE,
       'github',
@@ -674,7 +617,6 @@ describe('runInteractiveKeySetup', () => {
   });
 
   it('returns false when user cancels credential selection', async () => {
-    // Provider with bearer-swap but no envVars and no existing keys
     mockProviders.set('bare', makeProvider('bare'));
     const { engine } = mockTokenEngine();
     const chat = createChat(['0']); // cancel
@@ -696,9 +638,8 @@ describe('runInteractiveKeySetup', () => {
         envVars: { KEY: 'api_key', TOKEN: CRED_OAUTH },
       }),
     );
-    const { engine, resolver } = mockTokenEngine();
-    // Reply "1" to role selection, then PGP block
-    const chat = createChat(['1', PGP_ENCRYPTED]);
+    const { engine } = mockTokenEngine();
+    const chat = createChat(['1']);
 
     const result = await runInteractiveKeySetup(
       'multi',
@@ -707,85 +648,13 @@ describe('runInteractiveKeySetup', () => {
       chat,
     );
     expect(result).toBe(true);
-    // Menu should have been shown with numbered choices
     expect(chat.sent.some((m) => m.includes('1.'))).toBe(true);
   });
 
-  it('returns false on cancel reply', async () => {
+  it('returns false when promptGpgEncrypt returns null', async () => {
+    mockPromptGpgEncrypt.mockResolvedValue(null);
     const { engine } = mockTokenEngine();
-    const chat = createChat(['0']); // cancel at credential selection
-
-    const result = await runInteractiveKeySetup(
-      'github',
-      TEST_GROUP_SCOPE,
-      engine,
-      chat,
-    );
-    expect(result).toBe(false);
-  });
-
-  it('returns false when GPG not available', async () => {
-    mockGpgAvailable.mockReturnValue(false);
-    const { engine } = mockTokenEngine();
-    const chat = createChat(['1']); // select credential, then GPG fails
-
-    const result = await runInteractiveKeySetup(
-      'github',
-      TEST_GROUP_SCOPE,
-      engine,
-      chat,
-    );
-    expect(result).toBe(false);
-    expect(chat.sent.some((m) => m.includes('GPG is not installed'))).toBe(
-      true,
-    );
-  });
-
-  it('returns false on non-PGP reply', async () => {
-    const { engine } = mockTokenEngine();
-    const chat = createChat(['1', 'plain-text-key']);
-
-    const result = await runInteractiveKeySetup(
-      'github',
-      TEST_GROUP_SCOPE,
-      engine,
-      chat,
-    );
-    expect(result).toBe(false);
-    expect(
-      chat.sent.some((m) => m.includes('Expected a GPG-encrypted message')),
-    ).toBe(true);
-  });
-
-  it('returns false on decrypt failure', async () => {
-    mockGpgDecrypt.mockImplementation(() => {
-      throw new Error('bad');
-    });
-    const { engine } = mockTokenEngine();
-    const chat = createChat(['1', PGP_ENCRYPTED]);
-
-    const result = await runInteractiveKeySetup(
-      'github',
-      TEST_GROUP_SCOPE,
-      engine,
-      chat,
-    );
-    expect(result).toBe(false);
-    expect(chat.sent.some((m) => m.includes('Failed to decrypt'))).toBe(true);
-  });
-
-  it('hides message and advances cursor after receiving reply', async () => {
-    const { engine } = mockTokenEngine();
-    const chat = createChat(['1', PGP_ENCRYPTED]);
-
-    await runInteractiveKeySetup('github', TEST_GROUP_SCOPE, engine, chat);
-    expect(chat.hideMessage).toHaveBeenCalled();
-    expect(chat.advanceCursor).toHaveBeenCalled();
-  });
-
-  it('returns false on timeout', async () => {
-    const { engine } = mockTokenEngine();
-    const chat = createChat([null]); // timeout
+    const chat = createChat(['1']);
 
     const result = await runInteractiveKeySetup(
       'github',

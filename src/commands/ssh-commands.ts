@@ -26,12 +26,10 @@ import type { SSHCredentialMeta } from '../auth/ssh/types.js';
 import { updateJsonFile, keysPath } from '../auth/token-substitute.js';
 import type { KeysFile } from '../auth/token-substitute.js';
 import {
-  isGpgAvailable,
   isPgpMessage,
-  ensureGpgKey,
-  exportPublicKey,
   gpgDecrypt,
   normalizeArmoredBlock,
+  promptGpgEncrypt,
 } from '../auth/gpg.js';
 import { removePendingRequest, clearAllPending } from '../auth/ssh/pending.js';
 import { SSHError, SSHHostKeyMismatchError } from '../auth/ssh/manager.js';
@@ -326,41 +324,17 @@ function handleSshAdd(
     };
   }
 
-  // No inline secret — prompt for it
+  // No inline secret — prompt for it via GPG
   return {
     asyncAction: async (io: ChatIO) => {
       const chat = brandChat(io, SSH_BRAND);
-      if (!isGpgAvailable()) {
-        await chat.send(
-          'GPG is not available. Paste the secret inline with the command.',
-        );
-        return;
-      }
-      ensureGpgKey(scope);
-      const pubKey = exportPublicKey(scope);
-      await chat.sendRaw(pubKey);
-      await chat.send(
-        'Encrypt your password or private key with the GPG key above and paste it.\n\n' +
-          "If you don't have GPG installed locally, use this online tool:\n" +
-          '• https://k-fls.github.io/pgp-encrypt/\n\n' +
-          'Passphrase-protected PEMs can be pasted directly (if passphrase is registered via `/pem add`).',
-      );
-
-      const response = await chat.receive(120000);
-      if (!response) {
-        await chat.send('Timed out waiting for secret.');
-        return;
-      }
-      chat.hideMessage();
-
-      const block = extractSecretBlock(response);
-      if (!block) {
-        await chat.send('No PGP/PEM block found in your message.');
-        return;
-      }
+      const decrypted = await promptGpgEncrypt(scope, chat, 120000, {
+        hint: 'your SSH password or private key',
+      });
+      if (!decrypted) return;
 
       const result = processSecret(
-        block,
+        decrypted,
         parsed.alias,
         conn,
         scope,
@@ -390,46 +364,32 @@ function processSecret(
   let authType: 'password' | 'key';
   let publicKey: string | undefined;
 
-  if (isPgpMessage(block)) {
-    // GPG-encrypted block — decrypt
-    const plaintext = gpgDecrypt(scope, block);
+  // Decrypt if PGP-wrapped, otherwise treat as already-decrypted plaintext
+  // (from promptGpgEncrypt or raw PEM input)
+  const wasPgp = isPgpMessage(block);
+  const plaintext = wasPgp ? gpgDecrypt(scope, block) : block;
 
-    // Detect if it's a PEM or a password
-    if (plaintext.includes('PRIVATE KEY')) {
-      // It's a PEM key
-      if (isPemEncrypted(plaintext)) {
-        // Encrypted PEM inside GPG — try stripping passphrase
-        const stripped = tryStripPassphrase(plaintext, scope, pemHint);
-        if (!stripped) {
-          return 'Key is passphrase-protected but no stored passphrase matches. Register with `/pem add <id>` then retry.';
-        }
-        secret = stripped.strippedPem;
-        publicKey = stripped.publicKey;
-      } else {
-        secret = plaintext;
-        publicKey = derivePublicKey(plaintext) || undefined;
+  if (plaintext.includes('PRIVATE KEY')) {
+    if (isPemEncrypted(plaintext)) {
+      const stripped = tryStripPassphrase(plaintext, scope, pemHint);
+      if (!stripped) {
+        return 'Key is passphrase-protected but no stored passphrase matches. Register with `/pem add <id>` then retry.';
       }
-      authType = 'key';
+      secret = stripped.strippedPem;
+      publicKey = stripped.publicKey;
+    } else if (wasPgp) {
+      // Unencrypted PEM inside GPG envelope — accept
+      secret = plaintext;
+      publicKey = derivePublicKey(plaintext) || undefined;
     } else {
-      // It's a password
-      secret = plaintext.trim();
-      authType = 'password';
-    }
-  } else if (block.includes('PRIVATE KEY')) {
-    // Direct PEM (must be encrypted — reject unencrypted)
-    if (!isPemEncrypted(block)) {
+      // Raw unencrypted PEM — reject unless it came from promptGpgEncrypt
       return 'Unencrypted private key rejected. Encrypt with GPG or protect with a passphrase.';
     }
-
-    const stripped = tryStripPassphrase(block, scope, pemHint);
-    if (!stripped) {
-      return 'Key is passphrase-protected but no stored passphrase matches. Register with `/pem add <id>` then retry.';
-    }
-    secret = stripped.strippedPem;
-    publicKey = stripped.publicKey;
     authType = 'key';
   } else {
-    return 'Unrecognized secret format. Expected a GPG-encrypted block or a passphrase-protected PEM.';
+    // Not a PEM — treat as password
+    secret = plaintext.trim();
+    authType = 'password';
   }
 
   // Build credential metadata
@@ -753,33 +713,11 @@ function handlePemAdd(args: string, scope: GroupScope) {
   return {
     asyncAction: async (io: ChatIO) => {
       const chat = brandChat(io, SSH_BRAND);
-      if (!isGpgAvailable()) {
-        await chat.send('GPG is not available. Paste the GPG block inline.');
-        return;
-      }
-      ensureGpgKey(scope);
-      const pubKey = exportPublicKey(scope);
-      await chat.sendRaw(pubKey);
-      await chat.send(
-        'Encrypt the PEM passphrase with the GPG key above and paste it.\n\n' +
-          "If you don't have GPG installed locally, use this online tool:\n" +
-          '• https://k-fls.github.io/pgp-encrypt/',
-      );
+      const passphrase = await promptGpgEncrypt(scope, chat, 120000, {
+        hint: 'the PEM passphrase',
+      });
+      if (!passphrase) return;
 
-      const response = await chat.receive(120000);
-      if (!response) {
-        await chat.send('Timed out.');
-        return;
-      }
-      chat.hideMessage();
-
-      const block = extractSecretBlock(response);
-      if (!block || !isPgpMessage(block)) {
-        await chat.send('No GPG block found.');
-        return;
-      }
-
-      const passphrase = gpgDecrypt(scope, block).trim();
       resolver.store(PEM_PASSWORDS_PROVIDER_ID, credScope, id, {
         value: passphrase,
         expires_ts: 0,
