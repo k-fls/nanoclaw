@@ -17,6 +17,7 @@ export {
   isGpgAvailable,
   ensureGpgKey,
   exportPublicKey,
+  exportPublicKeyBinary,
   gpgDecrypt,
   isPgpMessage,
   gpgHome,
