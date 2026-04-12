@@ -112,7 +112,9 @@ grep '<domain>' /workspace/global/credentials/providers/*.jsonl
 
 ## Pulling substitute tokens at runtime
 
-Credentials added after your container started (e.g. user ran `/auth` mid-session) won't appear as env vars — those are only set at container startup. Use the `get_credential` MCP tool to pull a substitute for a newly added credential without restarting:
+Use `get_credential` **only** when a credential appears in `keys/` or `borrowed/` but has no entry in `tokens/`. This means the key exists but no substitute token has been generated yet — typically because the credential was added after container startup or a borrowed credential hasn't been activated.
+
+If the credential already has an entry in `tokens/`, just use that token directly — do not call `get_credential`.
 
 ```
 get_credential(providerId: "github", credentialPath: "oauth")
@@ -124,9 +126,8 @@ Both parameters are required. Check the provider's `.jsonl` file in `/workspace/
 The tool returns the substitute token and any env var mappings. Export the returned env vars in your shell to use them for the rest of the session.
 
 **When to use this:**
-- After the user runs `/auth` to add credentials mid-session
-- After an OAuth flow completes (device-code or browser-based) and you need the substitute
-- For providers without `envVars` mapping that weren't provisioned at startup
+- Credential in `keys/` but not in `tokens/` (added mid-session via `/auth`)
+- Credential in `borrowed/` but not in `tokens/` (grantor added or updated a credential)
 
 ## When a credential is missing
 

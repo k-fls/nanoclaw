@@ -505,12 +505,15 @@ Use available_groups.json to find the JID for a group. The folder name must be c
 
 server.tool(
   'get_credential',
-  `Pull a substitute token for a provider's credentials. Use this when:
-- Credentials were added after your container started (e.g. user ran /auth mid-session)
-- An OAuth flow just completed and you need the substitute token
-- A provider wasn't provisioned at startup (no env var set)
+  `Pull a substitute token for a credential that exists in keys/ or borrowed/ but not yet in tokens/.
 
-The substitute token works transparently — use it in Authorization headers, env vars, or CLI tools. The host proxy swaps it for the real credential on outbound HTTPS.`,
+Use this when a credential appears in /workspace/group/credentials/keys/ (or borrowed/) but has no corresponding entry in /workspace/group/credentials/tokens/. This happens when:
+- A credential was added after your container started (e.g. user ran /auth mid-session)
+- A grantor added or updated a credential that is borrowed by this scope
+
+Do NOT call this if the credential already has an entry in tokens/ — just use that token directly.
+
+The returned substitute token works transparently — use it in Authorization headers, env vars, or CLI tools. The host proxy swaps it for the real credential on outbound HTTPS.`,
   {
     providerId: z
       .string()
