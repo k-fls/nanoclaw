@@ -42,6 +42,17 @@ Available credentials are in `/workspace/group/credentials/tokens/`. Supported p
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
 
+### Home directory (`~`)
+
+Your home directory (`/home/node`) is persisted across sessions, but **only subdirectories survive** — files directly in `~` are removed between runs. To persist configuration, use a subfolder:
+
+- `~/.gitconfig` — will be lost
+- `~/.gitconfig.d/config` — persists
+- `~/.ssh/config` — persists (it's in a subfolder)
+- `~/.config/something/` — persists
+
+If a tool expects a dotfile in `~`, create the config in a subfolder and symlink it, or use the tool's env var to point at the subfolder path.
+
 ## Memory
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
