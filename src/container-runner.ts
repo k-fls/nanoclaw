@@ -118,7 +118,11 @@ export function snapshotContainerFiles(): void {
   _snapshotDir = path.join(DATA_DIR, 'snapshot', 'container');
   const src = path.join(process.cwd(), 'container');
   if (!fs.existsSync(src)) return;
-  fs.cpSync(src, _snapshotDir, { recursive: true, preserveTimestamps: true });
+  fs.cpSync(src, _snapshotDir, {
+    recursive: true,
+    preserveTimestamps: true,
+    filter: (s) => !path.relative(src, s).split(path.sep).includes('node_modules'),
+  });
   logger.info({ dir: _snapshotDir }, 'Container directory snapshotted');
 }
 

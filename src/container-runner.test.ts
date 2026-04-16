@@ -315,7 +315,7 @@ describe('snapshotContainerFiles', () => {
     expect(fs.cpSync).toHaveBeenCalledWith(
       expect.stringContaining('container'),
       expect.stringContaining('snapshot'),
-      { recursive: true, preserveTimestamps: true },
+      expect.objectContaining({ recursive: true, preserveTimestamps: true }),
     );
   });
 });
