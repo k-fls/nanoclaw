@@ -11,10 +11,10 @@ import {
 } from './claude.js';
 import {
   TokenSubstituteEngine,
-  PersistentTokenResolver,
+  PersistentCredentialResolver,
   type TokenRole,
 } from '../token-substitute.js';
-import { asGroupScope } from '../oauth-types.js';
+import { asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js';
 import type { RegisteredGroup } from '../../types.js';
 
 /** Create a minimal RegisteredGroup for test provision calls. */
@@ -36,7 +36,7 @@ function generateSubstitute(
   engine: TokenSubstituteEngine,
   scope: string,
   realToken: string,
-  role: TokenRole = 'access',
+  credentialPath: string = CRED_OAUTH,
 ): { env: Record<string, string> } {
   engine.generateSubstitute(
     realToken,
@@ -44,7 +44,7 @@ function generateSubstitute(
     {},
     asGroupScope(scope),
     CLAUDE_SUBSTITUTE_CONFIG,
-    role,
+    credentialPath,
   );
   return claudeProvider.provision(makeGroup(scope), engine);
 }
@@ -96,7 +96,7 @@ describe('CLAUDE_OAUTH_PROVIDER', () => {
 
 describe('provision with token engine', () => {
   it('returns substitute for api_key with sk-ant-api prefix preserved', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     const real = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
     const { env } = generateSubstitute(engine, 'scope', real, 'api_key');
@@ -107,7 +107,7 @@ describe('provision with token engine', () => {
   });
 
   it('returns substitute for access token with sk-ant-oat prefix preserved', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     const real = 'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
     const { env } = generateSubstitute(engine, 'scope', real);
@@ -116,22 +116,22 @@ describe('provision with token engine', () => {
   });
 
   it('does not expose refresh token in env', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     const realAccess =
       'sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const realRefresh =
       'sk-ant-ort01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
     generateSubstitute(engine, 'scope', realAccess);
-    generateSubstitute(engine, 'scope', realRefresh, 'refresh');
+    generateSubstitute(engine, 'scope', realRefresh, CRED_OAUTH_REFRESH);
 
     const { env } = claudeProvider.provision(makeGroup('scope'), engine);
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
-    expect(env.CLAUDE_REFRESH_TOKEN).toBeUndefined();
+    expect((env as Record<string, unknown>).CLAUDE_REFRESH_TOKEN).toBeUndefined();
   });
 
   it('returns empty env when no substitutes exist', () => {
-    const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+    const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
     const { env } = claudeProvider.provision(makeGroup('empty-scope'), engine);
     expect(env).toEqual({});
   });

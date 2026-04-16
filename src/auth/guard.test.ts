@@ -15,28 +15,30 @@ vi.mock('./reauth.js', () => ({
   runReauth: vi.fn(async () => true),
 }));
 
-// Mock the token engine's hasAnyCredential method used by guard.start()
-const mockHasAnyCredential = vi.fn(() => true);
+// Mock the token engine used by guard.start() — passed to provider.hasAuthCredentials()
+const mockEngine = {};
 vi.mock('./registry.js', () => ({
-  getTokenEngine: vi.fn(() => ({
-    hasAnyCredential: mockHasAnyCredential,
-  })),
+  getTokenEngine: vi.fn(() => mockEngine),
 }));
 
-// Mock consumeFlows — just resolve immediately
-vi.mock('./flow-consumer.js', () => ({
-  consumeFlows: vi.fn(async () => {}),
-}));
+// Mock consumeInteractions — just resolve immediately
+vi.mock('../interaction/index.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    consumeInteractions: vi.fn(async () => {}),
+  };
+});
 
 // Shared pendingErrors so tests can record request IDs before triggering errors
 const sharedPendingErrors = new PendingAuthErrors();
 
-// Mock createSessionContext to avoid real PendingAuthErrors/FlowQueue wiring
+// Mock createSessionContext to avoid real PendingAuthErrors/InteractionQueue wiring
 vi.mock('./session-context.js', () => ({
   createSessionContext: vi.fn(() => ({
     scope: 'test-scope',
     pendingErrors: sharedPendingErrors,
-    flowQueue: { onMutation: vi.fn() },
+    interactionQueue: { onMutation: vi.fn() },
     statusRegistry: { destroy: vi.fn(), emit: vi.fn() },
     onAuthError: vi.fn(),
   })),
@@ -82,11 +84,21 @@ function mockProvider(
   return {
     id: 'claude',
     displayName: 'Claude',
+    hasAuthCredentials: vi.fn(() => true),
     provision: vi.fn(() => ({ env: { ANTHROPIC_API_KEY: 'sk-test' } })),
     storeResult: vi.fn(),
     authOptions: vi.fn(() => []),
     ...overrides,
   };
+}
+
+function mockSession() {
+  return {
+    chatLock: { acquire: vi.fn(), release: vi.fn(), locked: false },
+    queue: { push: vi.fn(), onMutation: vi.fn() },
+    statusRegistry: { emit: vi.fn(), destroy: vi.fn() },
+    stop: vi.fn(async () => {}),
+  } as any;
 }
 
 const group = {
@@ -113,12 +125,12 @@ describe('createAuthGuard', () => {
 
   describe('start', () => {
     it('returns true when credentials are available', async () => {
-      mockHasAnyCredential.mockReturnValue(true);
       const guard = createAuthGuard(
         group,
         mockProxy(),
         mockChat,
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
 
@@ -127,13 +139,13 @@ describe('createAuthGuard', () => {
     });
 
     it('goes straight to reauth when no credentials', async () => {
-      mockHasAnyCredential.mockReturnValue(false);
       const guard = createAuthGuard(
         group,
         mockProxy(),
         () => mockChat(),
         vi.fn(),
-        mockProvider(),
+        mockSession(),
+        mockProvider({ hasAuthCredentials: vi.fn(() => false) }),
       );
 
       await guard.start();
@@ -142,13 +154,13 @@ describe('createAuthGuard', () => {
     });
 
     it('registers session context with proxy', async () => {
-      mockHasAnyCredential.mockReturnValue(true);
       const proxy = mockProxy();
       const guard = createAuthGuard(
         group,
         proxy,
         mockChat,
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
 
@@ -159,13 +171,14 @@ describe('createAuthGuard', () => {
   });
 
   describe('onStreamResult', () => {
-    it('detects auth error and calls closeStdin', async () => {
-      const closeStdin = vi.fn();
+    it('detects auth error and calls stopContainer', async () => {
+      const stopContainer = vi.fn();
       const guard = createAuthGuard(
         group,
         mockProxy(),
         mockChat,
-        closeStdin,
+        stopContainer,
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -174,23 +187,24 @@ describe('createAuthGuard', () => {
       sharedPendingErrors.record('req_abc');
       guard.onStreamResult({ status: 'error', error: authError() });
 
-      expect(closeStdin).toHaveBeenCalled();
+      expect(stopContainer).toHaveBeenCalled();
     });
 
     it('ignores non-auth errors', async () => {
-      const closeStdin = vi.fn();
+      const stopContainer = vi.fn();
       const guard = createAuthGuard(
         group,
         mockProxy(),
         mockChat,
-        closeStdin,
+        stopContainer,
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
 
       guard.onStreamResult({ status: 'error', error: 'some random error' });
 
-      expect(closeStdin).not.toHaveBeenCalled();
+      expect(stopContainer).not.toHaveBeenCalled();
     });
   });
 
@@ -201,6 +215,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -214,6 +229,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -231,6 +247,7 @@ describe('createAuthGuard', () => {
         mockProxy(),
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
       await guard.start();
@@ -250,6 +267,7 @@ describe('createAuthGuard', () => {
         proxy,
         () => mockChat(),
         vi.fn(),
+        mockSession(),
         mockProvider(),
       );
       await guard.start();

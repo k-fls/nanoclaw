@@ -3,19 +3,21 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
 import {
+  CLAUDE_CLI_DIR,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
-  CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   MEDIA_DIR,
   TIMEZONE,
 } from './config.js';
+import { cliLock, getClaudeCliPackageDir } from './claude-updater/updater.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -28,10 +30,41 @@ import {
   allocateContainerIP,
   applyCredentialProxyArgs,
   networkArgs,
+  pushEnv,
 } from './auth/container-args.js';
+import { writeEnvVarsFile } from './auth/docker-env.js';
+import { CREDENTIALS_DIR } from './auth/store.js';
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup, scopeOf } from './types.js';
+
+/**
+ * Compute a hash fingerprint of a directory's file names and sizes.
+ * Sorted for determinism. Used to detect upstream source changes
+ * without comparing file contents byte-by-byte.
+ */
+export function dirFingerprint(dir: string): string {
+  const entries = fs
+    .readdirSync(dir)
+    .filter(
+      (f) => f !== '.fingerprint' && fs.statSync(path.join(dir, f)).isFile(),
+    )
+    .sort()
+    .map((f) => `${f}:${fs.statSync(path.join(dir, f)).mtimeMs}`)
+    .join('\n');
+  return crypto.createHash('sha256').update(entries).digest('hex');
+}
+
+/**
+ * Write a .fingerprint file into the agent-runner source directory.
+ * Call once at startup so per-group copies can be compared cheaply.
+ */
+export function updateAgentRunnerFingerprint(): void {
+  const src = path.join(process.cwd(), 'container', 'agent-runner', 'src');
+  if (fs.existsSync(src)) {
+    fs.writeFileSync(path.join(src, '.fingerprint'), dirFingerprint(src));
+  }
+}
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -99,7 +132,7 @@ export function buildVolumeMounts(
 
   if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
-    // (group folder, IPC, .claude/) are mounted separately below.
+    // (store, group folder, IPC, .claude/) are mounted separately below.
     // Read-only prevents the agent from modifying host application code
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
@@ -120,6 +153,15 @@ export function buildVolumeMounts(
       });
     }
 
+    // Main gets writable access to the store (SQLite DB) so it can
+    // query and write to the database directly.
+    const storeDir = path.join(projectRoot, 'store');
+    mounts.push({
+      hostPath: storeDir,
+      containerPath: '/workspace/project/store',
+      readonly: false,
+    });
+
     // Main also gets its group folder as the working directory
     mounts.push({
       hostPath: groupDir,
@@ -133,17 +175,31 @@ export function buildVolumeMounts(
       containerPath: '/workspace/group',
       readonly: false,
     });
+  }
 
-    // Global memory directory (read-only for non-main)
-    // Only directory mounts are supported, not file mounts
-    const globalDir = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(globalDir)) {
-      mounts.push({
-        hostPath: globalDir,
-        containerPath: '/workspace/global',
-        readonly: true,
-      });
-    }
+  // Own-scope credential manifests (key IDs without real tokens) so the agent
+  // can discover which credentials exist before substitutes are generated.
+  const manifestsDir = path.join(
+    CREDENTIALS_DIR,
+    scopeOf(group) as string,
+    'manifests',
+  );
+  if (fs.existsSync(manifestsDir)) {
+    mounts.push({
+      hostPath: manifestsDir,
+      containerPath: '/workspace/group/credentials/keys',
+      readonly: true,
+    });
+  }
+
+  // Global memory directory (read-only for all groups) to unify access for main and non-main agents
+  const globalDir = path.join(GROUPS_DIR, 'global');
+  if (fs.existsSync(globalDir)) {
+    mounts.push({
+      hostPath: globalDir,
+      containerPath: '/workspace/global',
+      readonly: true,
+    });
   }
 
   // Per-group Claude sessions directory (isolated from other groups)
@@ -248,14 +304,15 @@ export function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
-    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
-    const needsCopy =
-      !fs.existsSync(groupAgentRunnerDir) ||
-      !fs.existsSync(cachedIndex) ||
-      (fs.existsSync(srcIndex) &&
-        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
-    if (needsCopy) {
+    const srcFp = path.join(agentRunnerSrc, '.fingerprint');
+    const dstFp = path.join(groupAgentRunnerDir, '.fingerprint');
+    const srcHash = fs.existsSync(srcFp)
+      ? fs.readFileSync(srcFp, 'utf-8').trim()
+      : '';
+    const dstHash = fs.existsSync(dstFp)
+      ? fs.readFileSync(dstFp, 'utf-8').trim()
+      : '';
+    if (!srcHash || srcHash !== dstHash) {
       fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
     }
   }
@@ -298,6 +355,18 @@ export function buildVolumeMounts(
     });
   }
 
+  // Mount updated Claude CLI over the image-baked package (managed by claude-updater).
+  // The image symlinks /usr/local/bin/claude → ../lib/node_modules/@anthropic-ai/claude-code/cli.js
+  // so mounting here makes everything (SDK, status skill, claude --version) use the updated binary.
+  const claudeCliPkgDir = getClaudeCliPackageDir();
+  if (claudeCliPkgDir) {
+    mounts.push({
+      hostPath: claudeCliPkgDir,
+      containerPath: '/usr/local/lib/node_modules/@anthropic-ai/claude-code',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -315,17 +384,12 @@ export function buildVolumeMounts(
 export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
-  group: RegisteredGroup,
-  tokenEngine: TokenSubstituteEngine,
   ip: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
-  args.push('-e', `TZ=${TIMEZONE}`);
-
-  // Credential proxy args: MITM certs, iptables env vars, substitute tokens, user mapping
-  applyCredentialProxyArgs(args, group, tokenEngine);
+  pushEnv(args, 'TZ', TIMEZONE);
 
   // Runtime-specific args for host gateway resolution and network placement
   args.push(...hostGatewayArgs());
@@ -339,17 +403,22 @@ export function buildContainerArgs(
     }
   }
 
-  args.push(CONTAINER_IMAGE);
-
+  // NOTE: CONTAINER_IMAGE is NOT pushed here — callers must push it after
+  // injecting credential proxy args and any other -e/-v flags.
   return args;
 }
 
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
-  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onProcess: (
+    proc: ChildProcess,
+    containerName: string,
+    controls: { clearIdleTimeout: () => void; resetIdleTimeout: () => void },
+  ) => void,
   tokenEngine: TokenSubstituteEngine,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onTimeout?: () => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -371,10 +440,20 @@ export async function runContainerAgent(
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,
-    group,
-    tokenEngine,
     containerIP,
   );
+
+  // Credential proxy args: MITM certs, iptables env vars, substitute tokens, user mapping.
+  // Discovery providers return env vars for ~/.env-vars instead of Docker -e.
+  const envFileVars = applyCredentialProxyArgs(containerArgs, group, tokenEngine);
+
+  // Build ~/.env-vars: credential substitutes + refs env vars + curated agent env-custom.jsonl
+  const refsEnvVars = tokenEngine.collectEnvVars(scopeOf(group));
+  const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder, 'home');
+  writeEnvVarsFile(envFileVars, refsEnvVars, groupDir, path.join(groupHomeDir, '.env-vars'));
+
+  // Image name must come after all -e/-v flags
+  containerArgs.push(CONTAINER_IMAGE);
 
   logger.debug(
     {
@@ -401,16 +480,20 @@ export async function runContainerAgent(
     'Spawning container agent',
   );
 
+  // Shared lock: prevent CLI directory swap while Docker resolves bind mounts.
+  // Released immediately after spawn — running containers are safe after that.
+  await cliLock.acquireShared();
   let container: ChildProcess;
   try {
     container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    onProcess(container, containerName);
   } catch (err) {
     // Release the pre-allocated IP if spawn fails before event handlers take over.
     releaseIP();
     throw err;
+  } finally {
+    cliLock.releaseShared();
   }
 
   return new Promise((resolve) => {
@@ -503,35 +586,41 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
-    // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
-    // graceful _close sentinel has time to trigger before the hard kill fires.
-    const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+    const timeoutMs = group.containerConfig?.timeout || IDLE_TIMEOUT;
 
-    const killOnTimeout = () => {
+    const handleIdleTimeout = () => {
       timedOut = true;
       logger.error(
         { group: group.name, containerName },
-        'Container timeout, stopping gracefully',
+        'Idle timeout fired (stuck container)',
       );
-      try {
-        stopContainer(containerName);
-      } catch (err) {
-        logger.warn(
-          { group: group.name, containerName, err },
-          'Graceful stop failed, force killing',
-        );
+      if (onTimeout) {
+        // Delegate to queue's softStop → grace timer → hardStop chain
+        onTimeout();
+      } else {
+        // Fallback when running without queue
         container.kill('SIGKILL');
       }
     };
 
-    let timeout = setTimeout(killOnTimeout, timeoutMs);
+    let timeout = setTimeout(handleIdleTimeout, timeoutMs);
 
     // Reset the timeout whenever there's activity (streaming output)
     const resetTimeout = () => {
       clearTimeout(timeout);
-      timeout = setTimeout(killOnTimeout, timeoutMs);
+      timeout = setTimeout(handleIdleTimeout, timeoutMs);
     };
+
+    const clearIdleTimeout = () => {
+      clearTimeout(timeout);
+    };
+
+    const resetIdleTimeout = () => {
+      resetTimeout();
+    };
+
+    // Register process with queue after timeout controls are available
+    onProcess(container, containerName, { clearIdleTimeout, resetIdleTimeout });
 
     container.on('close', (code) => {
       clearTimeout(timeout);
@@ -580,7 +669,7 @@ export async function runContainerAgent(
         resolve({
           status: 'error',
           result: null,
-          error: `Container timed out after ${configTimeout}ms`,
+          error: `Container timed out after ${timeoutMs}ms`,
         });
         return;
       }

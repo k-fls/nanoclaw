@@ -30,7 +30,7 @@ export interface BrowserOpenEvent {
 
 /**
  * Callback invoked when a known OAuth URL is detected.
- * Returns the flowId (for inclusion in the HTTP response to the shim),
+ * Returns the interactionId (for inclusion in the HTTP response to the shim),
  * or null if the event could not be processed.
  */
 export type BrowserOpenCallback = (event: BrowserOpenEvent) => string | null;
@@ -144,10 +144,10 @@ export async function handleBrowserOpen(
     'browser-open: known OAuth URL, relaying',
   );
 
-  let flowId: string | null = null;
+  let interactionId: string | null = null;
   if (_onBrowserOpen) {
     try {
-      flowId = _onBrowserOpen({
+      interactionId = _onBrowserOpen({
         url,
         scope,
         containerIP: containerIP || '',
@@ -159,5 +159,5 @@ export async function handleBrowserOpen(
   }
 
   res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({ exit_code: 0, ...(flowId && { flowId }) }));
+  res.end(JSON.stringify({ exit_code: 0, ...(interactionId && { interactionId }) }));
 }

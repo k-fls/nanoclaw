@@ -11,26 +11,28 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import type { CredentialProvider } from './types.js';
-import { getProxy } from '../credential-proxy.js';
+import { getProxy } from './credential-proxy.js';
 import { loadDiscoveryProviders } from './discovery-loader.js';
 import type { OAuthProvider } from './oauth-types.js';
 import {
   TokenSubstituteEngine,
-  PersistentTokenResolver,
+  PersistentCredentialResolver,
 } from './token-substitute.js';
-import { CREDENTIALS_DIR } from './store.js';
 import { createHandler } from './universal-oauth-handler.js';
 import { registerAuthorizationEndpoint } from './browser-open-handler.js';
 import {
   CLAUDE_OAUTH_PROVIDER,
   PROVIDER_ID as CLAUDE_PROVIDER_ID,
-  migrateClaudeCredentials,
 } from './providers/claude.js';
+import { GROUPS_DIR } from '../config.js';
 import { logger } from '../logger.js';
 
 const registry = new Map<string, CredentialProvider>();
 
 export function registerProvider(provider: CredentialProvider): void {
+  if (registry.has(provider.id) || _discoveryProviders.has(provider.id)) {
+    throw new Error(`Provider ID '${provider.id}' already registered`);
+  }
   registry.set(provider.id, provider);
   // Register host rules for transparent proxy routing
   if (provider.hostRules) {
@@ -109,47 +111,27 @@ export function parseTapExclude(raw: string | undefined): {
 // ---------------------------------------------------------------------------
 
 /** Shared token resolver — owns real token storage with persistence. */
-let _tokenResolver: PersistentTokenResolver | null = null;
+let _tokenResolver: PersistentCredentialResolver | null = null;
 
 /** Shared token substitute engine — one instance for all providers. */
 let _tokenEngine: TokenSubstituteEngine | null = null;
 
-export function getTokenResolver(): PersistentTokenResolver {
-  if (!_tokenResolver) _tokenResolver = new PersistentTokenResolver();
+export function getTokenResolver(): PersistentCredentialResolver {
+  if (!_tokenResolver) _tokenResolver = new PersistentCredentialResolver();
   return _tokenResolver;
 }
 
 export function getTokenEngine(): TokenSubstituteEngine {
   if (!_tokenEngine) {
     _tokenEngine = new TokenSubstituteEngine(getTokenResolver());
-    // Migrate old claude_auth.json → claude.keys.json for all scopes
-    // Must run before loadAllPersistedRefs so keys files exist for ref loading.
-    migrateAllScopes();
     // Load persisted substitute→identity mappings from previous runs
     const loaded = _tokenEngine.loadAllPersistedRefs();
     if (loaded > 0) {
       logger.info({ count: loaded }, 'Loaded persisted substitute refs');
     }
+    _tokenEngine.regenerateAllCredentialInfo();
   }
   return _tokenEngine;
-}
-
-/**
- * Run migrateClaudeCredentials for every scope directory in the credentials store.
- * Converts claude_auth.json → claude.keys.json if not already migrated.
- */
-function migrateAllScopes(): void {
-  try {
-    if (!fs.existsSync(CREDENTIALS_DIR)) return;
-    for (const entry of fs.readdirSync(CREDENTIALS_DIR, {
-      withFileTypes: true,
-    })) {
-      if (!entry.isDirectory()) continue;
-      migrateClaudeCredentials(entry.name);
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Failed to migrate credential scopes');
-  }
 }
 
 /** @internal Override the token engine (for e2e tests). */
@@ -230,6 +212,14 @@ export function registerDiscoveryProviders(
     }
   }
 
+  // Check for collisions with builtin providers
+  for (const [id] of providers) {
+    if (registry.has(id)) {
+      logger.warn({ providerId: id }, 'Discovery provider conflicts with builtin, skipping');
+      providers.delete(id);
+    }
+  }
+
   let ruleCount = 0;
   for (const [_id, provider] of providers) {
     for (const rule of provider.rules) {
@@ -253,6 +243,56 @@ export function registerDiscoveryProviders(
     { providers: providers.size, rules: ruleCount },
     'Registered discovery OAuth providers',
   );
+
+  publishProviderInfo();
+}
+
+/**
+ * Write per-provider JSONL files to groups/global/credentials/providers/.
+ * Each file has one line per intercept rule with mode and anchor.
+ * Shared read-only across all containers.
+ */
+function publishProviderInfo(): void {
+  const dir = path.join(GROUPS_DIR, 'global', 'credentials', 'providers');
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    return;
+  }
+
+  // Collect all OAuthProviders: builtin (Claude) + discovery
+  const allProviders: OAuthProvider[] = [CLAUDE_OAUTH_PROVIDER];
+  for (const p of _discoveryProviders.values()) {
+    allProviders.push(p);
+  }
+
+  for (const provider of allProviders) {
+    const modes = new Set<string>();
+    const hosts = new Set<string>();
+    for (const rule of provider.rules) {
+      modes.add(rule.mode);
+      if (rule.mode === 'bearer-swap') hosts.add(rule.anchor);
+    }
+
+    const lines: string[] = [];
+    const obj: Record<string, unknown> = {
+      provider: provider.id,
+      modes: [...modes].sort(),
+      hosts: [...hosts].sort(),
+    };
+    if (provider.envVars) obj.envVars = provider.envVars;
+    lines.push(JSON.stringify(obj));
+
+    try {
+      fs.writeFileSync(
+        path.join(dir, `${provider.id}.jsonl`),
+        lines.join('\n') + '\n',
+      );
+    } catch (err) {
+      logger.warn({ err, providerId: provider.id }, 'Provider info write failed');
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

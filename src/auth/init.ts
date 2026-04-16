@@ -6,10 +6,9 @@
  * wires the token engine, and starts the proxy server. index.ts calls
  * it once during startup and receives the tokenEngine + shutdown hook.
  */
-import {
-  CREDENTIAL_PROXY_PORT,
-  NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
-} from '../config.js';
+import { CREDENTIAL_PROXY_PORT } from '../config.js';
+import { setInteractionPrefix } from '../interaction/index.js';
+import { registerAuthHandlers } from './auth-handlers.js';
 import { DISCOVERY_CACHE_DIR } from './store.js';
 import { getDiscoveryDir } from './registry.js';
 import { refreshDiscoveryCache } from './discovery-refresh.js';
@@ -17,21 +16,26 @@ import {
   CredentialProxy,
   setProxyInstance,
   getProxy,
-} from '../credential-proxy.js';
+} from './credential-proxy.js';
 import { PROXY_BIND_HOST, ensureNetwork } from './container-args.js';
 import { initCredentialStore } from './store.js';
-import { importEnvToDefault } from './provision.js';
+import { importEnvToMainGroup } from './provision.js';
 import {
   registerBuiltinProviders,
   registerDiscoveryProviders,
   getTokenEngine,
 } from './index.js';
 import { createAccessCheck } from './provision.js';
+import {
+  setManifestGroupResolver,
+  regenerateAllManifests,
+} from './manifest.js';
 import { wireAuthCallbacks } from './oauth-flow.js';
-import type { TokenSubstituteEngine } from './token-substitute.js';
-import type { RegisteredGroup } from '../types.js';
+import type { TokenSubstituteEngine, GroupResolver } from './token-substitute.js';
+import { scopeOf, type RegisteredGroup } from '../types.js';
 import type { Server as NetServer } from 'net';
 import { logger } from '../logger.js';
+import { asCredentialScope } from './oauth-types.js';
 
 export interface AuthSystem {
   tokenEngine: TokenSubstituteEngine;
@@ -47,7 +51,10 @@ export interface AuthSystem {
  */
 export async function initAuthSystem(
   getGroups: () => Record<string, RegisteredGroup>,
+  resolveGroup: GroupResolver,
 ): Promise<AuthSystem> {
+  setInteractionPrefix('🤖');
+  registerAuthHandlers();
   initCredentialStore();
   ensureNetwork();
 
@@ -57,7 +64,7 @@ export async function initAuthSystem(
   setProxyInstance(proxy);
 
   // Activate proxy tap logger if PROXY_TAP_DOMAIN + PROXY_TAP_PATH are set
-  const { createTapFilterFromEnv } = await import('../proxy-tap-logger.js');
+  const { createTapFilterFromEnv } = await import('./proxy-tap-logger.js');
   const tapFilter = createTapFilterFromEnv();
   if (tapFilter) proxy.setTapFilter(tapFilter);
 
@@ -70,24 +77,19 @@ export async function initAuthSystem(
   // Must happen after providers are registered and before any provision calls.
   const tokenEngine = getTokenEngine();
 
-  tokenEngine.setGroupResolver((folder) => {
-    for (const g of Object.values(getGroups())) {
-      if (g.folder === folder) return g;
-    }
-    return undefined;
-  });
 
-  tokenEngine.setAccessCheck(
-    createAccessCheck((folder) => {
-      for (const g of Object.values(getGroups())) {
-        if (g.folder === folder) return g;
-      }
-      return undefined;
-    }),
-  );
+  tokenEngine.setGroupResolver(resolveGroup);
+  tokenEngine.setAccessCheck(createAccessCheck(resolveGroup));
+  setManifestGroupResolver(resolveGroup);
 
-  // Import .env credentials after engine is ready
-  importEnvToDefault(tokenEngine);
+  // Regenerate all manifests at startup
+  regenerateAllManifests();
+
+  // Import .env credentials into main group's scope
+  const mainGroup = Object.values(getGroups()).find((g) => g.isMain);
+  if (mainGroup) {
+    importEnvToMainGroup(tokenEngine, asCredentialScope(scopeOf(mainGroup)));
+  }
 
   // Wire auth error resolver, OAuth initiation, and browser-open callbacks
   wireAuthCallbacks(proxy);
@@ -134,5 +136,3 @@ export async function initAuthSystem(
   };
 }
 
-/** Default credential policy for newly registered groups. */
-export { NEW_GROUPS_USE_DEFAULT_CREDENTIALS };

@@ -16,18 +16,19 @@ import { gunzipSync } from 'zlib';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import type { InterceptRule, OAuthProvider } from './oauth-types.js';
-import type { GroupScope } from './oauth-types.js';
-import { BEARER_SWAP_ROLES } from './oauth-types.js';
+import type { InterceptRule, OAuthProvider, Credential } from './oauth-types.js';
+import { CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
+import type { GroupScope, CredentialScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
-import type { HostHandler } from '../credential-proxy.js';
-import { proxyBuffered } from '../credential-proxy.js';
-import { parseBody } from '../oauth-interceptor.js';
+import type { HostHandler } from './credential-proxy.js';
+import { proxyBuffered } from './credential-proxy.js';
+import { parseBody } from './oauth-interceptor.js';
 import type { AuthErrorCallback } from './session-context.js';
+import { writeInterceptStub } from './auth-interactions.js';
 import { logger } from '../logger.js';
 
 // Re-export setUpstreamAgent for test use
-export { setUpstreamAgent } from '../credential-proxy.js';
+export { setUpstreamAgent } from './credential-proxy.js';
 
 // ---------------------------------------------------------------------------
 // Auth error callback resolver
@@ -59,7 +60,7 @@ type OAuthInitiationCallback = (
   authUrl: string,
   providerId: string,
   containerIP: string,
-) => void;
+) => string | null;
 type OAuthInitiationResolver = (
   scope: GroupScope,
 ) => OAuthInitiationCallback | null;
@@ -172,17 +173,13 @@ async function refreshViaTokenEndpoint(
   const realRefreshToken = tokenEngine.resolveRealToken(
     groupScope,
     provider.id,
-    'refresh',
+    CRED_OAUTH_REFRESH,
   );
   if (!realRefreshToken) return false;
 
-  // Read captured authFields (client_id, scope, etc.) from the refresh token entry
-  const refreshEntry = tokenEngine.getKeyEntry(
-    groupScope,
-    provider.id,
-    'refresh',
-  );
-  const authFields = refreshEntry?.authFields ?? {};
+  // Read captured authFields (client_id, scope, etc.) from the oauth credential
+  const oauthCred = tokenEngine.resolveCredential(groupScope, provider.id, CRED_OAUTH);
+  const authFields = oauthCred?.authFields ?? {};
 
   try {
     const response = await _tokenFetch(tokenEndpoint, {
@@ -219,7 +216,7 @@ async function refreshViaTokenEndpoint(
     tokenEngine.refreshCredential(
       groupScope,
       provider.id,
-      'access',
+      CRED_OAUTH,
       tokens.access_token,
       expiresTs,
       authFields,
@@ -229,10 +226,8 @@ async function refreshViaTokenEndpoint(
       tokenEngine.refreshCredential(
         groupScope,
         provider.id,
-        'refresh',
+        CRED_OAUTH_REFRESH,
         tokens.refresh_token,
-        0,
-        authFields,
       );
     }
 
@@ -274,9 +269,9 @@ const BUFFER_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
 
 /**
  * How far ahead of actual expiry to trigger proactive refresh (ms).
- * When the 'proactive' strategy is active, the proxy checks the access
- * token's expires_ts before sending the request. If the token expires
- * within this window, it refreshes first — avoiding a 401 round-trip.
+ * Before sending a request, the proxy checks the access token's expires_ts.
+ * If the token expires within this window, it refreshes first — avoiding a
+ * 401 round-trip. Set to 0 to disable proactive refresh.
  */
 const REFRESH_AHEAD_MS = 60_000; // 60 seconds
 
@@ -401,6 +396,8 @@ function createBearerSwapHandler(
       headerName: string;
       substitute: string;
       prefix: string; // e.g. "Bearer " — text before the token in the header value
+      credentialId: string;
+      credentialScope: CredentialScope;
     }> = [];
     let proactiveRefreshAttempted = false;
 
@@ -424,56 +421,91 @@ function createBearerSwapHandler(
         groupScope,
         scopeAttrs,
       );
-      if (!entry || !BEARER_SWAP_ROLES.has(entry.mapping.role)) continue;
+      // Skip nested sub-tokens (e.g. oauth/refresh) — they should not
+      // appear in headers, only in token-exchange request bodies.
+      if (!entry || entry.mapping.credentialPath.includes('/')) continue;
 
       headers[name] = `${prefix}${entry.realToken}`;
-      swappedHeaders.push({ headerName: name, substitute: candidate, prefix });
+      swappedHeaders.push({
+        headerName: name,
+        substitute: candidate,
+        prefix,
+        credentialId: entry.mapping.credentialPath,
+        credentialScope: entry.mapping.credentialScope,
+      });
     }
 
-    // Proactive strategy: check token expiry before sending upstream.
-    if (refreshStrategy === 'proactive' && swappedHeaders.length > 0) {
-      const expiresTs = tokenEngine.getKeyExpiry(
-        groupScope,
-        provider.id,
-        'access',
-      );
-      if (expiresTs > 0 && expiresTs < Date.now() + REFRESH_AHEAD_MS) {
-        proactiveRefreshAttempted = true;
-        logger.info(
-          {
-            provider: provider.id,
-            scope: groupScope,
-            expiresIn: Math.round((expiresTs - Date.now()) / 1000),
-          },
-          'Proactive strategy: token expired or expiring soon, refreshing before send',
+    // Resolve each swapped credential once. Identify which are refreshable
+    // (have a refresh sub-token) and which are near expiry.
+    const refreshable = new Set<string>();
+    const nearExpiry: string[] = [];
+    const scopeByCredential = new Map<string, CredentialScope>();
+    {
+      const seen = new Set<string>();
+      for (const swap of swappedHeaders) {
+        if (seen.has(swap.credentialId)) continue;
+        seen.add(swap.credentialId);
+        scopeByCredential.set(swap.credentialId, swap.credentialScope);
+        const cred = tokenEngine.resolveCredential(
+          groupScope, provider.id, swap.credentialId,
         );
-
-        const refreshed = await tokenEngine.sharedOp(
-          groupScope,
-          provider.id,
-          'refresh',
-          () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
-        );
-
-        if (refreshed) {
-          // Re-resolve all swapped substitutes to pick up fresh real tokens
-          for (const swap of swappedHeaders) {
-            const freshEntry = tokenEngine.resolveWithRestriction(
-              swap.substitute,
-              groupScope,
-              scopeAttrs,
-            );
-            if (freshEntry) {
-              headers[swap.headerName] =
-                `${swap.prefix}${freshEntry.realToken}`;
-            }
-          }
-        } else {
-          logger.warn(
-            { provider: provider.id, scope: groupScope },
-            'Proactive strategy: refresh failed, sending with existing token',
-          );
+        if (!cred?.refresh) continue;
+        refreshable.add(swap.credentialId);
+        if (REFRESH_AHEAD_MS > 0 && cred.expires_ts > 0
+            && cred.expires_ts < Date.now() + REFRESH_AHEAD_MS) {
+          nearExpiry.push(swap.credentialId);
         }
+      }
+    }
+
+    /** Refresh a set of credentials in parallel. Returns which ones succeeded. */
+    const refreshCredentials = async (paths: string[]): Promise<{ succeeded: string[]; failed: string[] }> => {
+      const results = await Promise.all(
+        paths.map((cp) =>
+          tokenEngine.sharedOp(
+            scopeByCredential.get(cp)!,
+            provider.id,
+            `refresh:${cp}`,
+            () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
+          ),
+        ),
+      );
+      return {
+        succeeded: paths.filter((_, i) => results[i]),
+        failed: paths.filter((_, i) => !results[i]),
+      };
+    };
+
+    /** Re-resolve all swapped headers to pick up fresh real tokens. */
+    const reResolveHeaders = () => {
+      for (const swap of swappedHeaders) {
+        const freshEntry = tokenEngine.resolveWithRestriction(
+          swap.substitute,
+          groupScope,
+          scopeAttrs,
+        );
+        if (freshEntry) {
+          headers[swap.headerName] = `${swap.prefix}${freshEntry.realToken}`;
+        }
+      }
+    };
+
+    // Proactive refresh: for refreshable credentials near expiry,
+    // refresh before sending to avoid a 401 round-trip.
+    if (nearExpiry.length > 0) {
+      proactiveRefreshAttempted = true;
+      logger.info(
+        { provider: provider.id, scope: groupScope, credentials: nearExpiry },
+        'Credentials expired or expiring soon, refreshing before send',
+      );
+
+      const { succeeded, failed } = await refreshCredentials(nearExpiry);
+      if (succeeded.length > 0) reResolveHeaders();
+      if (failed.length > 0) {
+        logger.warn(
+          { provider: provider.id, scope: groupScope, credentials: failed },
+          'Proactive refresh failed for credentials, sending with existing tokens',
+        );
       }
     }
 
@@ -529,36 +561,35 @@ function createBearerSwapHandler(
           await new Promise<void>((r) => upRes.on('end', r));
           const upstreamBodyBuf = Buffer.concat(bodyChunks);
 
-          // Proactive strategy never does reactive refresh — whether or not
-          // the pre-request check fired. Refresh only happens before send.
+          // If proactive refresh already attempted and failed, skip reactive
+          // refresh — retrying immediately would be wasteful.
           let refreshed: boolean;
-          if (refreshStrategy === 'proactive') {
+          if (proactiveRefreshAttempted) {
             logger.info(
               {
                 provider: provider.id,
                 scope: groupScope,
                 status: statusCode,
-                proactiveRefreshAttempted,
               },
-              'Proactive strategy: forwarding 401 (no reactive refresh)',
+              'Proactive refresh already attempted, skipping reactive refresh',
             );
             refreshed = false;
+          } else if (refreshable.size === 0) {
+            refreshed = false;
           } else {
+            const paths = [...refreshable];
             logger.info(
               {
                 provider: provider.id,
                 scope: groupScope,
                 status: statusCode,
                 strategy: effectiveStrategy,
+                credentials: paths,
               },
               'Bearer-swap: auth error, attempting refresh',
             );
-            refreshed = await tokenEngine.sharedOp(
-              groupScope,
-              provider.id,
-              'refresh',
-              () => refreshViaTokenEndpoint(provider, tokenEngine, groupScope),
-            );
+            const { succeeded } = await refreshCredentials(paths);
+            refreshed = succeeded.length > 0;
           }
 
           // Decode body text for error callbacks (may be gzip-compressed)
@@ -832,15 +863,34 @@ function createTokenExchangeHandler(
             provider,
           );
 
+          // Store credential in the group's own scope before generating substitutes.
+          const credential: Credential = {
+            value: parsed.fields.access_token,
+            expires_ts: 0,
+            updated_ts: Date.now(),
+            ...(authFields && { authFields }),
+          };
+          if (parsed.fields.refresh_token) {
+            credential.refresh = {
+              value: parsed.fields.refresh_token,
+              expires_ts: 0,
+              updated_ts: Date.now(),
+            };
+          }
+          tokenEngine.storeGroupCredential(
+            groupScope,
+            provider.id,
+            CRED_OAUTH,
+            credential,
+          );
+
           const subAccess = tokenEngine.generateSubstitute(
             parsed.fields.access_token,
             provider.id,
             scopeAttrs,
             groupScope,
             provider.substituteConfig,
-            'access',
-            undefined,
-            authFields,
+            CRED_OAUTH,
           );
 
           if (!subAccess) {
@@ -860,9 +910,7 @@ function createTokenExchangeHandler(
               scopeAttrs,
               groupScope,
               provider.substituteConfig,
-              'refresh',
-              undefined,
-              authFields,
+              CRED_OAUTH_REFRESH,
             );
             if (subRefresh) {
               parsed.set('refresh_token', subRefresh);
@@ -905,24 +953,13 @@ function createAuthorizeStubHandler(
     // Push to flow queue if a session context exists (agent is running)
     const oauthInitCb = _oauthInitiationResolver?.(groupScope);
     if (oauthInitCb) {
-      oauthInitCb(authUrl, provider.id, sourceIP || '');
-
-      // Return a stub response — don't forward to upstream.
-      // The container's HTTP client gets a 200 with an explanation.
-      clientRes.writeHead(200, { 'content-type': 'application/json' });
-      clientRes.end(
-        JSON.stringify({
-          status: 'intercepted',
-          message:
-            'OAuth authorization URL intercepted by proxy and queued for user authentication',
-          url: authUrl,
-        }),
-      );
+      const interactionId = oauthInitCb(authUrl, provider.id, sourceIP || '');
+      writeInterceptStub(clientRes, authUrl, interactionId);
       return;
     }
 
     // No session context — forward the authorize request (passthrough).
-    const { proxyPipe } = await import('../credential-proxy.js');
+    const { proxyPipe } = await import('./credential-proxy.js');
     proxyPipe(
       clientReq,
       clientRes,
@@ -955,7 +992,7 @@ function createDeviceCodeHandler(
     targetPort: number,
     groupScope,
   ): Promise<void> => {
-    const { proxyBuffered } = await import('../credential-proxy.js');
+    const { proxyBuffered } = await import('./credential-proxy.js');
     await proxyBuffered(
       clientReq,
       clientRes,

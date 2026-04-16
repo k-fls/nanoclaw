@@ -2,6 +2,8 @@
  * Per-group credential system — type definitions.
  */
 import type { CredentialScope, GroupScope } from './oauth-types.js';
+import type { DockerEnvName } from './docker-env.js';
+import type { ChatIO } from '../interaction/types.js';
 
 /** On-disk credential file format at ~/.config/nanoclaw/credentials/{scope}/{service}.json */
 export interface StoredCredential {
@@ -12,7 +14,7 @@ export interface StoredCredential {
 }
 
 /** Re-export HostHandler so providers can reference it without importing credential-proxy directly. */
-export type { HostHandler } from '../credential-proxy.js';
+export type { HostHandler } from './credential-proxy.js';
 
 /** Pluggable per-service credential provider. */
 export interface CredentialProvider {
@@ -28,7 +30,7 @@ export interface CredentialProvider {
   hostRules?: Array<{
     hostPattern: RegExp;
     pathPattern: RegExp;
-    handler: import('../credential-proxy.js').HostHandler;
+    handler: import('./credential-proxy.js').HostHandler;
   }>;
 
   /**
@@ -40,7 +42,7 @@ export interface CredentialProvider {
     group: import('../types.js').RegisteredGroup,
     tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
   ): {
-    env: Record<string, string>;
+    env: Partial<Record<DockerEnvName, string>>;
   };
 
   /** After flow completes, parse raw result and save via token engine. */
@@ -54,13 +56,22 @@ export interface CredentialProvider {
   authOptions(scope: CredentialScope): AuthOption[];
 
   /**
+   * Check if auth credentials are available for a group scope.
+   * Default: false (generic providers don't participate in guard checks).
+   */
+  hasAuthCredentials?(
+    groupScope: GroupScope,
+    tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
+  ): boolean;
+
+  /**
    * Import credentials from .env into the given scope.
-   * Each provider reads its own keys from .env and writes to the resolver.
-   * Called once at startup for the 'default' scope.
+   * Called once at startup for the main group's scope.
+   * Use importEnvCredentials() for the generic env→creds loop.
    */
   importEnv?(
     scope: CredentialScope,
-    resolver: import('./oauth-types.js').TokenResolver,
+    engine: import('./token-substitute.js').TokenSubstituteEngine,
   ): void;
 }
 
@@ -100,22 +111,8 @@ export interface AuthContext {
   chat: ChatIO;
 }
 
-/**
- * ChatIO uses normal message routing — no special interception.
- * send() goes through the router (same path as container agent responses).
- * receive() polls main group messages, waiting for a user reply.
- */
-export interface ChatIO {
-  send(text: string): Promise<void>;
-  /** Send without any prefix decoration (e.g. for PGP keys that must be copy-pasteable). */
-  sendRaw(text: string): Promise<void>;
-  /** Polls main group messages. Returns null on timeout. */
-  receive(timeoutMs?: number): Promise<string | null>;
-  /** Mark the last received message as hidden so the agent never sees it. */
-  hideMessage(): void;
-  /** Advance the message cursor past all current messages so the agent won't re-see them. */
-  advanceCursor(): void;
-}
+/** Re-export ChatIO from the interaction module so auth consumers can import from one place. */
+export type { ChatIO } from '../interaction/types.js';
 
 /** Handle to a spawned container process. */
 export interface ExecHandle {

@@ -16,6 +16,13 @@ export function formatMessages(
 ): string {
   const lines = messages.map((m) => {
     const displayTime = formatLocalTime(m.timestamp, timezone);
+    const replyAttr = m.reply_to_message_id
+      ? ` reply_to="${escapeXml(m.reply_to_message_id)}"`
+      : '';
+    const replySnippet =
+      m.reply_to_message_content && m.reply_to_sender_name
+        ? `\n  <quoted_message from="${escapeXml(m.reply_to_sender_name)}">${escapeXml(m.reply_to_message_content)}</quoted_message>`
+        : '';
     let body = escapeXml(m.content);
     if (m.attachments?.length) {
       const atts = m.attachments.map((att) => {
@@ -24,7 +31,7 @@ export function formatMessages(
       });
       body += atts.join('');
     }
-    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${body}</message>`;
+    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}"${replyAttr}>${replySnippet}${body}</message>`;
   });
 
   const header = `<context timezone="${escapeXml(timezone)}" />\n`;

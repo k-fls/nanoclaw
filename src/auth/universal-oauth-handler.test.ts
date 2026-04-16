@@ -18,14 +18,16 @@ import {
   setOAuthInitiationResolver,
   setTokenFetch,
 } from './universal-oauth-handler.js';
-import { setUpstreamAgent } from '../credential-proxy.js';
+import { setUpstreamAgent } from './credential-proxy.js';
 import {
   TokenSubstituteEngine,
-  PersistentTokenResolver,
+  PersistentCredentialResolver,
 } from './token-substitute.js';
 import type { OAuthProvider, InterceptRule } from './oauth-types.js';
 import {
   DEFAULT_SUBSTITUTE_CONFIG,
+  CRED_OAUTH,
+  CRED_OAUTH_REFRESH,
   asGroupScope,
   asCredentialScope,
 } from './oauth-types.js';
@@ -61,6 +63,11 @@ let serverResponseOverride: {
 } | null = null;
 
 beforeAll(async () => {
+  initCredentialStore();
+  // Clean stale test credentials (encrypted with prior keys)
+  const { CREDENTIALS_DIR } = await import('./store.js');
+  const testScopeDir = join(CREDENTIALS_DIR, 'test-scope');
+  rmSync(testScopeDir, { recursive: true, force: true });
   logSpies = muteLogger();
   // Generate self-signed cert
   tmpDir = mkdtempSync(join(tmpdir(), 'oauth-handler-test-'));
@@ -275,13 +282,16 @@ async function executeHandler(
 describe('universal-oauth-handler', () => {
   describe('bearer-swap', () => {
     it('swaps substitute Bearer token with real token', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
 
-      // Register a token
+      // Register a token — store credential first, then generate substitute
       const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      });
       const sub = engine.generateSubstitute(
         realToken,
         'test-provider',
@@ -302,7 +312,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('passes through unknown tokens (no substitution)', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -318,7 +328,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('pipes through requests without Authorization header', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -328,7 +338,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('does not resolve refresh token substitutes in headers', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -342,7 +352,7 @@ describe('universal-oauth-handler', () => {
         {},
         asGroupScope('test-scope'),
         DEFAULT_SUBSTITUTE_CONFIG,
-        'refresh',
+        CRED_OAUTH_REFRESH,
       )!;
       expect(subRefresh).not.toBeNull();
 
@@ -358,12 +368,15 @@ describe('universal-oauth-handler', () => {
     });
 
     it('resolves bare header substitutes (x-api-key style)', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
 
       const realKey = 'key_xabcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', 'api_key', {
+        value: realKey, expires_ts: 0, updated_ts: Date.now(),
+      });
       const subKey = engine.generateSubstitute(
         realKey,
         'test-provider',
@@ -383,12 +396,15 @@ describe('universal-oauth-handler', () => {
     });
 
     it('resolves "token" prefix (gh CLI style: Authorization: token gho_...)', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
 
       const realToken = 'gho_abcdefghijklmnopqrstuvwxyz1234567890abcdefghijk';
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      });
       const sub = engine.generateSubstitute(
         realToken,
         'test-provider',
@@ -407,8 +423,54 @@ describe('universal-oauth-handler', () => {
       expect(lastRequest!.headers['authorization']).toBe(`token ${realToken}`);
     });
 
+    it('does not attempt refresh on 401 when no credentials in headers', async () => {
+      initCredentialStore();
+      const resolver = new PersistentCredentialResolver();
+      const engine = new TokenSubstituteEngine(resolver);
+
+      const provider: OAuthProvider = {
+        id: 'refreshable',
+        rules: [
+          {
+            anchor: `127.0.0.1:${serverPort}`,
+            pathPattern: /^\/oauth\/token$/,
+            mode: 'token-exchange',
+          },
+        ],
+        scopeKeys: [],
+        substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
+        refreshStrategy: 'redirect',
+      };
+
+      // Store tokens but don't generate substitutes — no credentials in headers
+      resolver.store('refreshable', asCredentialScope('test-scope'), CRED_OAUTH, {
+        value: 'real_access', expires_ts: 0, updated_ts: Date.now(),
+        refresh: { value: 'real_refresh', expires_ts: 0, updated_ts: Date.now() },
+      });
+
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const origHandler = testServer.listeners('request')[0] as Function;
+      testServer.removeAllListeners('request');
+      testServer.on('request', (_req: http.IncomingMessage, res: http.ServerResponse) => {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end('{"error":"unauthorized"}');
+      });
+
+      try {
+        const res = await executeHandler(handler, { path: '/api/test' });
+        // 401 passed through — no refresh attempted because no credentials were in headers
+        expect(res.status).toBe(401);
+      } finally {
+        testServer.removeAllListeners('request');
+        testServer.on('request', origHandler as any);
+      }
+    });
+
     it('returns 307 redirect on 401 when refresh succeeds', async () => {
-      const resolver = new PersistentTokenResolver();
+      initCredentialStore();
+      const resolver = new PersistentCredentialResolver();
       const engine = new TokenSubstituteEngine(resolver);
 
       // Provider with a token-exchange rule pointing to the test server
@@ -427,20 +489,21 @@ describe('universal-oauth-handler', () => {
         refreshStrategy: 'redirect',
       };
 
-      // Store a refresh token in the resolver so the refresh can find it
-      resolver.store(
-        'real_refresh_token_value',
+      // Store credential with refresh, then generate access substitute
+      const realAccess =
+        'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
+      resolver.store('refreshable', asCredentialScope('test-scope'), CRED_OAUTH, {
+        value: realAccess, expires_ts: 0, updated_ts: Date.now(),
+        refresh: { value: 'real_refresh_token_value', expires_ts: 0, updated_ts: Date.now() },
+      });
+      const sub = engine.generateSubstitute(
+        realAccess,
         'refreshable',
-        asCredentialScope('test-scope'),
-        'refresh',
-      );
-      // Store an access token too
-      resolver.store(
-        'real_access_token_value',
-        'refreshable',
-        asCredentialScope('test-scope'),
-        'access',
-      );
+        {},
+        asGroupScope('test-scope'),
+        DEFAULT_SUBSTITUTE_CONFIG,
+      )!;
+      expect(sub).not.toBeNull();
 
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -484,7 +547,10 @@ describe('universal-oauth-handler', () => {
       const origTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
       process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
       try {
-        const res = await executeHandler(handler, { path: '/api/test' });
+        const res = await executeHandler(handler, {
+          path: '/api/test',
+          headers: { authorization: `Bearer ${sub}` },
+        });
         expect(res.status).toBe(307);
         expect(res.headers['location']).toBe('https://127.0.0.1/api/test');
       } finally {
@@ -498,7 +564,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('passes through 401 when no refresh token available', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider('no-refresh');
       const rule = makeBearerSwapRule();
       const handler = createHandler(provider, rule, engine);
@@ -513,7 +579,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('blocks cross-tenant token injection via scope attrs', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
 
       // Two rules for different tenants on the same provider
@@ -526,6 +592,9 @@ describe('universal-oauth-handler', () => {
 
       // Token scoped to tenant "acme"
       const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      });
       const sub = engine.generateSubstitute(
         realToken,
         'test-provider',
@@ -566,11 +635,37 @@ describe('universal-oauth-handler', () => {
       expect(allowed!.realToken).toBe(realToken);
     });
 
-    it('proactive strategy refreshes before send when token is near expiry', async () => {
+    it('bearer-swap uses cached expiry for proactive refresh check', async () => {
+      initCredentialStore();
+      const resolver = new PersistentCredentialResolver();
+      const engine = new TokenSubstituteEngine(resolver);
+
+      const provider = makeProvider();
+      const nearExpiry = Date.now() + 5_000; // 5s — within REFRESH_AHEAD_MS
+
+      // Generate substitute first (stores with expires_ts=0 internally)
+      const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
+      const sub = engine.generateSubstitute(
+        realToken, 'test-provider', {}, asGroupScope('test-scope'), DEFAULT_SUBSTITUTE_CONFIG,
+      )!;
+      expect(sub).not.toBeNull();
+
+      // Then re-store with near-expiry — this updates the cache
+      resolver.store('test-provider', asCredentialScope('test-scope'), CRED_OAUTH, {
+        value: realToken, expires_ts: nearExpiry, updated_ts: Date.now(),
+      });
+
+      // Verify the engine reads expiry from the cached credential
+      const cred = engine.resolveCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH);
+      expect(cred).not.toBeNull();
+      expect(cred!.expires_ts).toBe(nearExpiry);
+    });
+
+    it('proactive refresh triggers before send when token is near expiry', async () => {
       initCredentialStore();
       const spies = muteLogger();
       try {
-        const resolver = new PersistentTokenResolver();
+        const resolver = new PersistentCredentialResolver();
         const engine = new TokenSubstituteEngine(resolver);
 
         const provider: OAuthProvider = {
@@ -584,7 +679,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
-          refreshStrategy: 'proactive',
+          refreshStrategy: 'redirect',
         };
 
         // Generate a substitute first (stores with expires_ts=0 internally)
@@ -600,19 +695,10 @@ describe('universal-oauth-handler', () => {
         expect(sub).not.toBeNull();
 
         // Now set the expiry to near-future (within 60s REFRESH_AHEAD_MS window)
-        resolver.store(
-          realAccess,
-          'proactive-test',
-          asCredentialScope('test-scope'),
-          'access',
-          Date.now() + 10_000, // 10s from now
-        );
-        resolver.store(
-          'real_refresh_token_value',
-          'proactive-test',
-          asCredentialScope('test-scope'),
-          'refresh',
-        );
+        resolver.store('proactive-test', asCredentialScope('test-scope'), CRED_OAUTH, {
+          value: realAccess, expires_ts: Date.now() + 10_000, updated_ts: Date.now(),
+          refresh: { value: 'real_refresh_token_value', expires_ts: 0, updated_ts: Date.now() },
+        });
 
         const rule = makeBearerSwapRule();
         const handler = createHandler(provider, rule, engine);
@@ -651,11 +737,11 @@ describe('universal-oauth-handler', () => {
       }
     });
 
-    it('proactive strategy skips reactive refresh on 401 after proactive attempt', async () => {
+    it('skips reactive refresh on 401 when proactive refresh already attempted', async () => {
       initCredentialStore();
       const spies = muteLogger();
       try {
-        const resolver = new PersistentTokenResolver();
+        const resolver = new PersistentCredentialResolver();
         const engine = new TokenSubstituteEngine(resolver);
 
         const provider: OAuthProvider = {
@@ -669,7 +755,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
-          refreshStrategy: 'proactive',
+          refreshStrategy: 'redirect',
         };
 
         // Generate substitute first, then set expired expiry
@@ -684,19 +770,10 @@ describe('universal-oauth-handler', () => {
         )!;
 
         // Set access token as already expired
-        resolver.store(
-          realAccess,
-          'proactive-fail',
-          asCredentialScope('test-scope'),
-          'access',
-          Date.now() - 5_000, // 5s ago — expired
-        );
-        resolver.store(
-          'real_refresh_token_value',
-          'proactive-fail',
-          asCredentialScope('test-scope'),
-          'refresh',
-        );
+        resolver.store('proactive-fail', asCredentialScope('test-scope'), CRED_OAUTH, {
+          value: realAccess, expires_ts: Date.now() - 5_000, updated_ts: Date.now(),
+          refresh: { value: 'real_refresh_token_value', expires_ts: 0, updated_ts: Date.now() },
+        });
 
         const rule = makeBearerSwapRule();
         const handler = createHandler(provider, rule, engine);
@@ -734,11 +811,11 @@ describe('universal-oauth-handler', () => {
       }
     });
 
-    it('proactive strategy forwards 401 without reactive refresh when token is not near expiry', async () => {
+    it('uses reactive refresh on 401 when no proactive refresh was attempted', async () => {
       initCredentialStore();
       const spies = muteLogger();
       try {
-        const resolver = new PersistentTokenResolver();
+        const resolver = new PersistentCredentialResolver();
         const engine = new TokenSubstituteEngine(resolver);
 
         const provider: OAuthProvider = {
@@ -752,7 +829,7 @@ describe('universal-oauth-handler', () => {
           ],
           scopeKeys: [],
           substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
-          refreshStrategy: 'proactive',
+          refreshStrategy: 'redirect',
         };
 
         const realAccess =
@@ -766,28 +843,27 @@ describe('universal-oauth-handler', () => {
         )!;
 
         // Access token valid for another hour — no proactive refresh triggered
-        resolver.store(
-          realAccess,
-          'proactive-noretry',
-          asCredentialScope('test-scope'),
-          'access',
-          Date.now() + 3_600_000,
-        );
-        resolver.store(
-          'real_refresh_token_value',
-          'proactive-noretry',
-          asCredentialScope('test-scope'),
-          'refresh',
-        );
+        resolver.store('proactive-noretry', asCredentialScope('test-scope'), CRED_OAUTH, {
+          value: realAccess, expires_ts: Date.now() + 3_600_000, updated_ts: Date.now(),
+          refresh: { value: 'real_refresh_token_value', expires_ts: 0, updated_ts: Date.now() },
+        });
 
         const rule = makeBearerSwapRule();
         const handler = createHandler(provider, rule, engine);
 
-        // Track auth error callbacks
-        let authErrorCalled = false;
-        setAuthErrorResolver(() => () => {
-          authErrorCalled = true;
-        });
+        // Mock refresh to succeed
+        setTokenFetch(
+          async () =>
+            new Response(
+              JSON.stringify({
+                access_token:
+                  'refreshed_access_abcdefghijklmnopqrstuvwxyz123456',
+                refresh_token: 'new_refresh_value',
+                expires_in: 3600,
+              }),
+              { status: 200 },
+            ),
+        );
 
         // Upstream returns 401 (e.g. server-side revocation)
         serverResponseOverride = {
@@ -800,11 +876,10 @@ describe('universal-oauth-handler', () => {
             headers: { authorization: `Bearer ${sub}` },
           });
 
-          // Proactive strategy never does reactive refresh — just forwards 401
-          expect(res.status).toBe(401);
-          expect(authErrorCalled).toBe(true);
+          // No proactive attempt — reactive refresh kicks in (redirect strategy → 307)
+          expect(res.status).toBe(307);
         } finally {
-          setAuthErrorResolver(() => null);
+          setTokenFetch(globalThis.fetch);
           serverResponseOverride = null;
         }
       } finally {
@@ -814,7 +889,7 @@ describe('universal-oauth-handler', () => {
   });
 
   it('buffer strategy calls authErrorCb when replay also returns 401', async () => {
-    const resolver = new PersistentTokenResolver();
+    const resolver = new PersistentCredentialResolver();
     const engine = new TokenSubstituteEngine(resolver);
 
     const provider: OAuthProvider = {
@@ -831,18 +906,10 @@ describe('universal-oauth-handler', () => {
       refreshStrategy: 'buffer',
     };
 
-    resolver.store(
-      'real_refresh_value',
-      'buf-replay',
-      asCredentialScope('test-scope'),
-      'refresh',
-    );
-    resolver.store(
-      'real_access_value',
-      'buf-replay',
-      asCredentialScope('test-scope'),
-      'access',
-    );
+    resolver.store('buf-replay', asCredentialScope('test-scope'), CRED_OAUTH, {
+      value: 'real_access_value', expires_ts: 0, updated_ts: Date.now(),
+      refresh: { value: 'real_refresh_value', expires_ts: 0, updated_ts: Date.now() },
+    });
 
     const rule = makeBearerSwapRule();
     const handler = createHandler(provider, rule, engine);
@@ -914,7 +981,7 @@ describe('universal-oauth-handler', () => {
 
   describe('token-exchange', () => {
     it('generates substitute tokens from upstream response', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
       const rule = makeTokenExchangeRule();
       const handler = createHandler(provider, rule, engine);
@@ -954,19 +1021,24 @@ describe('universal-oauth-handler', () => {
     });
 
     it('resolves substitute refresh token on refresh grant', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();
       const rule = makeTokenExchangeRule();
       const handler = createHandler(provider, rule, engine);
 
-      // Pre-register a refresh token substitute
+      // Pre-register a refresh token substitute (store credential first)
       const realRefresh = 'real_refresh_abcdefghijklmnopqrstuvwxyz1234567890a';
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
+        value: 'placeholder', expires_ts: 0, updated_ts: Date.now(),
+        refresh: { value: realRefresh, expires_ts: 0, updated_ts: Date.now() },
+      });
       const subRefresh = engine.generateSubstitute(
         realRefresh,
         'test-provider',
         {},
         asGroupScope('test-scope'),
         DEFAULT_SUBSTITUTE_CONFIG,
+        CRED_OAUTH_REFRESH,
       )!;
 
       // Upstream returns new tokens
@@ -999,7 +1071,7 @@ describe('universal-oauth-handler', () => {
     it('auto-captures client_id from request and scope from response', async () => {
       const spies = muteLogger();
       try {
-        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
         const provider = makeProvider();
         const rule = makeTokenExchangeRule();
         const handler = createHandler(provider, rule, engine);
@@ -1028,10 +1100,10 @@ describe('universal-oauth-handler', () => {
 
         expect(res.status).toBe(200);
 
-        const entry = engine.getKeyEntry(
+        const entry = engine.resolveCredential(
           asGroupScope('test-scope'),
           'test-provider',
-          'access',
+          CRED_OAUTH,
         );
         expect(entry).not.toBeNull();
         expect(entry!.authFields).toBeDefined();
@@ -1045,7 +1117,7 @@ describe('universal-oauth-handler', () => {
     it('excludes transient fields from auto-capture', async () => {
       const spies = muteLogger();
       try {
-        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
         const provider = makeProvider();
         const rule = makeTokenExchangeRule();
         const handler = createHandler(provider, rule, engine);
@@ -1072,10 +1144,10 @@ describe('universal-oauth-handler', () => {
 
         expect(res.status).toBe(200);
 
-        const entry = engine.getKeyEntry(
+        const entry = engine.resolveCredential(
           asGroupScope('test-scope'),
           'test-provider',
-          'access',
+          CRED_OAUTH,
         );
         expect(entry).not.toBeNull();
         expect(entry!.authFields).toBeDefined();
@@ -1092,7 +1164,7 @@ describe('universal-oauth-handler', () => {
     it('explicit fromRequest disables auto-capture', async () => {
       const spies = muteLogger();
       try {
-        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
         const provider: OAuthProvider = {
           ...makeProvider(),
           tokenFieldCapture: { fromRequest: ['client_id'] },
@@ -1122,10 +1194,10 @@ describe('universal-oauth-handler', () => {
 
         expect(res.status).toBe(200);
 
-        const entry = engine.getKeyEntry(
+        const entry = engine.resolveCredential(
           asGroupScope('test-scope'),
           'test-provider',
-          'access',
+          CRED_OAUTH,
         );
         expect(entry).not.toBeNull();
         expect(entry!.authFields).toBeDefined();
@@ -1140,7 +1212,7 @@ describe('universal-oauth-handler', () => {
     it('explicit fromResponse overrides auto', async () => {
       const spies = muteLogger();
       try {
-        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
         const provider: OAuthProvider = {
           ...makeProvider(),
           tokenFieldCapture: { fromResponse: ['scope', 'organization'] },
@@ -1170,10 +1242,10 @@ describe('universal-oauth-handler', () => {
 
         expect(res.status).toBe(200);
 
-        const entry = engine.getKeyEntry(
+        const entry = engine.resolveCredential(
           asGroupScope('test-scope'),
           'test-provider',
-          'access',
+          CRED_OAUTH,
         );
         expect(entry).not.toBeNull();
         expect(entry!.authFields).toBeDefined();
@@ -1187,7 +1259,7 @@ describe('universal-oauth-handler', () => {
     it('scopeInclude adds scopes', async () => {
       const spies = muteLogger();
       try {
-        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
         const provider: OAuthProvider = {
           ...makeProvider(),
           tokenFieldCapture: { scopeInclude: ['user:file_upload'] },
@@ -1216,10 +1288,10 @@ describe('universal-oauth-handler', () => {
 
         expect(res.status).toBe(200);
 
-        const entry = engine.getKeyEntry(
+        const entry = engine.resolveCredential(
           asGroupScope('test-scope'),
           'test-provider',
-          'access',
+          CRED_OAUTH,
         );
         expect(entry).not.toBeNull();
         expect(entry!.authFields).toBeDefined();
@@ -1232,7 +1304,7 @@ describe('universal-oauth-handler', () => {
     it('scopeExclude removes scopes', async () => {
       const spies = muteLogger();
       try {
-        const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+        const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
         const provider: OAuthProvider = {
           ...makeProvider(),
           tokenFieldCapture: { scopeExclude: ['org:create_api_key'] },
@@ -1261,10 +1333,10 @@ describe('universal-oauth-handler', () => {
 
         expect(res.status).toBe(200);
 
-        const entry = engine.getKeyEntry(
+        const entry = engine.resolveCredential(
           asGroupScope('test-scope'),
           'test-provider',
-          'access',
+          CRED_OAUTH,
         );
         expect(entry).not.toBeNull();
         expect(entry!.authFields).toBeDefined();
@@ -1277,7 +1349,7 @@ describe('universal-oauth-handler', () => {
 
   describe('authorize-stub', () => {
     it('intercepts authorize URL and returns stub when resolver is set', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider('stub-provider');
       const rule = makeAuthorizeStubRule();
       const handler = createHandler(provider, rule, engine);
@@ -1289,6 +1361,7 @@ describe('universal-oauth-handler', () => {
         return (url, providerId, _sourceIP) => {
           capturedUrl = url;
           capturedProviderId = providerId;
+          return 'test:0:mock';
         };
       });
 
@@ -1313,7 +1386,7 @@ describe('universal-oauth-handler', () => {
     });
 
     it('forwards authorize request when no resolver callback', async () => {
-      const engine = new TokenSubstituteEngine(new PersistentTokenResolver());
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider('forward-provider');
       const rule = makeAuthorizeStubRule();
       const handler = createHandler(provider, rule, engine);

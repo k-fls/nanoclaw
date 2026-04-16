@@ -15,7 +15,7 @@ import { RegisteredGroup } from './types.js';
 const MAIN_GROUP: RegisteredGroup = {
   name: 'Main',
   folder: 'whatsapp_main',
-  trigger: 'always',
+  trigger: '@Andy',
   added_at: '2024-01-01T00:00:00.000Z',
   isMain: true,
 };

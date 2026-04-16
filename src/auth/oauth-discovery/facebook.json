@@ -35,5 +35,5 @@
     "user_location",
     "user_gender"
   ],
-  "_well_known_url": "https://www.facebook.com/.well-known/openid-configuration"
+  "_well_known_url": false
 }

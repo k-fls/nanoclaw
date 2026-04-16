@@ -7,8 +7,8 @@
  */
 import type { RegisteredGroup, Channel } from '../types.js';
 import type { ChatIO, CredentialProvider } from './types.js';
-import type { CredentialProxy } from '../credential-proxy.js';
-import { getProxy } from '../credential-proxy.js';
+import type { CredentialProxy } from './credential-proxy.js';
+import { getProxy } from './credential-proxy.js';
 import {
   isAuthError,
   extractStreamRequestId,
@@ -19,9 +19,11 @@ import { runReauth } from './reauth.js';
 import { getTokenEngine } from './registry.js';
 import { scopeOf } from '../types.js';
 import { createSessionContext } from './session-context.js';
-import { consumeFlows } from './flow-consumer.js';
-import { createChatIO, type ChatIODeps } from './chat-io.js';
-import { AsyncMutex } from './async-mutex.js';
+import {
+  createChatIO,
+  type ChatIODeps,
+  type InteractionSession,
+} from '../interaction/index.js';
 import { logger } from '../logger.js';
 
 const MAX_REASON_LEN = 200;
@@ -41,8 +43,8 @@ function sanitizeReason(raw: string): string {
 
 export interface AuthGuard {
   /**
-   * Start auth session: register session context with proxy, start flow
-   * consumer, check credentials. Returns false if reauth failed.
+   * Start auth session: register session context with proxy,
+   * check credentials. Returns false if reauth failed.
    */
   start(): Promise<boolean>;
 
@@ -54,7 +56,7 @@ export interface AuthGuard {
   }): void;
 
   /**
-   * Finish auth session: stop flow consumer, handle auth errors, clean up.
+   * Finish auth session: handle auth errors, clean up.
    * Returns 'not-auth' | 'reauth-ok' | 'reauth-failed'.
    */
   finish(
@@ -63,28 +65,25 @@ export interface AuthGuard {
 
   /** Set the container name once known (after spawn). */
   setContainerName(name: string): void;
-
-  /**
-   * Chat lock shared between the flow consumer and the output sender.
-   * Acquire before sending messages to prevent interleaving.
-   */
-  readonly chatLock: AsyncMutex;
 }
 
 export function createAuthGuard(
   group: RegisteredGroup,
   proxy: CredentialProxy,
   createChat: () => ChatIO,
-  closeStdin: () => void,
+  stopContainer: () => void,
+  session: InteractionSession,
   /** Override provider for testing. Defaults to claudeProvider. */
   provider: CredentialProvider = claudeProvider,
 ): AuthGuard {
   const scope = scopeOf(group);
-  const sessionCtx = createSessionContext(scope, extractUpstreamRequestId);
-  const chatLock = new AsyncMutex();
-  const flowAbort = new AbortController();
+  const sessionCtx = createSessionContext(
+    scope,
+    extractUpstreamRequestId,
+    session.queue,
+    session.statusRegistry,
+  );
 
-  let consumerPromise: Promise<void> | null = null;
   let streamedAuthError: string | null = null;
 
   function isConfirmedAuthError(error: string): boolean {
@@ -102,8 +101,6 @@ export function createAuthGuard(
   }
 
   return {
-    chatLock,
-
     setContainerName(name: string): void {
       sessionCtx.containerName = name;
     },
@@ -111,17 +108,9 @@ export function createAuthGuard(
     async start(): Promise<boolean> {
       proxy.registerSessionContext(scope, sessionCtx);
 
-      consumerPromise = consumeFlows(
-        sessionCtx.flowQueue,
-        chatLock,
-        createChat(),
-        sessionCtx.statusRegistry,
-        flowAbort.signal,
-      );
-
-      // Check credentials
+      // Check credentials via provider-specific logic
       const engine = getTokenEngine();
-      if (engine.hasAnyCredential(scope, provider.id)) return true;
+      if (provider.hasAuthCredentials?.(scope, engine)) return true;
 
       logger.warn(
         { group: group.name },
@@ -149,15 +138,11 @@ export function createAuthGuard(
         streamedAuthError = result.result;
       }
       if (streamedAuthError) {
-        closeStdin();
+        stopContainer();
       }
     },
 
     async finish(agentError?: string) {
-      // Stop flow consumer
-      flowAbort.abort();
-      if (consumerPromise) await consumerPromise;
-
       if (agentError && isAuthError(agentError)) {
         streamedAuthError = agentError;
       }
@@ -184,9 +169,8 @@ export function createAuthGuard(
         authResult = ok ? 'reauth-ok' : 'reauth-failed';
       }
 
-      // Cleanup session
+      // Cleanup session (statusRegistry lifecycle owned by interaction session)
       proxy.deregisterSessionContext(scope);
-      sessionCtx.statusRegistry.destroy();
 
       return authResult;
     },
@@ -209,24 +193,14 @@ export type GuardedResult =
       fatal?: boolean;
     };
 
-/** Callback signature for the streaming output handler inside withAuthGuard. */
-export type GuardedOutputCallback = (
-  result: {
-    status: string;
-    result?: string | Record<string, unknown> | null;
-    error?: string;
-    newSessionId?: string;
-  },
-  chatLock: AsyncMutex,
-) => Promise<void>;
-
 export interface WithAuthGuardDeps {
   group: RegisteredGroup;
   chatIODeps: ChatIODeps;
-  closeStdin: () => void;
+  stopContainer: () => void;
+  session: InteractionSession;
   /**
    * The actual agent run. Receives the guard so streaming callbacks can
-   * call guard.onStreamResult() and guard.chatLock.
+   * call guard.onStreamResult().
    */
   runAgent: (guard: AuthGuard) => Promise<{
     status: 'success' | 'error';
@@ -239,19 +213,20 @@ export interface WithAuthGuardDeps {
  * Run an agent invocation wrapped in the full auth guard lifecycle.
  *
  * 1. Creates guard, checks credentials (triggers reauth if missing)
- * 2. Calls runAgent callback — caller wires streaming output through guard
+ * 2. Calls runAgent callback — caller wires streaming output
  * 3. Finishes guard — handles auth errors, reauth, cleanup
  */
 export async function withAuthGuard(
   deps: WithAuthGuardDeps,
 ): Promise<GuardedResult> {
-  const { group, chatIODeps, closeStdin, runAgent } = deps;
+  const { group, chatIODeps, stopContainer, session, runAgent } = deps;
 
   const guard = createAuthGuard(
     group,
     getProxy(),
     () => createChatIO(chatIODeps),
-    closeStdin,
+    stopContainer,
+    session,
   );
 
   const credentialsOk = await guard.start();

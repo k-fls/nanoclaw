@@ -7,27 +7,20 @@
  * 3. auth_login  — OAuth login via `claude auth login`, stores entire .credentials.json
  */
 import fs from 'fs';
-import net from 'net';
 import path from 'path';
 
-import { decrypt, encrypt, loadCredential } from '../store.js';
-import { readKeysFile, writeKeysFile } from '../token-substitute.js';
-import { asCredentialScope, asGroupScope } from '../oauth-types.js';
+import { readKeysFile } from '../token-substitute.js';
+import { asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
-import type { CredentialScope, GroupScope } from '../oauth-types.js';
+import type { CredentialScope } from '../oauth-types.js';
 import { authSessionDir, scopeClaudeDir } from '../exec.js';
-import {
-  ensureGpgKey,
-  exportPublicKey,
-  gpgDecrypt,
-  isGpgAvailable,
-  isPgpMessage,
-} from '../gpg.js';
+import { promptGpgEncrypt } from '../gpg.js';
 import { IDLE_TIMEOUT } from '../../config.js';
-import { readEnvFile } from '../../env.js';
+import { importEnvCredentials } from '../provision.js';
+import type { DockerEnvName } from '../docker-env.js';
 import { logger } from '../../logger.js';
 import { CONTAINER_RUNTIME_BIN } from '../../container-runtime.js';
-import { proxyPipe, getProxy } from '../../credential-proxy.js';
+import { getProxy } from '../credential-proxy.js';
 import {
   RESELECT,
   type AuthContext,
@@ -139,13 +132,16 @@ function isCancelReply(reply: string): boolean {
   return ['cancel', 'abort', 'no', 'skip', 'quit', 'exit'].includes(lower);
 }
 
-/** .env keys this provider can import into the default scope. */
-const ENV_FALLBACK_KEYS = [
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_AUTH_TOKEN',
-];
+/** Env var → credential path mapping for .env import and provisioning. */
+const CLAUDE_ENV_VARS: Record<string, string> = {
+  ANTHROPIC_API_KEY: 'api_key',
+  CLAUDE_CODE_OAUTH_TOKEN: CRED_OAUTH,
+  // ANTHROPIC_AUTH_TOKEN: CRED_OAUTH, // fallback alias — first wins via importEnvCredentials
+};
+
+/** Credential paths that satisfy auth for Claude. At least one must have a usable credential. */
+const AUTH_CREDS = ['api_key', CRED_OAUTH] as const;
+
 
 /** Claude CLI session dir mount — provider-specific. */
 function claudeExecOpts(sessionDir: string): AuthExecOpts {
@@ -538,7 +534,10 @@ async function runOAuthFlow(
     `Open this URL and authorize:\n${delivery.oauthUrl}\n\n${delivery.instructions}`,
   );
 
-  const userInput = await receiveOrContainerExit(ctx.chat, handle);
+  const chat = ctx.chat; // Direct URL here is to ensure that message will be hidden even if container is stopped.
+  const userInput = await receiveOrContainerExit(chat, handle);
+  if (userInput) chat.hideMessage();
+
   if (!userInput || isCancelReply(userInput)) {
     await ctx.chat.send(
       userInput ? 'Cancelled.' : 'Auth container exited or timed out.',
@@ -559,87 +558,8 @@ async function runOAuthFlow(
   return { handle, output, sessionDir };
 }
 
-// ── Migration: claude_auth.json → claude.keys.json ──────────────────
-
 /** Provider ID used as the keys file name and engine key. */
 export const PROVIDER_ID = 'claude';
-
-/**
- * If claude.keys.json doesn't exist for a scope but claude_auth.json does,
- * extract the access/refresh tokens and write them to claude.keys.json.
- * Called once at startup per scope.
- */
-export function migrateClaudeCredentials(scope: string): void {
-  const credScope = asCredentialScope(scope);
-  // Already migrated?
-  const existing = readKeysFile(credScope, PROVIDER_ID);
-  if (Object.keys(existing).length > 0) return;
-
-  const cred = loadCredential(scope, 'claude_auth');
-  if (!cred) return;
-
-  const plaintext = decrypt(cred.token);
-
-  switch (cred.auth_type) {
-    case 'api_key':
-      writeKeysFile(credScope, PROVIDER_ID, {
-        api_key: {
-          value: encrypt(plaintext),
-          updated_ts: Date.now(),
-          expires_ts: 0,
-        },
-      });
-      break;
-
-    case 'setup_token':
-      writeKeysFile(credScope, PROVIDER_ID, {
-        access: {
-          value: encrypt(plaintext),
-          updated_ts: Date.now(),
-          expires_ts: 0,
-        },
-      });
-      break;
-
-    case 'auth_login': {
-      const parsed = parseCredentialsJson(plaintext);
-      if (!parsed) return;
-      const keys: Record<
-        string,
-        {
-          value: string;
-          updated_ts: number;
-          expires_ts: number;
-          authFields?: Record<string, string>;
-        }
-      > = {
-        access: {
-          value: encrypt(parsed.accessToken),
-          updated_ts: Date.now(),
-          expires_ts: parsed.expiresAt
-            ? new Date(parsed.expiresAt).getTime()
-            : 0,
-          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
-        },
-      };
-      if (parsed.refreshToken) {
-        keys.refresh = {
-          value: encrypt(parsed.refreshToken),
-          updated_ts: Date.now(),
-          expires_ts: 0,
-          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
-        };
-      }
-      writeKeysFile(credScope, PROVIDER_ID, keys);
-      break;
-    }
-  }
-
-  logger.info(
-    { scope, authType: cred.auth_type },
-    'Migrated claude_auth.json → claude.keys.json',
-  );
-}
 
 // ── Host handlers ────────────────────────────────────────────────────
 
@@ -680,7 +600,7 @@ export const CLAUDE_OAUTH_PROVIDER: import('../oauth-types.js').OAuthProvider =
     ],
     scopeKeys: [],
     substituteConfig: CLAUDE_SUBSTITUTE_CONFIG,
-    refreshStrategy: 'proactive',
+    refreshStrategy: 'redirect',
     tokenFieldCapture: {
       scopeInclude: ['user:file_upload'],
     },
@@ -732,7 +652,7 @@ export function registerClaudeBaseUrl(
  */
 export function hasSubscriptionCredential(scope: CredentialScope): boolean {
   const keys = readKeysFile(scope, PROVIDER_ID);
-  return !!keys.access;
+  return !!keys.oauth;
 }
 
 // ── Provider ────────────────────────────────────────────────────────
@@ -741,59 +661,37 @@ export const claudeProvider: CredentialProvider = {
   id: PROVIDER_ID,
   displayName: 'Claude',
 
-  importEnv(
-    scope: CredentialScope,
-    resolver: import('../oauth-types.js').TokenResolver,
-  ): void {
-    const envVars = readEnvFile(ENV_FALLBACK_KEYS);
-    if (Object.keys(envVars).length === 0) return;
-
-    const credScope = scope;
-
-    // API key takes priority over OAuth tokens (mode exclusivity)
-    if (envVars.ANTHROPIC_API_KEY) {
-      resolver.store(
-        envVars.ANTHROPIC_API_KEY,
-        PROVIDER_ID,
-        credScope,
-        'api_key',
-      );
-    } else {
-      if (envVars.CLAUDE_CODE_OAUTH_TOKEN) {
-        resolver.store(
-          envVars.CLAUDE_CODE_OAUTH_TOKEN,
-          PROVIDER_ID,
-          credScope,
-          'access',
-          0,
-          CLAUDE_DEFAULT_AUTH_FIELDS,
-        );
-      }
-      // ANTHROPIC_AUTH_TOKEN is a fallback for access token
-      if (!envVars.CLAUDE_CODE_OAUTH_TOKEN && envVars.ANTHROPIC_AUTH_TOKEN) {
-        resolver.store(
-          envVars.ANTHROPIC_AUTH_TOKEN,
-          PROVIDER_ID,
-          credScope,
-          'access',
-          0,
-          CLAUDE_DEFAULT_AUTH_FIELDS,
-        );
+  hasAuthCredentials(groupScope, tokenEngine) {
+    let found = false;
+    for (const cp of AUTH_CREDS) {
+      if (tokenEngine.getOrCreateSubstitute(PROVIDER_ID, {}, groupScope, CLAUDE_SUBSTITUTE_CONFIG, cp) !== null) {
+        found = true;
       }
     }
+    return found;
+  },
 
-    logger.info(
-      { scope, keys: Object.keys(envVars) },
-      'Imported .env credentials into credential store',
+  importEnv(scope: CredentialScope, engine: import('../token-substitute.js').TokenSubstituteEngine): void {
+    importEnvCredentials(
+      CLAUDE_ENV_VARS,
+      PROVIDER_ID,
+      scope,
+      engine,
+      (_value, credentialPath) => ({
+        value: _value,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+        ...(credentialPath === CRED_OAUTH && { authFields: CLAUDE_DEFAULT_AUTH_FIELDS }),
+      }),
     );
   },
 
   provision(
     group: import('../../types.js').RegisteredGroup,
     tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
-  ): { env: Record<string, string> } {
+  ): { env: Partial<Record<DockerEnvName, string>> } {
     const scope = scopeOf(group);
-    const env: Record<string, string> = {};
+    const env: Partial<Record<DockerEnvName, string>> = {};
 
     // API key mode
     const subApiKey = tokenEngine.getOrCreateSubstitute(
@@ -814,7 +712,7 @@ export const claudeProvider: CredentialProvider = {
       {},
       scope,
       CLAUDE_SUBSTITUTE_CONFIG,
-      'access',
+      CRED_OAUTH,
     );
     if (!subAccess) return { env };
 
@@ -824,12 +722,12 @@ export const claudeProvider: CredentialProvider = {
       {},
       scope,
       CLAUDE_SUBSTITUTE_CONFIG,
-      'refresh',
+      CRED_OAUTH_REFRESH,
     );
 
     // Write .credentials.json with substitute tokens + real expiresAt
     // Engine resolves the source scope (own or borrowed from default)
-    const expiresAt = tokenEngine.getKeyExpiry(scope, PROVIDER_ID, 'access');
+    const expiresAt = tokenEngine.resolveCredential(scope, PROVIDER_ID, CRED_OAUTH)?.expires_ts ?? 0;
     const credentialsJson = JSON.stringify({
       claudeAiOauth: {
         accessToken: subAccess,
@@ -849,18 +747,24 @@ export const claudeProvider: CredentialProvider = {
     result: FlowResult,
     tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
   ): void {
-    const credScope = scope;
-    const resolver = tokenEngine.getResolver();
     const groupScope = asGroupScope(scope);
 
     switch (result.auth_type) {
       case 'api_key':
         tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
-        resolver.store(result.token, PROVIDER_ID, credScope, 'api_key');
+        tokenEngine.storeGroupCredential(groupScope, PROVIDER_ID, 'api_key', {
+          value: result.token,
+          expires_ts: 0,
+          updated_ts: Date.now(),
+        });
         break;
       case 'setup_token':
         tokenEngine.clearCredentials(groupScope, PROVIDER_ID);
-        resolver.store(result.token, PROVIDER_ID, credScope, 'access');
+        tokenEngine.storeGroupCredential(groupScope, PROVIDER_ID, CRED_OAUTH, {
+          value: result.token,
+          expires_ts: 0,
+          updated_ts: Date.now(),
+        });
         break;
       case 'auth_login': {
         const parsed = parseCredentialsJson(result.token);
@@ -1009,82 +913,21 @@ export const claudeProvider: CredentialProvider = {
         provider: this,
         credentialScope: scope,
         async run(ctx: AuthContext): Promise<FlowResult | null> {
-          if (!isGpgAvailable()) {
-            await ctx.chat.send(
-              'GPG is not installed on the server. ' +
-                'Install it (`apt install gnupg` or `brew install gnupg`) and try again.\n\n' +
-                'Returning to auth method selection...',
-            );
-            return RESELECT;
-          }
-
-          let pubKey: string;
-          try {
-            ensureGpgKey(ctx.scope);
-            pubKey = exportPublicKey(ctx.scope);
-          } catch (err) {
-            logger.warn({ err }, 'GPG key setup failed');
-            await ctx.chat.send(
-              'Failed to initialize GPG keypair: ' +
-                `${err instanceof Error ? err.message : String(err)}\n\n` +
-                'Returning to auth method selection...',
-            );
-            return RESELECT;
-          }
-
-          // Send public key without prefix so it's directly copy-pasteable
-          await ctx.chat.sendRaw(pubKey);
-
-          await ctx.chat.send(
-            'Paste a GPG-encrypted Anthropic API key.\n\n' +
-              '*Step 1.* Import the public key above.\n\n' +
-              'With local GPG:\n' +
-              '```\n' +
-              "gpg --import <<'EOF'\n" +
-              '... (paste the key) ...\n' +
-              'EOF\n' +
-              '```\n\n' +
-              '*Step 2.* Encrypt your API key:\n' +
-              '```\n' +
-              'echo "sk-ant-api..." | gpg --encrypt --armor --recipient nanoclaw\n' +
-              '```\n\n' +
-              "If you don't have GPG installed locally, you can use an online PGP tool " +
-              '(import the public key, encrypt your API key, copy the armored output):\n' +
-              '• https://www.devglan.com/online-tools/pgp-encryption-decryption\n' +
-              '• https://keychainpgp.github.io/\n' +
-              '⚠️ Online tools see your key in plaintext — use only if you trust the site.\n\n' +
-              '*Step 3.* Paste the encrypted output here. Reply "cancel" to abort.',
+          // GPG keys are per-group; CredentialScope→GroupScope values are
+          // identical strings, just branded differently.
+          const apiKey = await promptGpgEncrypt(
+            asGroupScope(ctx.scope),
+            ctx.chat,
+            IDLE_TIMEOUT - 30_000,
+            {
+              hint: 'your Anthropic API key (sk-ant-api…)',
+              validate: (pt) =>
+                pt.startsWith('sk-ant-api')
+                  ? null
+                  : 'Invalid key format — expected sk-ant-api prefix after decryption.',
+            },
           );
-
-          const reply = await ctx.chat.receive(IDLE_TIMEOUT - 30_000);
-          if (!reply || isCancelReply(reply)) return null;
-
-          if (!isPgpMessage(reply)) {
-            await ctx.chat.send(
-              'Expected a GPG-encrypted message (-----BEGIN PGP MESSAGE-----).\n' +
-                'Plaintext keys are not accepted for security reasons.\n\n' +
-                'Returning to auth method selection...',
-            );
-            return RESELECT;
-          }
-
-          let apiKey: string;
-          try {
-            apiKey = gpgDecrypt(ctx.scope, reply.trim());
-          } catch (err) {
-            await ctx.chat.send(
-              'Failed to decrypt PGP message. Make sure you encrypted with the public key shown above.',
-            );
-            logger.error({ scope: ctx.scope, err }, 'GPG decrypt failed');
-            return null;
-          }
-
-          if (!apiKey.startsWith('sk-ant-api')) {
-            await ctx.chat.send(
-              'Invalid key format — expected sk-ant-api prefix after decryption.',
-            );
-            return null;
-          }
+          if (!apiKey) return null;
 
           return { auth_type: 'api_key', token: apiKey, expires_at: null };
         },

@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 
 import {
-  ASSISTANT_NAME,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
@@ -11,16 +10,23 @@ import {
   MAX_MESSAGES_PER_PROMPT,
   POLL_INTERVAL,
   TIMEZONE,
+  triggerToName,
 } from './config.js';
+import { initAuthSystem } from './auth/init.js';
+import { NEW_GROUPS_USE_DEFAULT_CREDENTIALS } from './config.js';
 import {
-  initAuthSystem,
-  NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
-} from './auth/init.js';
+  distributeAllManifests,
+  createBorrowedLink,
+} from './auth/manifest.js';
 import { createAuthGuard } from './auth/guard.js';
-import { createChatIO } from './auth/chat-io.js';
 import { runReauth } from './auth/reauth.js';
-import { getProxy } from './credential-proxy.js';
+import { getProxy } from './auth/credential-proxy.js';
 import { getTokenEngine } from './auth/registry.js';
+import {
+  createChatIO,
+  startInteractionSession,
+  type ChatIODeps,
+} from './interaction/index.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -30,6 +36,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   snapshotContainerFiles,
+  updateAgentRunnerFingerprint,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -37,6 +44,10 @@ import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
+import {
+  startUpdateManager,
+  stopUpdateManager,
+} from './claude-updater/updater.js';
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -72,6 +83,7 @@ import {
   formatMessages,
   formatOutbound,
 } from './router.js';
+import { executeCommand, type CommandContext } from './commands/index.js';
 import { restoreRemoteControl } from './remote-control.js';
 import {
   isSenderAllowed,
@@ -79,7 +91,6 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
-import { executeCommand, type CommandContext } from './commands.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup, scopeOf } from './types.js';
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
@@ -94,6 +105,8 @@ let tokenEngine: TokenSubstituteEngine;
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
+/** O(1) folder→group lookup. Kept in sync with registeredGroups. */
+const folderIndex = new Map<string, RegisteredGroup>();
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
@@ -111,6 +124,8 @@ function loadState(): void {
   }
   sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
+  folderIndex.clear();
+  for (const g of Object.values(registeredGroups)) folderIndex.set(g.folder, g);
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
     'State loaded',
@@ -125,7 +140,7 @@ function getOrRecoverCursor(chatJid: string): string {
   const existing = lastAgentTimestamp[chatJid];
   if (existing) return existing;
 
-  const botTs = getLastBotMessageTimestamp(chatJid, ASSISTANT_NAME);
+  const botTs = getLastBotMessageTimestamp(chatJid);
   if (botTs) {
     logger.info(
       { chatJid, recoveredFrom: botTs },
@@ -155,16 +170,42 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     return;
   }
 
-  // Apply global default for useDefaultCredentials if not explicitly set
-  if (group.containerConfig?.useDefaultCredentials === undefined) {
-    group.containerConfig = {
-      ...group.containerConfig,
-      useDefaultCredentials: NEW_GROUPS_USE_DEFAULT_CREDENTIALS,
-    };
-  }
-
   registeredGroups[jid] = group;
+  folderIndex.set(group.folder, group);
   setRegisteredGroup(jid, group);
+
+  // Auto grant+borrow from main when NEW_GROUPS_USE_DEFAULT_CREDENTIALS is true
+  if (
+    NEW_GROUPS_USE_DEFAULT_CREDENTIALS &&
+    !group.isMain &&
+    !group.containerConfig?.credentialSource
+  ) {
+    const mainEntry = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain,
+    );
+    if (mainEntry) {
+      const [mainJid, mainGroup] = mainEntry;
+      // Add this group to main's grantees
+      const grantees = mainGroup.containerConfig?.credentialGrantees ?? new Set<string>();
+      if (!grantees.has(group.folder)) {
+        grantees.add(group.folder);
+        mainGroup.containerConfig = {
+          ...mainGroup.containerConfig,
+          credentialGrantees: grantees,
+        };
+        setRegisteredGroup(mainJid, mainGroup);
+      }
+      // Set this group's credentialSource to main
+      group.containerConfig = {
+        ...group.containerConfig,
+        credentialSource: mainGroup.folder,
+      };
+      setRegisteredGroup(jid, group);
+      // Distribute manifests and create borrowed symlink
+      distributeAllManifests(mainGroup.folder, group.folder);
+      createBorrowedLink(group.folder, mainGroup.folder);
+    }
+  }
 
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
@@ -180,9 +221,10 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     );
     if (fs.existsSync(templateFile)) {
       let content = fs.readFileSync(templateFile, 'utf-8');
-      if (ASSISTANT_NAME !== 'Andy') {
-        content = content.replace(/^# Andy$/m, `# ${ASSISTANT_NAME}`);
-        content = content.replace(/You are Andy/g, `You are ${ASSISTANT_NAME}`);
+      const groupName = triggerToName(group.trigger);
+      if (groupName !== 'Andy') {
+        content = content.replace(/^# Andy$/m, `# ${groupName}`);
+        content = content.replace(/You are Andy/g, `You are ${groupName}`);
       }
       fs.writeFileSync(groupMdFile, content);
       logger.info({ folder: group.folder }, 'Created CLAUDE.md from template');
@@ -213,19 +255,28 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
     }));
 }
 
+/** O(1) group lookup by folder name. Used by auth resolvers. */
+export function getGroupByFolder(folder: string | import('./auth/oauth-types.js').GroupScope): RegisteredGroup | undefined {
+  return folderIndex.get(folder as string);
+}
+
 /** @internal - exported for testing */
 export function _setRegisteredGroups(
   groups: Record<string, RegisteredGroup>,
 ): void {
   registeredGroups = groups;
+  folderIndex.clear();
+  for (const g of Object.values(groups)) folderIndex.set(g.folder, g);
 }
 
-/** Build ChatIO deps for auth guard — bridges module state to the auth layer. */
-function chatIODeps(channel: Channel, chatJid: string) {
+/** Bridge index.ts state into ChatIODeps for the interaction module. */
+function chatIODeps(
+  channel: Channel,
+  chatJid: string,
+): ChatIODeps {
   return {
     channel,
     chatJid,
-    assistantName: ASSISTANT_NAME,
     getAgentTimestamp: () => lastAgentTimestamp[chatJid] || '',
     setAgentTimestamp: (ts: string) => {
       lastAgentTimestamp[chatJid] = ts;
@@ -242,39 +293,11 @@ function commandContext(
 ): CommandContext {
   return {
     group,
-    tokenEngine: getTokenEngine(),
     chatJid,
     sender: '',
-    isActive: () => queue.isActive(chatJid),
-    hideMessage: (id) => hideMessage(chatJid, id, HIDE_REASON.COMMAND),
-    advanceCursor: (ts) => {
-      lastAgentTimestamp[chatJid] = ts;
-      saveState();
-    },
-    closeStdin: () => queue.closeStdin(chatJid),
-    sendMessage: (text) => channel.sendMessage(chatJid, text),
-    sendRawMessage: (text) => channel.sendMessage(chatJid, text),
-    runReauth: async (providerId: string) => {
-      const chat = createChatIO(chatIODeps(channel, chatJid));
-      await runReauth(
-        scopeOf(group),
-        chat,
-        'User requested auth',
-        providerId,
-        getTokenEngine(),
-      );
-    },
-    runKeySetup: async (providerId: string) => {
-      const chat = createChatIO(chatIODeps(channel, chatJid));
-      const { runInteractiveKeySetup } =
-        await import('./auth/key-management.js');
-      await runInteractiveKeySetup(
-        providerId,
-        scopeOf(group),
-        getTokenEngine(),
-        chat,
-      );
-    },
+    chat: createChatIO(chatIODeps(channel, chatJid)),
+    getContainerName: () => queue.getContainerName(chatJid),
+    stopContainer: () => queue.softStop(chatJid),
   };
 }
 
@@ -294,19 +317,23 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
+  // Start interaction session — must be up before auth guard so the
+  // proxy can push auth interactions to the shared queue/consumer.
+  const session = startInteractionSession(chatJid, chatIODeps(channel, chatJid));
+  try {
+
   const guard = createAuthGuard(
     group,
     getProxy(),
     () => createChatIO(chatIODeps(channel, chatJid)),
-    () => queue.closeStdin(chatJid),
+    () => queue.softStop(chatJid),
+    session,
   );
   const credentialsOk = await guard.start();
 
-  const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
     chatJid,
     getOrRecoverCursor(chatJid),
-    ASSISTANT_NAME,
     MAX_MESSAGES_PER_PROMPT,
   );
 
@@ -323,6 +350,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Decode channel-specific encoding (e.g. Slack entities) for processing
   const decoded = decodeMessages(missedMessages, channel);
 
+  // Check for /command before trigger check — commands work without trigger
+  const cmdCtx = commandContext(channel, chatJid, group);
+  if (await executeCommand(decoded, cmdCtx)) {
+    lastAgentTimestamp[chatJid] =
+      missedMessages[missedMessages.length - 1].timestamp;
+    saveState();
+    return true;
+  }
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
@@ -334,10 +370,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     );
     if (!hasTrigger) return true;
   }
-
-  // Check for /command before invoking the agent
-  const cmdCtx = commandContext(channel, chatJid, group);
-  if (await executeCommand(decoded, cmdCtx)) return true;
 
   const prompt = formatMessages(decoded, TIMEZONE);
 
@@ -352,20 +384,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     { group: group.name, messageCount: missedMessages.length },
     'Processing messages',
   );
-
-  // Track idle timer for closing stdin when agent is idle
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const resetIdleTimer = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      logger.debug(
-        { group: group.name },
-        'Idle timeout, closing container stdin',
-      );
-      queue.closeStdin(chatJid);
-    }, IDLE_TIMEOUT);
-  };
 
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
@@ -387,22 +405,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
-          await guard.chatLock.acquire();
+          await session.chatLock.acquire();
           try {
             await channel.sendMessage(chatJid, text);
           } finally {
-            guard.chatLock.release();
+            session.chatLock.release();
           }
           outputSentToUser = true;
         }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
-        resetIdleTimer();
       } else {
         // Non-text events (tool use, thinking, etc.) — refresh typing indicator
         channel.setTyping?.(chatJid, true)?.catch(() => {});
       }
 
-      queue.notifyIdle(chatJid);
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
       if (result.status === 'error') {
         hadError = true;
       }
@@ -411,17 +429,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   await channel.setTyping?.(chatJid, false);
-  if (idleTimer) clearTimeout(idleTimer);
+  await session.stop();
 
-  // Stop flow consumer, handle auth errors, clean up session context
+  // Handle auth errors, clean up session context
   const authResult = await guard.finish(
     agentResult.status === 'error' || hadError ? agentResult.error : undefined,
   );
 
   if (authResult === 'reauth-failed') return true;
   if (authResult === 'reauth-ok') {
-    // If reauth consumed messages (advanceCursor moved past original), don't retry
-    if (lastAgentTimestamp[chatJid] !== lastOriginalTs) return true;
+    // Reauth hides scripted messages, so always retry the user's original request
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
     return false;
@@ -452,6 +469,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   return true;
+
+  } finally {
+    await session.stop();
+  }
 }
 
 async function runAgent(
@@ -510,14 +531,21 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
-        assistantName: ASSISTANT_NAME,
+        assistantName: triggerToName(group.trigger),
       },
-      (proc, containerName) => {
+      (proc, containerName, controls) => {
         onContainerName?.(containerName);
-        queue.registerProcess(chatJid, proc, containerName, group.folder);
+        queue.registerProcess(
+          chatJid,
+          proc,
+          containerName,
+          group.folder,
+          controls,
+        );
       },
       tokenEngine,
       wrappedOnOutput,
+      () => queue.softStop(chatJid),
     );
 
     if (output.newSessionId) {
@@ -575,11 +603,7 @@ async function startMessageLoop(): Promise<void> {
   while (true) {
     try {
       const jids = Object.keys(registeredGroups);
-      const { messages, newTimestamp } = getNewMessages(
-        jids,
-        lastTimestamp,
-        ASSISTANT_NAME,
-      );
+      const { messages, newTimestamp } = getNewMessages(jids, lastTimestamp);
 
       if (messages.length > 0) {
         logger.info({ count: messages.length }, 'New messages');
@@ -632,14 +656,18 @@ async function startMessageLoop(): Promise<void> {
 
           // Check for /command before piping to container
           const cmdCtx = commandContext(channel, chatJid, group);
-          if (await executeCommand(decodedGroup, cmdCtx)) continue;
+          if (await executeCommand(decodedGroup, cmdCtx)) {
+            lastAgentTimestamp[chatJid] =
+              decodedGroup[decodedGroup.length - 1].timestamp;
+            saveState();
+            continue;
+          }
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
           const allPending = getMessagesSince(
             chatJid,
             getOrRecoverCursor(chatJid),
-            ASSISTANT_NAME,
             MAX_MESSAGES_PER_PROMPT,
           );
           const decodedPending = decodeMessages(allPending, channel);
@@ -683,7 +711,6 @@ function recoverPendingMessages(): void {
     const pending = getMessagesSince(
       chatJid,
       getOrRecoverCursor(chatJid),
-      ASSISTANT_NAME,
       MAX_MESSAGES_PER_PROMPT,
     );
     if (pending.length > 0) {
@@ -704,11 +731,13 @@ function ensureContainerSystemRunning(): void {
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
+  updateAgentRunnerFingerprint();
 
   // Initialize the full auth/credential proxy system (providers, token engine, proxy server).
-  const auth = await initAuthSystem(() => registeredGroups);
+  const auth = await initAuthSystem(() => registeredGroups, getGroupByFolder);
   tokenEngine = auth.tokenEngine;
 
+  await startUpdateManager();
   initDatabase();
   logger.info('Database initialized');
   loadState();
@@ -719,6 +748,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     auth.shutdown();
+    stopUpdateManager();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -780,12 +810,18 @@ async function main(): Promise<void> {
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
-    registeredGroups: () => registeredGroups,
+    getGroupByFolder,
     getSessions: () => sessions,
     queue,
     tokenEngine,
-    onProcess: (groupJid, proc, containerName, groupFolder) =>
-      queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    onProcess: (groupJid, proc, containerName, groupFolder, controls) =>
+      queue.registerProcess(
+        groupJid,
+        proc,
+        containerName,
+        groupFolder,
+        controls,
+      ),
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
@@ -865,6 +901,13 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
+  queue.setOnGroupQueued((chatJid, position) => {
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    channel
+      .sendMessage(chatJid, `Your request is queued (position ${position}).`)
+      .catch(() => {});
+  });
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

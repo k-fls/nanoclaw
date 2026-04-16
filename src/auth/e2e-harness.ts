@@ -19,18 +19,18 @@ import {
   CredentialProxy,
   setUpstreamAgent,
   setProxyInstance,
-} from '../credential-proxy.js';
+} from './credential-proxy.js';
 import {
   setTestUpstreamAgent,
   setTokenFetch,
 } from './universal-oauth-handler.js';
 import {
   TokenSubstituteEngine,
-  PersistentTokenResolver,
+  PersistentCredentialResolver,
 } from './token-substitute.js';
 import { setTokenEngine } from './registry.js';
 import { createHandler } from './universal-oauth-handler.js';
-import { FlowQueue } from './flow-queue.js';
+import { InteractionQueue } from '../interaction/index.js';
 import {
   registerAuthorizationEndpoint,
   registerAuthorizationPattern,
@@ -38,14 +38,14 @@ import {
   type BrowserOpenEvent,
 } from './browser-open-handler.js';
 import type { OAuthProvider, SubstituteConfig } from './oauth-types.js';
-import { asGroupScope } from './oauth-types.js';
+import { asGroupScope, asCredentialScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
 import type { TokenRole } from './token-substitute.js';
 import {
   buildContainerArgs,
   buildVolumeMounts,
   snapshotContainerFiles,
 } from '../container-runner.js';
-import { allocateContainerIP, ensureNetwork } from './container-args.js';
+import { allocateContainerIP, applyCredentialProxyArgs, ensureNetwork } from './container-args.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from '../config.js';
 import {
@@ -245,8 +245,8 @@ export class OAuthE2EHarness {
   mockUpstream: MockUpstream;
   proxy: CredentialProxy;
   tokenEngine: TokenSubstituteEngine;
-  resolver: PersistentTokenResolver;
-  flowQueue: FlowQueue;
+  resolver: PersistentCredentialResolver;
+  flowQueue: InteractionQueue;
   browserOpenEvents: BrowserOpenEvent[] = [];
 
   proxyPort = 0;
@@ -257,11 +257,11 @@ export class OAuthE2EHarness {
   constructor() {
     this.proxyBind = detectProxyBind();
     this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-e2e-'));
-    this.resolver = new PersistentTokenResolver();
+    this.resolver = new PersistentCredentialResolver();
     this.tokenEngine = new TokenSubstituteEngine(this.resolver);
     this.proxy = new CredentialProxy();
     this.mockUpstream = new MockUpstream(this.proxyBind);
-    this.flowQueue = new FlowQueue();
+    this.flowQueue = new InteractionQueue();
   }
 
   async start(): Promise<void> {
@@ -293,21 +293,21 @@ export class OAuthE2EHarness {
     setProxyInstance(this.proxy);
     setTokenEngine(this.tokenEngine);
 
-    // 4. Wire browser-open callback to flow queue
+    // 4. Wire browser-open callback to interaction queue
     setBrowserOpenCallback((event) => {
       this.browserOpenEvents.push(event);
-      const flowId = `${event.providerId}:browser-open`;
+      const interactionId = `${event.providerId}:browser-open`;
       this.flowQueue.push(
         {
-          flowId,
+          interactionId,
           eventType: 'oauth-start',
-          providerId: event.providerId,
+          sourceId: event.providerId,
           eventParam: event.url,
           replyFn: null,
         },
         'xdg-open shim',
       );
-      return flowId;
+      return interactionId;
     });
 
     // 5. Start proxy with MITM (rules must be registered before start for transparent mode log,
@@ -343,7 +343,7 @@ export class OAuthE2EHarness {
       const realHandler = createHandler(provider, rule, this.tokenEngine);
       const mockHost = this.mockUpstream.host;
       const mockPort = () => this.mockUpstream.port;
-      const wrappedHandler: import('../credential-proxy.js').HostHandler = (
+      const wrappedHandler: import('./credential-proxy.js').HostHandler = (
         clientReq,
         clientRes,
         targetHost,
@@ -410,15 +410,37 @@ export class OAuthE2EHarness {
     providerId: string,
     scope: string,
     config: SubstituteConfig,
-    role: TokenRole = 'access',
+    credentialPath: string = CRED_OAUTH,
   ): string {
+    // Store credential in the group's own scope
+    const credScope = asCredentialScope(scope);
+    const { id, nested } = credentialPath.includes('/')
+      ? { id: credentialPath.split('/')[0], nested: credentialPath.split('/')[1] }
+      : { id: credentialPath, nested: undefined };
+
+    if (nested) {
+      // Nested path (e.g. 'oauth/refresh'): read existing credential, add sub-token
+      const existing = this.resolver.resolve(credScope, providerId, id);
+      const cred = existing
+        ? { ...existing }
+        : { value: '', expires_ts: 0, updated_ts: Date.now() };
+      (cred as Record<string, unknown>)[nested] = {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      };
+      this.resolver.store(providerId, credScope, id, cred);
+    } else {
+      this.resolver.store(providerId, credScope, id, {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      });
+    }
+
     const substitute = this.tokenEngine.generateSubstitute(
       realToken,
       providerId,
       {},
       asGroupScope(scope),
       config,
-      role,
+      credentialPath,
     );
     if (!substitute)
       throw new Error(
@@ -464,10 +486,13 @@ export class OAuthE2EHarness {
     const containerArgs = buildContainerArgs(
       volumeMounts,
       containerName,
-      group,
-      this.tokenEngine,
       containerIP,
     );
+    const envFileVars = applyCredentialProxyArgs(containerArgs, group, this.tokenEngine);
+    // In e2e tests, inject env-file vars as Docker -e (no persistent home dir)
+    for (const [k, v] of Object.entries(envFileVars)) {
+      containerArgs.push('-e', `${k}=${v}`);
+    }
 
     // Override PROXY_PORT — buildContainerArgs uses CREDENTIAL_PROXY_PORT from config
     // but our test proxy is on a dynamic port.
@@ -503,22 +528,18 @@ export class OAuthE2EHarness {
     const noopTsc = path.join(this.tmpDir, `tsc-${runId}`);
     fs.writeFileSync(noopTsc, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
-    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
-    containerArgs.splice(
-      imageIdx,
-      0,
-      '-v',
-      `${testScript}:/tmp/dist/index.js`,
-      '-v',
-      `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
+    containerArgs.push(
+      '-v', `${testScript}:/tmp/dist/index.js`,
+      '-v', `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
     );
 
     // Inject extra env vars from test
     for (const [k, v] of Object.entries(env)) {
-      // Insert before the image name (last few args are: --entrypoint '' IMAGE /bin/bash -c ...)
-      const imageIdx = containerArgs.indexOf(CONTAINER_IMAGE);
-      containerArgs.splice(imageIdx, 0, '-e', `${k}=${v}`);
+      containerArgs.push('-e', `${k}=${v}`);
     }
+
+    // Image name must come last — after all -e/-v flags
+    containerArgs.push(CONTAINER_IMAGE);
 
     return new Promise((resolve) => {
       const proc = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
@@ -597,10 +618,13 @@ export class OAuthE2EHarness {
     const containerArgs = buildContainerArgs(
       volumeMounts,
       containerName,
-      group,
-      this.tokenEngine,
       containerIP,
     );
+    const envFileVars = applyCredentialProxyArgs(containerArgs, group, this.tokenEngine);
+    // In e2e tests, inject env-file vars as Docker -e (no persistent home dir)
+    for (const [k, v] of Object.entries(envFileVars)) {
+      containerArgs.push('-e', `${k}=${v}`);
+    }
 
     for (let i = 0; i < containerArgs.length; i++) {
       if (
@@ -622,15 +646,13 @@ export class OAuthE2EHarness {
     const noopTsc = path.join(this.tmpDir, `tsc-${runId}`);
     fs.writeFileSync(noopTsc, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
-    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
-    containerArgs.splice(
-      imageIdx,
-      0,
-      '-v',
-      `${testScript}:/tmp/dist/index.js`,
-      '-v',
-      `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
+    containerArgs.push(
+      '-v', `${testScript}:/tmp/dist/index.js`,
+      '-v', `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
     );
+
+    // Image name must come last
+    containerArgs.push(CONTAINER_IMAGE);
 
     const proc = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -746,7 +768,7 @@ export class OAuthE2EHarness {
     this.mockUpstream.clearRequests();
     this.mockUpstream.clearRoutes();
     this.browserOpenEvents = [];
-    this.flowQueue = new FlowQueue();
+    this.flowQueue = new InteractionQueue();
     // Clear token state to prevent substitute collisions between tests.
     // Uses the same engine instance that handlers captured at registration.
     this.tokenEngine.revokeByScope(asGroupScope('e2e-test'));

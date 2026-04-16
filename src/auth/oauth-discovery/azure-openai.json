@@ -1,0 +1,8 @@
+{
+  "api_base_url": "https://{resource}.openai.azure.com",
+  "_source": "manually researched from official docs (learn.microsoft.com/en-us/azure/ai-services/openai/reference)",
+  "_note": "Azure OpenAI Service. Two auth methods: API key via custom 'api-key' header (NOT Authorization), or Azure AD/Entra ID Bearer token. Each resource has its own subdomain ({resource}.openai.azure.com). Endpoints: /openai/deployments/{deployment-id}/chat/completions etc.",
+  "_auth_method": "api_key",
+  "_auth_header_format": "api-key: {api_key}",
+  "_env_vars": { "AZURE_OPENAI_KEY": "api_key" }
+}

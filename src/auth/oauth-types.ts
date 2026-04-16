@@ -34,9 +34,6 @@ export function asCredentialScope(scope: string): CredentialScope {
   return scope as unknown as CredentialScope;
 }
 
-/** The shared credential scope used by main and groups with useDefaultCredentials. */
-export const DEFAULT_CREDENTIAL_SCOPE: CredentialScope =
-  asCredentialScope('default');
 
 // ---------------------------------------------------------------------------
 // Intercept rules (3-level matching: anchor → host regex → path regex)
@@ -114,6 +111,16 @@ export const DEFAULT_SUBSTITUTE_CONFIG: SubstituteConfig = {
 export const MIN_RANDOM_CHARS = 16;
 
 // ---------------------------------------------------------------------------
+// Well-known credential path constants
+// ---------------------------------------------------------------------------
+
+/** Credential path for OAuth access tokens. */
+export const CRED_OAUTH = 'oauth';
+
+/** Credential path for OAuth refresh tokens (nested under 'oauth'). */
+export const CRED_OAUTH_REFRESH = 'oauth/refresh';
+
+// ---------------------------------------------------------------------------
 // Token substitute mapping (stored by the engine — no credentials)
 // ---------------------------------------------------------------------------
 
@@ -122,18 +129,20 @@ export const MIN_RANDOM_CHARS = 16;
  * Does not carry providerId or scope — those are the map keys above it.
  */
 export interface SubstituteEntry {
-  role: string;
+  /** Path to the token within the keys file, e.g. 'oauth', 'api_key', 'oauth/refresh'. */
+  credentialPath: string;
   scopeAttrs: Record<string, string>;
+  /** Per-entry source scope for borrowed credentials. Absent = owned by this group. */
+  sourceScope?: CredentialScope;
+  /** Env var names this substitute should be published as (e.g. ['GH_TOKEN', 'GITHUB_TOKEN']). Unique. */
+  envNames?: string[];
 }
 
 /**
  * All substitutes for one provider within one group scope.
- * sourceScope tracks cross-scope credential borrowing:
- *   - absent (undefined) = credentials belong to this group's own scope
- *   - present = credentials are borrowed from another scope (e.g. 'default')
+ * Cross-scope borrowing is tracked per-entry via SubstituteEntry.sourceScope.
  */
 export interface ProviderSubstitutes {
-  sourceScope?: CredentialScope;
   substitutes: Map<string, SubstituteEntry>;
 }
 
@@ -155,48 +164,77 @@ export type ScopeAccessCheck = (
  */
 export interface SubstituteMapping {
   providerId: string;
-  role: string;
+  /** Path to the token: 'oauth', 'api_key', 'oauth/refresh', etc. */
+  credentialPath: string;
   scopeAttrs: Record<string, string>;
   credentialScope: CredentialScope;
 }
 
+// ---------------------------------------------------------------------------
+// Credential types
+// ---------------------------------------------------------------------------
+
+export interface AuthToken {
+  value: string; // encrypted on disk and in cache; resolve() decrypts, store() accepts plaintext
+  expires_ts: number; // epoch ms, 0 = no expiry
+  authFields?: Record<string, string>; // captured fields for refresh (client_id, scope, etc.)
+}
+
+/** A stored credential with optional nested refresh token. */
+export interface Credential extends AuthToken {
+  updated_ts: number; // epoch ms
+  /** Nested refresh token — only present for OAuth credentials. */
+  refresh?: {
+    value: string; // encrypted on disk and in cache; resolve() decrypts, store() accepts plaintext
+    expires_ts: number;
+    updated_ts: number;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Credential resolver interface
+// ---------------------------------------------------------------------------
+
 /**
- * Pluggable credential store interface. The engine delegates real-token
- * storage and retrieval to this — it never holds credentials itself.
- * Credentials are keyed by (credentialScope, providerId, role).
+ * Pluggable credential store. Keyed by (credentialScope, providerId, credentialId).
+ * credentialId is a top-level identity ('oauth', 'api_key') — never a path.
+ * The engine handles credentialPath parsing (e.g. 'oauth/refresh') above this layer.
  */
-export interface TokenResolver {
-  /** Store (or update) a real token. */
+export interface CredentialResolver {
+  /** Store or update a credential (hot cache + disk). Accepts plaintext values. */
   store(
-    realToken: string,
     providerId: string,
     credentialScope: CredentialScope,
-    role?: string,
-    expiresTs?: number,
-    authFields?: Record<string, string>,
+    credentialId: string,
+    credential: Credential,
   ): void;
-  /** Retrieve the current real token. Returns null if not found or revoked. */
+
+  /**
+   * Resolve from cache. Returns a Credential with decrypted plaintext values.
+   * Safe to read fields directly or pass back to store() without double-encryption.
+   */
   resolve(
     credentialScope: CredentialScope,
     providerId: string,
-    role: string,
-  ): string | null;
-  /** Remove all tokens for a scope (and optionally a provider). */
-  revoke(credentialScope: CredentialScope, providerId?: string): void;
+    credentialId: string,
+  ): Credential | null;
+
+  /**
+   * Extract a token value from a resolved (plaintext) Credential.
+   * Without subPath: returns credential.value.
+   * With subPath (e.g. 'refresh'): returns the nested sub-token's value.
+   */
+  extractToken(credential: Credential, subPath?: string): string | null;
+
+  /** Delete credential from both cache and disk. */
+  delete(credentialScope: CredentialScope, providerId?: string): void;
 }
+
+/** @deprecated Use CredentialResolver. */
+export type TokenResolver = CredentialResolver;
 
 // ---------------------------------------------------------------------------
 // Refresh strategy for bearer-swap 401/403 handling
 // ---------------------------------------------------------------------------
 
-export type RefreshStrategy =
-  | 'redirect'
-  | 'buffer'
-  | 'passthrough'
-  | 'proactive';
-
-/**
- * Token roles allowed in bearer-swap header resolution and env var provisioning.
- * Refresh tokens are excluded — they only appear in token-exchange requests.
- */
-export const BEARER_SWAP_ROLES = new Set(['access', 'api_key']);
+export type RefreshStrategy = 'redirect' | 'buffer' | 'passthrough';

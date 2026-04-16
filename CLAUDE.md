@@ -21,9 +21,9 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/` | Skills loaded inside agent containers (browser, status, formatting) |
 
-## Secrets / Credentials / Proxy (OneCLI)
+## Credentials / OAuth Proxy
 
-API keys, secret keys, OAuth tokens, and auth credentials are managed by the OneCLI gateway — which handles secret injection into containers at request time, so no keys or tokens are ever passed to containers directly. Run `onecli --help`.
+Credentials are managed by a host-side MITM proxy that swaps format-preserving substitute tokens for real credentials on every request. Containers never see real tokens. 60+ OAuth providers are auto-discovered from JSON files in `src/auth/oauth-discovery/`. Each group has its own encrypted credential scope. See the container agent's CLAUDE.md (`groups/{name}/CLAUDE.md`) for the full architecture explanation visible to agents.
 
 ## Skills
 
@@ -40,7 +40,6 @@ Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) f
 | `/customize` | Adding channels, integrations, changing behavior |
 | `/debug` | Container issues, logs, troubleshooting |
 | `/update-nanoclaw` | Bring upstream NanoClaw updates into a customized install |
-| `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials to it |
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 

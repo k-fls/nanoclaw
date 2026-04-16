@@ -40,5 +40,5 @@
   "claims_parameter_supported": false,
   "request_parameter_supported": false,
   "request_uri_parameter_supported": false,
-  "_well_known_url": "https://www.dropbox.com/.well-known/openid-configuration"
+  "_well_known_url": false
 }

@@ -59,21 +59,30 @@ export const CONTAINER_IMAGE =
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,
+); // 30min
+export const CREDENTIAL_PROXY_PORT = parseInt(
+  process.env.CREDENTIAL_PROXY_PORT || '3001',
+  10,
 );
 export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   process.env.CONTAINER_MAX_OUTPUT_SIZE || '10485760',
   10,
 ); // 10MB default
-export const CREDENTIAL_PROXY_PORT = parseInt(
-  process.env.CREDENTIAL_PROXY_PORT || '3001',
-  10,
-);
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
 );
 export const IPC_POLL_INTERVAL = 1000;
-export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
+export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — no output for this long = stuck container
+export const GRACE_TIMEOUT = parseInt(process.env.GRACE_TIMEOUT || '30000', 10); // 30s — time for container to exit after soft stop before hard kill
+export const EVICTION_TIMEOUT = parseInt(
+  process.env.EVICTION_TIMEOUT || '14400000',
+  10,
+); // 4h — how long an evictable container can sit before auto-stop
+export const IDLE_BEFORE_EVICT = parseInt(
+  process.env.IDLE_BEFORE_EVICT || '600000',
+  10,
+); // 10min — protection period after idle before becoming evictable
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
@@ -88,6 +97,11 @@ export function buildTriggerPattern(trigger: string): RegExp {
 }
 
 export const DEFAULT_TRIGGER = `@${ASSISTANT_NAME}`;
+
+/** Strip the leading "@" from a trigger to get the bot name (e.g. "@Claw" → "Claw"). */
+export function triggerToName(trigger: string): string {
+  return trigger.replace(/^@/, '').trim() || ASSISTANT_NAME;
+}
 
 export function getTriggerPattern(trigger?: string): RegExp {
   const normalizedTrigger = trigger?.trim();
@@ -110,3 +124,38 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+// ── Claude CLI update ──────────────────────────────────────────────
+// CLAUDE_CLI_UPDATE controls container-side CLI updates:
+//   unset / empty  → no updates, use image-baked version
+//   duration (24h) → check for latest at startup, repeat at interval
+//   semver (2.1.92)→ pin to that version, install once at startup
+
+export const CLAUDE_CLI_UPDATE = process.env.CLAUDE_CLI_UPDATE?.trim() || '';
+export const CLAUDE_CLI_DIR = path.join(DATA_DIR, 'claude-cli');
+
+/** Parse CLAUDE_CLI_UPDATE into a typed config. */
+export function parseClaudeCliUpdate(raw: string): {
+  mode: 'off' | 'latest' | 'pinned';
+  intervalMs: number;
+  version: string;
+} {
+  if (!raw) return { mode: 'off', intervalMs: 0, version: '' };
+
+  // Duration: digits followed by h/d/m
+  const durationMatch = raw.match(/^(\d+)\s*(h|d|m)$/i);
+  if (durationMatch) {
+    const n = parseInt(durationMatch[1], 10);
+    const unit = durationMatch[2].toLowerCase();
+    const multiplier = unit === 'h' ? 3600000 : unit === 'd' ? 86400000 : 60000;
+    return { mode: 'latest', intervalMs: n * multiplier, version: '' };
+  }
+
+  // Semver-like: digits and dots
+  if (/^\d+\.\d+(\.\d+)?$/.test(raw)) {
+    return { mode: 'pinned', intervalMs: 0, version: raw };
+  }
+
+  // Unrecognized — treat as off
+  return { mode: 'off', intervalMs: 0, version: '' };
+}

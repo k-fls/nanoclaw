@@ -1,0 +1,8 @@
+{
+  "api_base_url": "https://www.searchapi.io/api",
+  "_source": "manually researched from official docs (www.searchapi.io/docs/google)",
+  "_note": "SearchAPI.io provides a unified search API (Google, Bing, YouTube, etc.). Authentication via query parameter 'api_key' or Authorization: Bearer header. No OAuth2 support.",
+  "_auth_method": "api_key",
+  "_auth_header_format": "Authorization: Bearer {api_key}",
+  "_env_vars": { "SEARCHAPI_KEY": "api_key" }
+}

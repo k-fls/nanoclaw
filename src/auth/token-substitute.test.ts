@@ -1,14 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
 import { muteLogger, restoreLogger } from '../test-helpers.js';
 import {
   TokenSubstituteEngine,
-  PersistentTokenResolver,
+  PersistentCredentialResolver,
 } from './token-substitute.js';
-import type { SubstituteConfig } from './oauth-types.js';
+import { initCredentialStore } from './store.js';
+import type { SubstituteConfig, Credential } from './oauth-types.js';
 import {
   DEFAULT_SUBSTITUTE_CONFIG,
   MIN_RANDOM_CHARS,
+  CRED_OAUTH,
+  CRED_OAUTH_REFRESH,
   asGroupScope,
   asCredentialScope,
 } from './oauth-types.js';
@@ -17,11 +22,12 @@ import {
 // "Token persistence failed" warnings (credential store not initialized in tests).
 describe('TokenSubstituteEngine', () => {
   let engine: TokenSubstituteEngine;
-  let resolver: PersistentTokenResolver;
+  let resolver: PersistentCredentialResolver;
   let logSpies: ReturnType<typeof muteLogger>;
 
   beforeEach(() => {
-    resolver = new PersistentTokenResolver();
+    initCredentialStore();
+    resolver = new PersistentCredentialResolver();
     engine = new TokenSubstituteEngine(resolver);
     logSpies = muteLogger();
   });
@@ -32,6 +38,28 @@ describe('TokenSubstituteEngine', () => {
 
   const defaultAttrs = {};
   const scope = asGroupScope('test-group');
+  const credScope = asCredentialScope('test-group');
+
+  /** Store a credential then generate a substitute. */
+  function storeAndGenerate(
+    real: string,
+    providerId: string,
+    scopeAttrs: Record<string, string>,
+    groupScope: typeof scope,
+    config: SubstituteConfig,
+    credentialPath = CRED_OAUTH,
+  ): string {
+    resolver.store(providerId, asCredentialScope(groupScope as string), credentialPath.split('/')[0], {
+      value: real,
+      expires_ts: 0,
+      updated_ts: Date.now(),
+    });
+    const sub = engine.generateSubstitute(
+      real, providerId, scopeAttrs, groupScope, config, credentialPath,
+    );
+    if (!sub) throw new Error('generateSubstitute returned null');
+    return sub;
+  }
 
   // ── generateSubstitute ─────────────────────────────────────────────
 
@@ -183,30 +211,21 @@ describe('TokenSubstituteEngine', () => {
       ).toBeNull();
     });
 
-    it('stores the real token in the resolver and mapping in the engine', () => {
+    it('resolves the real token when credential is stored first', () => {
       const real = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890ABCDE';
       const config: SubstituteConfig = {
         prefixLen: 14,
         suffixLen: 4,
         delimiters: '-',
       };
-      const sub = engine.generateSubstitute(
-        real,
-        'anthropic',
-        { tenant: 'acme' },
-        scope,
-        config,
-      )!;
+      const sub = storeAndGenerate(real, 'anthropic', { tenant: 'acme' }, scope, config);
 
-      // Engine has the mapping
       const resolved = engine.resolveSubstitute(sub, scope);
       expect(resolved).not.toBeNull();
       expect(resolved!.realToken).toBe(real);
       expect(resolved!.mapping.providerId).toBe('anthropic');
       expect(resolved!.mapping.scopeAttrs).toEqual({ tenant: 'acme' });
       expect(resolved!.mapping.credentialScope).toBe(scope);
-
-      // Resolver has the real token
       expect(resolver.size).toBe(1);
     });
   });
@@ -227,13 +246,7 @@ describe('TokenSubstituteEngine', () => {
     it('isolates substitutes between scopes', () => {
       const config = DEFAULT_SUBSTITUTE_CONFIG;
       const real = 'tok_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
-      const sub = engine.generateSubstitute(
-        real,
-        'test',
-        {},
-        asGroupScope('scope-A'),
-        config,
-      )!;
+      const sub = storeAndGenerate(real, 'test', {}, asGroupScope('scope-A'), config);
 
       expect(
         engine.resolveSubstitute(sub, asGroupScope('scope-A')),
@@ -247,7 +260,7 @@ describe('TokenSubstituteEngine', () => {
       const sub = engine.generateSubstitute(real, 'test', {}, scope, config)!;
 
       // Revoke from resolver directly
-      resolver.revoke(asCredentialScope(scope as string));
+      resolver.delete(asCredentialScope(scope as string));
 
       // Engine still has mapping, but resolver returns null
       expect(engine.resolveSubstitute(sub, scope)).toBeNull();
@@ -261,26 +274,14 @@ describe('TokenSubstituteEngine', () => {
     const real = 'tok_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
 
     it('allows when requiredAttrs is empty', () => {
-      const sub = engine.generateSubstitute(
-        real,
-        'test',
-        { tenant: 'acme' },
-        scope,
-        config,
-      )!;
+      const sub = storeAndGenerate(real, 'test', { tenant: 'acme' }, scope, config);
       const resolved = engine.resolveWithRestriction(sub, scope, {});
       expect(resolved).not.toBeNull();
       expect(resolved!.realToken).toBe(real);
     });
 
     it('allows when attrs match', () => {
-      const sub = engine.generateSubstitute(
-        real,
-        'test',
-        { tenant: 'acme' },
-        scope,
-        config,
-      )!;
+      const sub = storeAndGenerate(real, 'test', { tenant: 'acme' }, scope, config);
       expect(
         engine.resolveWithRestriction(sub, scope, { tenant: 'acme' }),
       ).not.toBeNull();
@@ -300,13 +301,7 @@ describe('TokenSubstituteEngine', () => {
     });
 
     it('allows when entry has attrs but requiredAttrs does not have that key', () => {
-      const sub = engine.generateSubstitute(
-        real,
-        'microsoft',
-        { tenant: 'contoso' },
-        scope,
-        config,
-      )!;
+      const sub = storeAndGenerate(real, 'microsoft', { tenant: 'contoso' }, scope, config);
       expect(engine.resolveWithRestriction(sub, scope, {})).not.toBeNull();
     });
 
@@ -330,74 +325,160 @@ describe('TokenSubstituteEngine', () => {
     });
   });
 
-  // ── PersistentTokenResolver role-based storage ─────────────────────
+  // ── PersistentCredentialResolver role-based storage ─────────────────────
 
-  describe('PersistentTokenResolver roles', () => {
-    it('caches access tokens in memory', () => {
-      resolver.store(
-        'real_access',
-        'provider',
-        asCredentialScope('scope'),
-        'access',
-      );
+  describe('PersistentCredentialResolver', () => {
+    const cred = (value: string): Credential => ({
+      value, expires_ts: 0, updated_ts: Date.now(),
+    });
+
+    it('caches oauth credentials in memory', () => {
+      resolver.store('provider', asCredentialScope('scope'), CRED_OAUTH, cred('real_access'));
       expect(
-        resolver.resolve(asCredentialScope('scope'), 'provider', 'access'),
+        resolver.resolve(asCredentialScope('scope'), 'provider', CRED_OAUTH)?.value,
       ).toBe('real_access');
     });
 
-    it('caches api_key tokens in memory', () => {
-      resolver.store(
-        'sk-ant-api03-key',
-        'provider',
-        asCredentialScope('scope'),
-        'api_key',
-      );
+    it('caches api_key credentials in memory', () => {
+      resolver.store('provider', asCredentialScope('scope'), 'api_key', cred('sk-ant-api03-key'));
       expect(
-        resolver.resolve(asCredentialScope('scope'), 'provider', 'api_key'),
+        resolver.resolve(asCredentialScope('scope'), 'provider', 'api_key')?.value,
       ).toBe('sk-ant-api03-key');
     });
 
-    it('resolves by scope+provider+role', () => {
-      resolver.store(
-        'access_tok',
-        'claude',
-        asCredentialScope('group-a'),
-        'access',
-      );
-      resolver.store(
-        'refresh_tok',
-        'claude',
-        asCredentialScope('group-a'),
-        'refresh',
-      );
-      resolver.store(
-        'access_tok2',
-        'github',
-        asCredentialScope('group-a'),
-        'access',
-      );
+    it('resolves by scope+provider+credentialId', () => {
+      resolver.delete(asCredentialScope('group-a'));
+      resolver.store('claude', asCredentialScope('group-a'), CRED_OAUTH, cred('access_tok'));
+      resolver.store('github', asCredentialScope('group-a'), CRED_OAUTH, cred('access_tok2'));
 
       expect(
-        resolver.resolve(asCredentialScope('group-a'), 'claude', 'access'),
+        resolver.resolve(asCredentialScope('group-a'), 'claude', CRED_OAUTH)?.value,
       ).toBe('access_tok');
-      // refresh tokens are cold (not in hot cache when persistence fails in test)
-      // but without initCredentialStore they fall back to null from disk
       expect(
-        resolver.resolve(asCredentialScope('group-a'), 'github', 'access'),
+        resolver.resolve(asCredentialScope('group-a'), 'github', CRED_OAUTH)?.value,
       ).toBe('access_tok2');
     });
 
     it('returns null for non-existent combination', () => {
-      resolver.store('tok', 'claude', asCredentialScope('group-a'), 'access');
+      resolver.delete(asCredentialScope('group-a'));
+      resolver.delete(asCredentialScope('group-b'));
+      resolver.store('claude', asCredentialScope('group-a'), CRED_OAUTH, cred('tok'));
       expect(
-        resolver.resolve(asCredentialScope('group-a'), 'claude', 'refresh'),
+        resolver.resolve(asCredentialScope('group-a'), 'claude', 'api_key'),
       ).toBeNull();
       expect(
-        resolver.resolve(asCredentialScope('group-b'), 'claude', 'access'),
+        resolver.resolve(asCredentialScope('group-b'), 'claude', CRED_OAUTH),
       ).toBeNull();
       expect(
-        resolver.resolve(asCredentialScope('group-a'), 'github', 'access'),
+        resolver.resolve(asCredentialScope('group-a'), 'github', CRED_OAUTH),
       ).toBeNull();
+    });
+  });
+
+  // ── Cache behavior ────────────────────────────────────────────────
+
+  describe('cache behavior', () => {
+    it('resolve returns plaintext for both value and refresh', () => {
+      const r = new PersistentCredentialResolver();
+      const scope = asCredentialScope('cache-refresh-enc');
+
+      r.store('prov', scope, CRED_OAUTH, {
+        value: 'real_access',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+        refresh: { value: 'real_refresh', expires_ts: 0, updated_ts: Date.now() },
+      });
+
+      const resolved = r.resolve(scope, 'prov', CRED_OAUTH);
+      expect(resolved).not.toBeNull();
+      expect(resolved!.value).toBe('real_access');
+      expect(resolved!.refresh).toBeDefined();
+      expect(resolved!.refresh!.value).toBe('real_refresh');
+      expect(r.extractToken(resolved!, 'refresh')).toBe('real_refresh');
+    });
+
+    it('caches expiry on the credential object', () => {
+      const r = new PersistentCredentialResolver();
+      const scope = asCredentialScope('expiry-test');
+      const expiresTs = Date.now() + 60_000;
+
+      r.store('prov', scope, CRED_OAUTH, {
+        value: 'tok', expires_ts: expiresTs, updated_ts: Date.now(),
+      });
+
+      const cred = r.resolve(scope, 'prov', CRED_OAUTH);
+      expect(cred).not.toBeNull();
+      expect(cred!.expires_ts).toBe(expiresTs);
+    });
+
+    it('round-tripping resolved credential through store does not double-encrypt', () => {
+      const r = new PersistentCredentialResolver();
+      const scope = asCredentialScope('roundtrip-test');
+
+      r.store('prov', scope, CRED_OAUTH, {
+        value: 'access_tok',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+        refresh: { value: 'refresh_tok', expires_ts: 0, updated_ts: Date.now() },
+      });
+
+      // Resolve (plaintext), modify, store again
+      const cred = r.resolve(scope, 'prov', CRED_OAUTH)!;
+      cred.expires_ts = 99999;
+      r.store('prov', scope, CRED_OAUTH, cred);
+
+      // Values must survive the round-trip intact
+      const after = r.resolve(scope, 'prov', CRED_OAUTH)!;
+      expect(after.value).toBe('access_tok');
+      expect(after.refresh!.value).toBe('refresh_tok');
+      expect(after.expires_ts).toBe(99999);
+    });
+  });
+
+  // ── delete ─────────────────────────────────────────────────────────
+
+  describe('delete', () => {
+    it('deletes a specific provider from cache and disk', () => {
+      const r = new PersistentCredentialResolver();
+      const scope = asCredentialScope('del-provider');
+
+      r.store('prov-a', scope, CRED_OAUTH, {
+        value: 'tok_a', expires_ts: 0, updated_ts: Date.now(),
+      });
+      r.store('prov-b', scope, CRED_OAUTH, {
+        value: 'tok_b', expires_ts: 0, updated_ts: Date.now(),
+      });
+
+      r.delete(scope, 'prov-a');
+
+      // prov-a gone from cache and disk (fresh resolver can't find it)
+      expect(r.resolve(scope, 'prov-a', CRED_OAUTH)).toBeNull();
+      const fresh = new PersistentCredentialResolver();
+      expect(fresh.resolve(scope, 'prov-a', CRED_OAUTH)).toBeNull();
+
+      // prov-b still present
+      expect(r.resolve(scope, 'prov-b', CRED_OAUTH)?.value).toBe('tok_b');
+    });
+
+    it('deletes entire scope directory when no providerId given', () => {
+      const r = new PersistentCredentialResolver();
+      const scope = asCredentialScope('del-scope');
+
+      r.store('prov-a', scope, CRED_OAUTH, {
+        value: 'tok_a', expires_ts: 0, updated_ts: Date.now(),
+      });
+      r.store('prov-b', scope, CRED_OAUTH, {
+        value: 'tok_b', expires_ts: 0, updated_ts: Date.now(),
+      });
+
+      r.delete(scope);
+
+      // Both providers gone from cache and disk
+      expect(r.resolve(scope, 'prov-a', CRED_OAUTH)).toBeNull();
+      expect(r.resolve(scope, 'prov-b', CRED_OAUTH)).toBeNull();
+      const fresh = new PersistentCredentialResolver();
+      expect(fresh.resolve(scope, 'prov-a', CRED_OAUTH)).toBeNull();
+      expect(fresh.resolve(scope, 'prov-b', CRED_OAUTH)).toBeNull();
     });
   });
 
@@ -423,43 +504,37 @@ describe('TokenSubstituteEngine', () => {
       // Second call overwrites — engine still works
     });
 
-    it('defaults role to access', () => {
+    it('defaults credentialPath to oauth', () => {
       const config = DEFAULT_SUBSTITUTE_CONFIG;
       const real = 'sk-ant-oat01-abcdefghijklmnopqrstuvwxyz1234567890ab';
 
-      engine.generateSubstitute(real, 'claude', {}, scope, config);
+      const sub = storeAndGenerate(real, 'claude', {}, scope, config);
 
-      expect(
-        resolver.resolve(
-          asCredentialScope(scope as string),
-          'claude',
-          'access',
-        ),
-      ).toBe(real);
+      // Mapping defaults to CRED_OAUTH credentialPath
+      const resolved = engine.resolveSubstitute(sub, scope);
+      expect(resolved).not.toBeNull();
+      expect(resolved!.mapping.credentialPath).toBe(CRED_OAUTH);
     });
   });
 
-  // ── PersistentTokenResolver.update ───────────────────────────────────
+  // ── PersistentCredentialResolver.update ───────────────────────────────────
 
-  describe('PersistentTokenResolver.update', () => {
+  describe('PersistentCredentialResolver.update', () => {
     it('updates the real token for a scope+provider+role', () => {
       const config = DEFAULT_SUBSTITUTE_CONFIG;
       const oldReal = 'tok_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
       const newReal = 'tok_ZZZZZZZZZZZZZZZZZZZZZZZZZZZZzzzzzzzzzzzzzzzzzz';
 
-      const sub = engine.generateSubstitute(
-        oldReal,
-        'test',
-        {},
-        scope,
-        config,
-      )!;
+      const sub = storeAndGenerate(oldReal, 'test', {}, scope, config);
       const resolved = engine.resolveSubstitute(sub, scope)!;
       expect(resolved.realToken).toBe(oldReal);
 
-      // Update via resolver using mapping identity
+      // Update via resolver using mapping identity (credentialId, not full path)
       const m = resolved.mapping;
-      resolver.update(m.credentialScope, m.providerId, m.role as any, newReal);
+      const credentialId = m.credentialPath.split('/')[0];
+      resolver.store(m.providerId, m.credentialScope, credentialId, {
+        value: newReal, expires_ts: 0, updated_ts: Date.now(),
+      });
 
       // Engine now resolves to new token
       expect(engine.resolveSubstitute(sub, scope)!.realToken).toBe(newReal);
@@ -486,7 +561,9 @@ describe('TokenSubstituteEngine', () => {
       )!;
 
       // Update only scope-A's token
-      resolver.update(asCredentialScope('scope-A'), 'test', 'access', newReal);
+      resolver.store('test', asCredentialScope('scope-A'), CRED_OAUTH, {
+        value: newReal, expires_ts: 0, updated_ts: Date.now(),
+      });
 
       expect(
         engine.resolveSubstitute(subA, asGroupScope('scope-A'))!.realToken,
@@ -546,14 +623,11 @@ describe('TokenSubstituteEngine', () => {
       expect(sub).not.toBeNull();
 
       // Simulate restart: new engine, load from persisted refs
-      const resolver2 = new PersistentTokenResolver();
+      const resolver2 = new PersistentCredentialResolver();
       // Store the real token so the new resolver can find it
-      resolver2.store(
-        real,
-        'multi',
-        asCredentialScope(scope as string),
-        'access',
-      );
+      resolver2.store('multi', asCredentialScope(scope as string), CRED_OAUTH, {
+        value: real, expires_ts: 0, updated_ts: Date.now(),
+      });
       const engine2 = new TokenSubstituteEngine(resolver2);
       engine2.loadPersistedRefs(scope, 'multi');
 
@@ -580,20 +654,8 @@ describe('TokenSubstituteEngine', () => {
     const real2 = 'tok_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJ';
 
     it('revokes all substitutes for a scope', () => {
-      engine.generateSubstitute(
-        real1,
-        'a',
-        {},
-        asGroupScope('group-1'),
-        config,
-      );
-      engine.generateSubstitute(
-        real2,
-        'b',
-        {},
-        asGroupScope('group-2'),
-        config,
-      );
+      storeAndGenerate(real1, 'a', {}, asGroupScope('group-1'), config);
+      storeAndGenerate(real2, 'b', {}, asGroupScope('group-2'), config);
       expect(engine.size).toBe(2);
 
       const revoked = engine.revokeByScope(asGroupScope('group-1'));
@@ -619,12 +681,48 @@ describe('TokenSubstituteEngine', () => {
     });
   });
 
+  // ── generateSubstitute does not store credentials ─────────────────
+  // Callers must store via resolver.store() before or after. generateSubstitute
+  // only creates the mapping. This test documents the intended contract.
+
+  describe('generateSubstitute contract', () => {
+    it('does not store the real token — caller must store explicitly', () => {
+      const real = 'tok_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
+      const isolatedScope = asGroupScope('contract-test');
+      const provId = 'contract-prov';
+      const credScope = asCredentialScope(isolatedScope as string);
+
+      // Clean stale disk state from interrupted previous runs
+      resolver.delete(credScope, provId);
+
+      const sub = engine.generateSubstitute(
+        real, provId, {}, isolatedScope, DEFAULT_SUBSTITUTE_CONFIG,
+      )!;
+      expect(sub).not.toBeNull();
+
+      // resolveSubstitute returns null because no credential was stored
+      expect(engine.resolveSubstitute(sub, isolatedScope)).toBeNull();
+
+      // After explicit store, it resolves
+      resolver.store(provId, credScope, CRED_OAUTH, {
+        value: real, expires_ts: 0, updated_ts: Date.now(),
+      });
+      const resolved = engine.resolveSubstitute(sub, isolatedScope);
+      expect(resolved).not.toBeNull();
+      expect(resolved!.realToken).toBe(real);
+
+      // Clean up disk state to avoid polluting future runs
+      resolver.delete(credScope, provId);
+    });
+
+  });
+
   // ── sharedOp ──────────────────────────────────────────────────────
 
   describe('sharedOp', () => {
     it('runs the operation and returns its result', async () => {
       const result = await engine.sharedOp(
-        scope,
+        credScope,
         'provider',
         'refresh',
         async () => 42,
@@ -644,8 +742,8 @@ describe('TokenSubstituteEngine', () => {
         return blocker;
       };
 
-      const p1 = engine.sharedOp(scope, 'provider', 'refresh', fn);
-      const p2 = engine.sharedOp(scope, 'provider', 'refresh', fn);
+      const p1 = engine.sharedOp(credScope, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(credScope, 'provider', 'refresh', fn);
 
       resolve(true);
 
@@ -661,8 +759,8 @@ describe('TokenSubstituteEngine', () => {
         return true;
       };
 
-      await engine.sharedOp(scope, 'provider', 'refresh', fn);
-      await engine.sharedOp(scope, 'provider', 'refresh', fn);
+      await engine.sharedOp(credScope, 'provider', 'refresh', fn);
+      await engine.sharedOp(credScope, 'provider', 'refresh', fn);
 
       expect(callCount).toBe(2);
     });
@@ -679,8 +777,8 @@ describe('TokenSubstituteEngine', () => {
         return blocker;
       };
 
-      const p1 = engine.sharedOp(scope, 'provider', 'refresh', fn);
-      const p2 = engine.sharedOp(scope, 'provider', 'store', fn);
+      const p1 = engine.sharedOp(credScope, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(credScope, 'provider', 'store', fn);
 
       resolve(true);
 
@@ -701,8 +799,8 @@ describe('TokenSubstituteEngine', () => {
         return blocker;
       };
 
-      const p1 = engine.sharedOp(scope, 'providerA', 'refresh', fn);
-      const p2 = engine.sharedOp(scope, 'providerB', 'refresh', fn);
+      const p1 = engine.sharedOp(credScope, 'providerA', 'refresh', fn);
+      const p2 = engine.sharedOp(credScope, 'providerB', 'refresh', fn);
 
       resolve(true);
 
@@ -711,19 +809,9 @@ describe('TokenSubstituteEngine', () => {
       expect(callCount).toBe(2);
     });
 
-    it('coalesces groups that resolve to the same credential scope', async () => {
-      // Both groups configured to use default credentials.
-      // Main group resolves directly to 'default' scope.
-      const groupA = asGroupScope('group-a');
-      const groupB = asGroupScope('group-b');
-      engine.setGroupResolver((folder) => ({
-        name: folder as string,
-        folder: folder as string,
-        trigger: '',
-        added_at: '',
-        isMain: true,
-        containerConfig: { useDefaultCredentials: true },
-      }));
+    it('coalesces calls with the same resolved credential scope', async () => {
+      // Both callers pass the same resolved scope — they coalesce.
+      const sharedScope = asCredentialScope('group-a');
 
       let callCount = 0;
       let resolve!: (v: boolean) => void;
@@ -736,8 +824,8 @@ describe('TokenSubstituteEngine', () => {
         return blocker;
       };
 
-      const p1 = engine.sharedOp(groupA, 'provider', 'refresh', fn);
-      const p2 = engine.sharedOp(groupB, 'provider', 'refresh', fn);
+      const p1 = engine.sharedOp(sharedScope, 'provider', 'refresh', fn);
+      const p2 = engine.sharedOp(sharedScope, 'provider', 'refresh', fn);
 
       resolve(true);
 
@@ -752,8 +840,8 @@ describe('TokenSubstituteEngine', () => {
         resolve = () => reject(new Error('boom'));
       });
 
-      const p1 = engine.sharedOp(scope, 'provider', 'refresh', () => blocker);
-      const p2 = engine.sharedOp(scope, 'provider', 'refresh', () => blocker);
+      const p1 = engine.sharedOp(credScope, 'provider', 'refresh', () => blocker);
+      const p2 = engine.sharedOp(credScope, 'provider', 'refresh', () => blocker);
 
       resolve();
 
@@ -765,18 +853,546 @@ describe('TokenSubstituteEngine', () => {
       let callCount = 0;
 
       await engine
-        .sharedOp(scope, 'provider', 'refresh', async () => {
+        .sharedOp(credScope, 'provider', 'refresh', async () => {
           callCount++;
           throw new Error('fail');
         })
         .catch(() => {});
 
-      await engine.sharedOp(scope, 'provider', 'refresh', async () => {
+      await engine.sharedOp(credScope, 'provider', 'refresh', async () => {
         callCount++;
         return true;
       });
 
       expect(callCount).toBe(2);
+    });
+  });
+
+  // ── Credential info files ─────────────────────────────────────────
+
+  describe('credential info file', () => {
+    let tmpGroupDir: string;
+    let groupFolderMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(async () => {
+      const os = await import('os');
+      tmpGroupDir = fs.mkdtempSync(path.join(os.default.tmpdir(), 'nanoclaw-credinfo-'));
+      const groupFolder = await import('../group-folder.js');
+      groupFolderMock = vi
+        .spyOn(groupFolder, 'resolveGroupFolderPath')
+        .mockReturnValue(tmpGroupDir);
+    });
+
+    afterEach(() => {
+      groupFolderMock.mockRestore();
+      fs.rmSync(tmpGroupDir, { recursive: true, force: true });
+    });
+
+    function providerPath(providerId: string): string {
+      return path.join(tmpGroupDir, 'credentials', 'tokens', `${providerId}.jsonl`);
+    }
+
+    function readLines(providerId: string): Record<string, unknown>[] {
+      return fs.readFileSync(providerPath(providerId), 'utf-8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+    }
+
+    it('writes per-provider JSONL file with substitute', () => {
+      const real = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+      const sub = storeAndGenerate(real, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG);
+
+      const lines = readLines('github');
+      expect(lines).toEqual([
+        { provider: 'github', name: CRED_OAUTH, token: sub },
+      ]);
+    });
+
+    it('excludes nested paths from output', () => {
+      const realAccess = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+      const realRefresh = 'ghp_refreshXXXXXXXXXXXXXXXXXXXXXXXXXXXXab';
+      const sub = storeAndGenerate(realAccess, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, CRED_OAUTH);
+      storeAndGenerate(realRefresh, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, CRED_OAUTH_REFRESH);
+
+      const lines = readLines('github');
+      expect(lines).toEqual([
+        { provider: 'github', name: CRED_OAUTH, token: sub },
+      ]);
+    });
+
+    it('sets borrowed flag when sourceScope is present', () => {
+      const borrowingScope = asGroupScope('borrower');
+      const defaultCredScope = asCredentialScope('default');
+      const real = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+
+      resolver.store('github', defaultCredScope, CRED_OAUTH, {
+        value: real, expires_ts: 0, updated_ts: Date.now(),
+      });
+
+      const sub = engine.generateSubstitute(
+        real, 'github', {}, borrowingScope, DEFAULT_SUBSTITUTE_CONFIG,
+        CRED_OAUTH, defaultCredScope,
+      )!;
+
+      const lines = readLines('github');
+      expect(lines).toEqual([
+        { provider: 'github', name: CRED_OAUTH, token: sub, borrowed: true },
+      ]);
+    });
+
+    it('removes file on revocation', () => {
+      const real = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+      storeAndGenerate(real, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG);
+      expect(fs.existsSync(providerPath('github'))).toBe(true);
+
+      engine.revokeByScope(scope, 'github');
+      expect(fs.existsSync(providerPath('github'))).toBe(false);
+    });
+
+    it('writes separate files per provider', () => {
+      const realOauth = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890ab';
+      const realApiKey = 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const subOauth = storeAndGenerate(realOauth, 'github', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, CRED_OAUTH);
+
+      resolver.store('other', asCredentialScope(scope as string), 'api_key', {
+        value: realApiKey, expires_ts: 0, updated_ts: Date.now(),
+      });
+      const subApiKey = engine.generateSubstitute(
+        realApiKey, 'other', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, 'api_key',
+      )!;
+
+      expect(readLines('github')).toEqual([
+        { provider: 'github', name: CRED_OAUTH, token: subOauth },
+      ]);
+      expect(readLines('other')).toEqual([
+        { provider: 'other', name: 'api_key', token: subApiKey },
+      ]);
+    });
+  });
+
+  // ── resolveCredentialScope with per-key borrowing ─────────────────
+
+  describe('resolveCredentialScope (per-key)', () => {
+    it('returns own scope when group has its own key for that credentialPath', () => {
+      const groupA = asGroupScope('own-keys-grp');
+      engine.setGroupResolver(() => ({
+        name: 'Own',
+        folder: 'own-keys-grp',
+        trigger: '',
+        added_at: '',
+      }));
+
+      resolver.store('claude', asCredentialScope('own-keys-grp'), CRED_OAUTH, {
+        value: 'tok_own_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.resolveCredentialScope(groupA, 'claude', CRED_OAUTH)).toBe(
+        asCredentialScope('own-keys-grp'),
+      );
+    });
+
+    it('falls back to credentialSource for a key the group does not own', () => {
+      const borrower = asGroupScope('borrower-grp');
+      engine.setGroupResolver((folder) => {
+        if (folder === 'borrower-grp') {
+          return {
+            name: 'Borrower',
+            folder: 'borrower-grp',
+            trigger: '',
+            added_at: '',
+            containerConfig: { credentialSource: 'source-grp' },
+          };
+        }
+        return undefined;
+      });
+
+      // No keys in borrower's own scope — only in source
+      resolver.store('claude', asCredentialScope('source-grp'), CRED_OAUTH, {
+        value: 'tok_source_xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.resolveCredentialScope(borrower, 'claude', CRED_OAUTH)).toBe(
+        asCredentialScope('source-grp'),
+      );
+    });
+
+    it('prefers own scope over credentialSource when own has the key', () => {
+      const groupX = asGroupScope('both-grp');
+      engine.setGroupResolver(() => ({
+        name: 'Both',
+        folder: 'both-grp',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'shared-src' },
+      }));
+
+      resolver.store('claude', asCredentialScope('both-grp'), CRED_OAUTH, {
+        value: 'tok_own_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+      resolver.store('claude', asCredentialScope('shared-src'), CRED_OAUTH, {
+        value: 'tok_shared_xxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.resolveCredentialScope(groupX, 'claude', CRED_OAUTH)).toBe(
+        asCredentialScope('both-grp'),
+      );
+    });
+
+    it('returns own scope when credentialSource has no key either', () => {
+      const empty = asGroupScope('empty-borrow');
+      engine.setGroupResolver(() => ({
+        name: 'Empty',
+        folder: 'empty-borrow',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'also-empty' },
+      }));
+
+      // Neither scope has keys
+      expect(engine.resolveCredentialScope(empty, 'claude', CRED_OAUTH)).toBe(
+        asCredentialScope('empty-borrow'),
+      );
+    });
+
+    it('borrows oauth from source but uses own api_key (per-key)', () => {
+      const group = asGroupScope('mixed-grp');
+      engine.setGroupResolver(() => ({
+        name: 'Mixed',
+        folder: 'mixed-grp',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'mixed-src' },
+      }));
+
+      // Group owns api_key
+      resolver.store('claude', asCredentialScope('mixed-grp'), 'api_key', {
+        value: 'sk-ant-api00-xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+      // Source owns oauth
+      resolver.store('claude', asCredentialScope('mixed-src'), CRED_OAUTH, {
+        value: 'tok_src_oauth_xxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.resolveCredentialScope(group, 'claude', 'api_key')).toBe(
+        asCredentialScope('mixed-grp'),
+      );
+      expect(engine.resolveCredentialScope(group, 'claude', CRED_OAUTH)).toBe(
+        asCredentialScope('mixed-src'),
+      );
+    });
+  });
+
+  // ── hasKeyInScope ─────────────────────────────────────────────────
+
+  describe('hasKeyInScope', () => {
+    it('finds credentials through resolver', () => {
+      const credScope = asCredentialScope('has-key-scope');
+      resolver.store('claude', credScope, CRED_OAUTH, {
+        value: 'tok_borrowed_xxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      expect(engine.hasKeyInScope(credScope, 'claude', CRED_OAUTH)).toBe(true);
+      expect(engine.hasKeyInScope(credScope, 'claude', 'api_key')).toBe(false);
+    });
+  });
+
+  // ── revokeByScope with borrowed credentials ────────────────────────
+
+  describe('revokeByScope with borrowed credentials', () => {
+    it('does not delete keys from source scope (non-writable)', () => {
+      const borrower = asGroupScope('revoke-borrow');
+      const sourceCredScope = asCredentialScope('revoke-source');
+      const real = 'tok_borrowed_revoke_xxxxxxxxxxxxxxxxxxxx';
+
+      engine.setGroupResolver((folder) => {
+        if (folder === 'revoke-borrow') {
+          return {
+            name: 'Borrower',
+            folder: 'revoke-borrow',
+            trigger: '',
+            added_at: '',
+            containerConfig: { credentialSource: 'revoke-source' },
+          };
+        }
+        return undefined;
+      });
+
+      // Store credentials in source scope
+      resolver.store('claude', sourceCredScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      // Generate substitute with sourceScope (borrowed)
+      engine.generateSubstitute(
+        real, 'claude', {}, borrower, DEFAULT_SUBSTITUTE_CONFIG,
+        CRED_OAUTH, sourceCredScope,
+      );
+      expect(engine.size).toBe(1);
+
+      // Revoke borrower's substitutes
+      const revoked = engine.revokeByScope(borrower, 'claude');
+      expect(revoked).toBe(1);
+      expect(engine.size).toBe(0);
+
+      // Source credentials should still exist
+      expect(
+        resolver.resolve(sourceCredScope, 'claude', CRED_OAUTH),
+      ).not.toBeNull();
+    });
+
+    it('deletes keys from own scope (writable)', () => {
+      const owner = asGroupScope('revoke-own');
+      const ownCredScope = asCredentialScope('revoke-own');
+      const real = 'tok_owned_revoke_xxxxxxxxxxxxxxxxxxxxxxx';
+
+      engine.setGroupResolver(() => ({
+        name: 'Owner',
+        folder: 'revoke-own',
+        trigger: '',
+        added_at: '',
+      }));
+
+      resolver.store('claude', ownCredScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      storeAndGenerate(real, 'claude', {}, owner, DEFAULT_SUBSTITUTE_CONFIG);
+      expect(engine.size).toBe(1);
+
+      engine.revokeByScope(owner, 'claude');
+      expect(engine.size).toBe(0);
+
+      // Own credentials should be deleted
+      expect(
+        resolver.resolve(ownCredScope, 'claude', CRED_OAUTH),
+      ).toBeNull();
+    });
+  });
+
+  // ── getOrCreateSubstitute with borrowing ───────────────────────────
+
+  describe('getOrCreateSubstitute with borrowing', () => {
+    it('generates substitute from source scope when borrowing', () => {
+      const borrower = asGroupScope('orcreate-borrow');
+      const sourceCredScope = asCredentialScope('orcreate-source');
+      const real = 'tok_orcreate_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+
+      engine.setGroupResolver((folder) => {
+        if (folder === 'orcreate-borrow') {
+          return {
+            name: 'Borrower',
+            folder: 'orcreate-borrow',
+            trigger: '',
+            added_at: '',
+            containerConfig: { credentialSource: 'orcreate-source' },
+          };
+        }
+        return undefined;
+      });
+
+      resolver.store('claude', sourceCredScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      const sub = engine.getOrCreateSubstitute(
+        'claude', {}, borrower, DEFAULT_SUBSTITUTE_CONFIG,
+      );
+      expect(sub).not.toBeNull();
+
+      // The substitute should resolve to the source's real token
+      const resolved = engine.resolveSubstitute(sub!, borrower);
+      expect(resolved).not.toBeNull();
+      expect(resolved!.realToken).toBe(real);
+    });
+
+    it('returns null when neither own nor source has credentials', () => {
+      const empty = asGroupScope('orcreate-empty');
+
+      engine.setGroupResolver(() => ({
+        name: 'Empty',
+        folder: 'orcreate-empty',
+        trigger: '',
+        added_at: '',
+        containerConfig: { credentialSource: 'nowhere' },
+      }));
+
+      const sub = engine.getOrCreateSubstitute(
+        'claude', {}, empty, DEFAULT_SUBSTITUTE_CONFIG,
+      );
+      expect(sub).toBeNull();
+    });
+  });
+
+  // ── envNames ──────────────────────────────────────────────────────
+
+  describe('envNames', () => {
+    const envScope = asGroupScope('env-scope');
+    const envCredScope = asCredentialScope('env-scope');
+    const envConfig: SubstituteConfig = { prefixLen: 4, suffixLen: 4, delimiters: '-' };
+
+    function storeToken(providerId: string): void {
+      resolver.store(providerId, envCredScope, CRED_OAUTH, {
+        value: 'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+    }
+
+    it('stores envNames on generateSubstitute', () => {
+      storeToken('github');
+      const sub = engine.generateSubstitute(
+        'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'github', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        ['GH_TOKEN', 'GITHUB_TOKEN'],
+      );
+      expect(sub).not.toBeNull();
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.GH_TOKEN).toBe(sub);
+      expect(vars.GITHUB_TOKEN).toBe(sub);
+    });
+
+    it('deduplicates envNames on generateSubstitute', () => {
+      storeToken('dedup-gen');
+      const sub = engine.generateSubstitute(
+        'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'dedup-gen', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        ['MY_TOKEN', 'MY_TOKEN', 'MY_TOKEN'],
+      );
+      expect(sub).not.toBeNull();
+
+      const vars = engine.collectEnvVars(envScope);
+      // Only one entry for MY_TOKEN
+      expect(Object.keys(vars).filter(k => k === 'MY_TOKEN')).toHaveLength(1);
+    });
+
+    it('getOrCreateSubstitute passes envNames to new substitutes', () => {
+      storeToken('orcreate-env');
+      const sub = engine.getOrCreateSubstitute(
+        'orcreate-env', {}, envScope, envConfig, CRED_OAUTH,
+        ['MY_VAR'],
+      );
+      expect(sub).not.toBeNull();
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.MY_VAR).toBe(sub);
+    });
+
+    it('getOrCreateSubstitute merges envNames into existing substitutes', () => {
+      storeToken('merge-env');
+      const sub1 = engine.getOrCreateSubstitute(
+        'merge-env', {}, envScope, envConfig, CRED_OAUTH,
+        ['FIRST_VAR'],
+      );
+      expect(sub1).not.toBeNull();
+
+      // Call again with different envNames — should merge
+      const sub2 = engine.getOrCreateSubstitute(
+        'merge-env', {}, envScope, envConfig, CRED_OAUTH,
+        ['SECOND_VAR'],
+      );
+      expect(sub2).toBe(sub1); // same substitute
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.FIRST_VAR).toBe(sub1);
+      expect(vars.SECOND_VAR).toBe(sub1);
+    });
+
+    it('mergeEnvNames adds new names without duplicating', () => {
+      storeToken('merge-dedup');
+      const sub = engine.getOrCreateSubstitute(
+        'merge-dedup', {}, envScope, envConfig, CRED_OAUTH,
+        ['EXISTING'],
+      );
+      expect(sub).not.toBeNull();
+
+      engine.mergeEnvNames(envScope, 'merge-dedup', sub!, ['EXISTING', 'NEW_ONE']);
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.EXISTING).toBe(sub);
+      expect(vars.NEW_ONE).toBe(sub);
+    });
+
+    it('mergeEnvNames produces sorted output regardless of insertion order', () => {
+      storeToken('merge-sort');
+      const sub = engine.getOrCreateSubstitute(
+        'merge-sort', {}, envScope, envConfig, CRED_OAUTH,
+        ['ZEBRA', 'ALPHA'],
+      );
+      expect(sub).not.toBeNull();
+
+      engine.mergeEnvNames(envScope, 'merge-sort', sub!, ['MIDDLE', 'BETA']);
+
+      // Access the entry's envNames directly via collectEnvVars order isn't enough —
+      // we need to verify the underlying array. Use getSubstitute + collectEnvVars.
+      const ps = (engine as any).scopes.get(envScope)?.get('merge-sort');
+      const entry = ps?.substitutes.get(sub!);
+      expect(entry.envNames).toEqual(['ALPHA', 'BETA', 'MIDDLE', 'ZEBRA']);
+    });
+
+    it('mergeEnvNames is a no-op for unknown substitute', () => {
+      // Should not throw
+      engine.mergeEnvNames(envScope, 'nonexistent', 'fake_sub', ['FOO']);
+    });
+
+    it('collectEnvVars returns empty for scope with no substitutes', () => {
+      const vars = engine.collectEnvVars(asGroupScope('empty-env'));
+      expect(vars).toEqual({});
+    });
+
+    it('collectEnvVars aggregates across providers', () => {
+      storeToken('provider-a');
+      resolver.store('provider-b', envCredScope, CRED_OAUTH, {
+        value: 'tok_env_bbbb_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      const subA = engine.generateSubstitute(
+        'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'provider-a', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        ['TOKEN_A'],
+      );
+      const subB = engine.generateSubstitute(
+        'tok_env_bbbb_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'provider-b', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        ['TOKEN_B'],
+      );
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.TOKEN_A).toBe(subA);
+      expect(vars.TOKEN_B).toBe(subB);
+    });
+
+    it('omits entries without envNames from collectEnvVars', () => {
+      storeToken('no-env');
+      engine.generateSubstitute(
+        'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'no-env', {}, envScope, envConfig, CRED_OAUTH,
+      );
+      // No envNames set
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(Object.keys(vars)).toHaveLength(0);
     });
   });
 });

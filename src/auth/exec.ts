@@ -19,7 +19,7 @@ import {
   stopContainer,
 } from '../container-runtime.js';
 import { getSnapshotDir } from '../container-runner.js';
-import { getProxy } from '../credential-proxy.js';
+import { getProxy } from './credential-proxy.js';
 import {
   allocateContainerIP,
   applyTransparentProxyArgs,

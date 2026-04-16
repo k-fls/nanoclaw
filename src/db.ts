@@ -116,7 +116,7 @@ function createSchema(database: Database.Database): void {
   }
 
   // Add hide_reason column if it doesn't exist (migration for existing DBs)
-  // 0 = visible, 1 = flow/scripted message
+  // 0 = visible, 1 = flow/scripted message, 2 = command
   try {
     database.exec(
       `ALTER TABLE messages ADD COLUMN hide_reason INTEGER DEFAULT 0`,
@@ -164,6 +164,17 @@ function createSchema(database: Database.Database): void {
     database.exec(`ALTER TABLE messages ADD COLUMN attachments TEXT`);
   } catch {
     /* column already exists */
+  }
+
+  // Add reply context columns if they don't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`);
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN reply_to_message_content TEXT`,
+    );
+    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`);
+  } catch {
+    /* columns already exist */
   }
 }
 
@@ -293,7 +304,7 @@ export function setLastGroupSync(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, attachments, reply_to_message_id, reply_to_message_content, reply_to_sender_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -304,6 +315,9 @@ export function storeMessage(msg: NewMessage): void {
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
     msg.attachments ? JSON.stringify(msg.attachments) : null,
+    msg.reply_to_message_id ?? null,
+    msg.reply_to_message_content ?? null,
+    msg.reply_to_sender_name ?? null,
   );
 }
 
@@ -358,22 +372,18 @@ export function hideMessage(
 export function getNewMessages(
   jids: string[],
   lastTimestamp: string,
-  botPrefix: string,
   limit: number = 200,
 ): { messages: NewMessage[]; newTimestamp: string } {
   if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
 
   const placeholders = jids.map(() => '?').join(',');
-  // Filter bot messages using both the is_bot_message flag AND the content
-  // prefix as a backstop for messages written before the migration ran.
-  // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, attachments
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, attachments,
+             reply_to_message_id, reply_to_message_content, reply_to_sender_name
       FROM messages
       WHERE timestamp > ? AND chat_jid IN (${placeholders})
         AND is_bot_message = 0 AND hide_reason = 0
-        AND content NOT LIKE ?
         AND content != '' AND content IS NOT NULL
       ORDER BY timestamp DESC
       LIMIT ?
@@ -382,7 +392,7 @@ export function getNewMessages(
 
   const rows = db
     .prepare(sql)
-    .all(lastTimestamp, ...jids, `${botPrefix}:%`, limit) as (NewMessage & {
+    .all(lastTimestamp, ...jids, limit) as (NewMessage & {
     attachments?: string;
   })[];
 
@@ -405,19 +415,15 @@ export function getNewMessages(
 export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,
-  botPrefix: string,
   limit: number = 200,
 ): NewMessage[] {
-  // Filter bot messages using both the is_bot_message flag AND the content
-  // prefix as a backstop for messages written before the migration ran.
-  // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, attachments
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, attachments,
+             reply_to_message_id, reply_to_message_content, reply_to_sender_name
       FROM messages
       WHERE chat_jid = ? AND timestamp > ?
         AND is_bot_message = 0 AND hide_reason = 0
-        AND content NOT LIKE ?
         AND content != '' AND content IS NOT NULL
       ORDER BY timestamp DESC
       LIMIT ?
@@ -425,7 +431,7 @@ export function getMessagesSince(
   `;
   const rows = db
     .prepare(sql)
-    .all(chatJid, sinceTimestamp, `${botPrefix}:%`, limit) as (NewMessage & {
+    .all(chatJid, sinceTimestamp, limit) as (NewMessage & {
     attachments?: string;
   })[];
   return rows.map((row) => ({
@@ -439,14 +445,13 @@ export function getMessagesSince(
 
 export function getLastBotMessageTimestamp(
   chatJid: string,
-  botPrefix: string,
 ): string | undefined {
   const row = db
     .prepare(
       `SELECT MAX(timestamp) as ts FROM messages
-       WHERE chat_jid = ? AND (is_bot_message = 1 OR content LIKE ?)`,
+       WHERE chat_jid = ? AND is_bot_message = 1`,
     )
-    .get(chatJid, `${botPrefix}:%`) as { ts: string | null } | undefined;
+    .get(chatJid) as { ts: string | null } | undefined;
   return row?.ts ?? undefined;
 }
 
@@ -640,6 +645,16 @@ export function getAllSessions(): Record<string, string> {
 
 // --- Registered group accessors ---
 
+import type { ContainerConfig } from './types.js';
+
+/** Hydrate Set fields after JSON.parse (credentialGrantees: array → Set). */
+function hydrateContainerConfig(raw: ContainerConfig): ContainerConfig {
+  if (Array.isArray(raw.credentialGrantees)) {
+    raw.credentialGrantees = new Set(raw.credentialGrantees as unknown as string[]);
+  }
+  return raw;
+}
+
 export function getRegisteredGroup(
   jid: string,
 ): (RegisteredGroup & { jid: string }) | undefined {
@@ -672,7 +687,7 @@ export function getRegisteredGroup(
     trigger: row.trigger_pattern,
     added_at: row.added_at,
     containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
+      ? hydrateContainerConfig(JSON.parse(row.container_config))
       : undefined,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
@@ -693,7 +708,9 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.folder,
     group.trigger,
     group.added_at,
-    group.containerConfig ? JSON.stringify(group.containerConfig) : null,
+    group.containerConfig ? JSON.stringify(group.containerConfig, (_k, v) =>
+      v instanceof Set ? [...v].sort() : v,
+    ) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     group.isMain ? 1 : 0,
   );
@@ -725,7 +742,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       trigger: row.trigger_pattern,
       added_at: row.added_at,
       containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
+        ? hydrateContainerConfig(JSON.parse(row.container_config))
         : undefined,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,

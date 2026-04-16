@@ -30,7 +30,8 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
-  useDefaultCredentials?: boolean; // Default: true — allow fallback to default scope credentials
+  credentialSource?: string; // folder name of the group to borrow credentials from (borrower side)
+  credentialGrantees?: Set<string>; // folder names of groups granted access to this group's credentials (grantor side)
 }
 
 export interface RegisteredGroup {
@@ -60,6 +61,10 @@ export interface NewMessage {
   is_from_me?: boolean;
   is_bot_message?: boolean;
   attachments?: MediaAttachment[];
+  thread_id?: string;
+  reply_to_message_id?: string;
+  reply_to_message_content?: string;
+  reply_to_sender_name?: string;
 }
 
 export interface MediaAttachment {

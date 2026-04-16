@@ -5,12 +5,16 @@
  * Lives as a local variable in handleMessages — outlives the container
  * (reauth runs after container death, before handleMessages returns).
  *
+ * The interaction queue and status registry are owned by the interaction
+ * session — the context holds references so auth code and the credential
+ * proxy can push entries and serve SSE endpoints.
+ *
  * The proxy's containerIpToScope mapping is a separate concern with a separate
  * lifetime. The auth error callback bridges them: bearer-swap resolves scope
  * from container IP, then looks up this context's callback.
  */
-import { FlowQueue } from './flow-queue.js';
-import { FlowStatusRegistry } from './flow-status.js';
+import type { InteractionQueue } from '../interaction/index.js';
+import type { InteractionStatusRegistry } from '../interaction/index.js';
 import { PendingAuthErrors } from './pending-auth-errors.js';
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -37,11 +41,11 @@ export interface ContainerSessionContext {
   /** Pending auth errors tracker — wires proxy to auth guard. */
   pendingErrors: PendingAuthErrors;
 
-  /** Flow queue for this session. */
-  flowQueue: FlowQueue;
+  /** Interaction queue — owned by the interaction session. */
+  interactionQueue: InteractionQueue;
 
-  /** Status registry for SSE endpoints. */
-  statusRegistry: FlowStatusRegistry;
+  /** Status registry — owned by the interaction session; used by proxy for SSE. */
+  statusRegistry: InteractionStatusRegistry;
 
   /**
    * Auth error callback — called by bearer-swap handler on 401/403
@@ -56,21 +60,18 @@ export interface ContainerSessionContext {
  * @param scope The group's credential scope
  * @param extractRequestId Provider-specific function to extract request ID from upstream error body.
  *                          Returns null if the body doesn't contain a recognizable ID.
+ * @param interactionQueue Queue from the interaction session.
+ * @param statusRegistry Status registry from the interaction session.
  */
 export function createSessionContext(
   scope: string,
   extractRequestId: (responseBody: string) => string | null,
+  interactionQueue: InteractionQueue,
+  statusRegistry: InteractionStatusRegistry,
 ): ContainerSessionContext {
   const pendingErrors = new PendingAuthErrors();
-  const flowQueue = new FlowQueue();
-  const statusRegistry = new FlowStatusRegistry();
 
-  // Wire queue mutations to status registry
-  flowQueue.onMutation((flowId, eventType, event, reason) => {
-    statusRegistry.emit(flowId, eventType, event, reason);
-  });
-
-  const onAuthError: AuthErrorCallback = (responseBody, statusCode) => {
+  const onAuthError: AuthErrorCallback = (responseBody, _statusCode) => {
     const requestId = extractRequestId(responseBody);
     if (requestId) {
       pendingErrors.record(requestId);
@@ -81,7 +82,7 @@ export function createSessionContext(
     scope,
     containerName: '',
     pendingErrors,
-    flowQueue,
+    interactionQueue,
     statusRegistry,
     onAuthError,
   };

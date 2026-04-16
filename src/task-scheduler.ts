@@ -2,7 +2,7 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { SCHEDULER_POLL_INTERVAL, TIMEZONE, triggerToName } from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -64,7 +64,7 @@ export function computeNextRun(task: ScheduledTask): string | null {
 }
 
 export interface SchedulerDependencies {
-  registeredGroups: () => Record<string, RegisteredGroup>;
+  getGroupByFolder: (folder: string) => RegisteredGroup | undefined;
   getSessions: () => Record<string, string>;
   queue: GroupQueue;
   tokenEngine: TokenSubstituteEngine;
@@ -73,6 +73,7 @@ export interface SchedulerDependencies {
     proc: ChildProcess,
     containerName: string,
     groupFolder: string,
+    controls?: { clearIdleTimeout: () => void; resetIdleTimeout: () => void },
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
@@ -110,10 +111,7 @@ async function runTask(
     'Running scheduled task',
   );
 
-  const groups = deps.registeredGroups();
-  const group = Object.values(groups).find(
-    (g) => g.folder === task.group_folder,
-  );
+  const group = deps.getGroupByFolder(task.group_folder);
 
   if (!group) {
     logger.error(
@@ -167,7 +165,7 @@ async function runTask(
     if (closeTimer) return; // already scheduled
     closeTimer = setTimeout(() => {
       logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
+      deps.queue.softStop(task.chat_jid);
     }, TASK_CLOSE_DELAY_MS);
   };
 
@@ -181,11 +179,17 @@ async function runTask(
         chatJid: task.chat_jid,
         isMain,
         isScheduledTask: true,
-        assistantName: ASSISTANT_NAME,
+        assistantName: triggerToName(group.trigger),
         script: task.script || undefined,
       },
-      (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+      (proc, containerName, controls) =>
+        deps.onProcess(
+          task.chat_jid,
+          proc,
+          containerName,
+          task.group_folder,
+          controls,
+        ),
       deps.tokenEngine,
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
@@ -202,6 +206,7 @@ async function runTask(
           error = streamedOutput.error || 'Unknown error';
         }
       },
+      () => deps.queue.softStop(task.chat_jid),
     );
 
     if (closeTimer) clearTimeout(closeTimer);

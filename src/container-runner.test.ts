@@ -8,6 +8,7 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 // Mock config
 vi.mock('./config.js', () => ({
+  CLAUDE_CLI_DIR: '/tmp/nanoclaw-test-cli',
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000, // 30min
@@ -62,13 +63,21 @@ vi.mock('./container-runtime.js', () => ({
 }));
 
 // Mock credential-proxy — provide a minimal proxy instance
-vi.mock('./credential-proxy.js', () => ({
+vi.mock('./auth/credential-proxy.js', () => ({
   getProxy: vi.fn(() => ({
-    detectAuthMode: vi.fn(() => 'api-key'),
     hasContainerIP: vi.fn(() => false),
     registerContainerIP: vi.fn(),
     unregisterContainerIP: vi.fn(),
   })),
+}));
+
+// Mock claude-updater
+vi.mock('./claude-updater/updater.js', () => ({
+  cliLock: {
+    acquireShared: vi.fn(async () => {}),
+    releaseShared: vi.fn(),
+  },
+  getClaudeCliPackageDir: vi.fn(() => null),
 }));
 
 // Create a controllable fake ChildProcess

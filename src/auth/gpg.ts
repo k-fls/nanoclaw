@@ -1,102 +1,177 @@
 /**
- * Per-group GPG key management for secure credential exchange via chat.
+ * Per-group GPG key management — thin wrapper over src/crypto/gpg.
  *
- * Each group (scope) gets its own GPG homedir at
- * ~/.config/nanoclaw/credentials/{scope}/.gnupg/
- * with an auto-generated keypair. The public key is shown to the user
- * so they can encrypt secrets locally before pasting into chat.
+ * Re-exports the scope-only convenience API after binding the base
+ * directory to ~/.config/nanoclaw/credentials/. Callers that already
+ * import from this file (ensureGpgKey, exportPublicKey, gpgDecrypt,
+ * isPgpMessage, isGpgAvailable) keep working with the same signatures.
+ *
+ * Also provides {@link promptGpgEncrypt} — a reusable chat-based flow
+ * that prints the public key, gives encryption instructions, receives
+ * the encrypted reply, decrypts it, and properly hides/advances the
+ * cursor so the message never leaks to the agent.
  */
-import { execFileSync } from 'child_process';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import crypto from 'crypto';
 
+import { initGpg, gpg, isGpgAvailable, isPgpMessage } from '../crypto/index.js';
+import { CREDENTIALS_DIR } from './store.js';
+import type { ChatIO } from './types.js';
+import type { GroupScope } from './oauth-types.js';
 import { logger } from '../logger.js';
 
-const CONFIG_DIR = path.join(
-  process.env.HOME || os.homedir(),
-  '.config',
-  'nanoclaw',
-);
-const CREDENTIALS_DIR = path.join(CONFIG_DIR, 'credentials');
+export { isGpgAvailable, isPgpMessage, normalizeArmoredBlock } from '../crypto/index.js';
+import { normalizeArmoredBlock } from '../crypto/index.js';
 
-const GPG_BIN = 'gpg';
-const KEY_ID = 'nanoclaw';
+// Eagerly bind the default base dir so callers never need to pass it.
+initGpg(CREDENTIALS_DIR);
 
-function gpgHome(scope: string): string {
-  return path.join(CREDENTIALS_DIR, scope, '.gnupg');
+/** Ensure a GPG keypair exists for the given group scope. Creates one if missing. */
+export function ensureGpgKey(scope: GroupScope): void {
+  gpg.ensure(scope);
 }
 
-/** Check if gpg is available on the host. */
-export function isGpgAvailable(): boolean {
-  try {
-    execFileSync(GPG_BIN, ['--version'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+/** Export the ASCII-armored public key for the given group scope. */
+export function exportPublicKey(scope: GroupScope): string {
+  return gpg.export(scope);
 }
 
-/** Ensure a GPG keypair exists for the given scope. Creates one if missing. */
-export function ensureGpgKey(scope: string): void {
-  const home = gpgHome(scope);
-  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-
-  // Check if key already exists
-  try {
-    const result = execFileSync(
-      GPG_BIN,
-      ['--homedir', home, '--list-keys', KEY_ID],
-      { stdio: 'pipe' },
-    );
-    if (result.length > 0) return;
-  } catch {
-    // Key doesn't exist — generate it
-  }
-
-  const batchConfig = [
-    '%no-protection',
-    'Key-Type: RSA',
-    'Key-Length: 2048',
-    'Subkey-Type: RSA',
-    'Subkey-Length: 2048',
-    `Name-Real: ${KEY_ID}`,
-    `Name-Email: ${scope}@nanoclaw.local`,
-    'Expire-Date: 0',
-    '%commit',
-  ].join('\n');
-
-  execFileSync(GPG_BIN, ['--homedir', home, '--batch', '--gen-key'], {
-    input: batchConfig,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  logger.info({ scope }, 'Generated GPG keypair');
-}
-
-/** Export the ASCII-armored public key for the given scope. */
-export function exportPublicKey(scope: string): string {
-  const home = gpgHome(scope);
-  const result = execFileSync(
-    GPG_BIN,
-    ['--homedir', home, '--armor', '--export', KEY_ID],
-    { stdio: ['pipe', 'pipe', 'pipe'] },
-  );
-  return result.toString('utf-8').trim();
+/**
+ * Build a pgp-encrypt URL with the scope's binary public key embedded.
+ * Format: ?key=<base64url-encoded-binary-key>&hash=<sha256-hex>
+ */
+export function buildPgpEncryptUrl(scope: GroupScope): string {
+  const binaryKey = gpg.exportBinary(scope);
+  const keyParam = binaryKey.toString('base64url');
+  const hashParam = crypto.createHash('sha256').update(binaryKey).digest('hex');
+  return `https://k-fls.github.io/pgp-encrypt/?key=${keyParam}&hash=${hashParam}`;
 }
 
 /** Decrypt a PGP-encrypted message. Returns the plaintext. */
-export function gpgDecrypt(scope: string, ciphertext: string): string {
-  const home = gpgHome(scope);
-  const result = execFileSync(
-    GPG_BIN,
-    ['--homedir', home, '--batch', '--quiet', '--decrypt'],
-    { input: ciphertext, stdio: ['pipe', 'pipe', 'pipe'] },
-  );
-  return result.toString('utf-8').trim();
+export function gpgDecrypt(scope: GroupScope, ciphertext: string): string {
+  return gpg.decrypt(scope, ciphertext);
 }
 
-/** Detect if a string contains a PGP-encrypted message. */
-export function isPgpMessage(text: string): boolean {
-  return text.includes('-----BEGIN PGP MESSAGE-----');
+// ---------------------------------------------------------------------------
+// Format the public key block + encryption instructions for chat output
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the encryption-instructions message. Re-used by both interactive
+ * prompts (which append "reply 0 to abort") and non-interactive error
+ * replies (which just tell the user what to do).
+ *
+ * @param pgpEncryptUrl — pre-built URL with embedded key (from buildPgpEncryptUrl)
+ */
+export function formatGpgInstructions(pgpEncryptUrl: string, hint?: string): string {
+  const what = hint ?? 'your secret';
+  return (
+    `Encrypt ${what}:\n\n` +
+    `*Step 1.* Open ${pgpEncryptUrl}\n` +
+    '*Step 2.* Enter your secret, copy the encrypted output.\n' +
+    '*Step 3.* Paste the encrypted output here.\n\n' +
+    'Alternatively, use your preferred PGP tool — get the public key with */auth-gpg*.'
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Interactive GPG prompt — send key, receive encrypted reply, decrypt
+// ---------------------------------------------------------------------------
+
+export interface GpgPromptOptions {
+  /** Human-readable hint for what the user is encrypting (e.g. "your Todoist API key"). */
+  hint?: string;
+  /** Validate the decrypted plaintext. Return an error string to reject and retry, or null to accept. */
+  validate?: (plaintext: string) => string | null;
+}
+
+/**
+ * Full interactive GPG encrypt-via-chat flow with retry loop:
+ *
+ * 1. Checks GPG availability, ensures keypair for scope
+ * 2. Sends raw public key block (copy-pasteable)
+ * 3. Sends encryption instructions
+ * 4. Loops: receives reply → hides it → validates → decrypts → validates plaintext
+ *    On any error (not PGP, decrypt failure, validation), tells the user and
+ *    waits for another attempt. User sends *0* to abort at any point.
+ * 5. Returns decrypted plaintext on success, null on cancel/timeout/GPG error.
+ *
+ * All paths call hideMessage + advanceCursor so nothing leaks to the agent.
+ */
+export async function promptGpgEncrypt(
+  scope: GroupScope,
+  chat: ChatIO,
+  timeoutMs: number,
+  opts?: GpgPromptOptions,
+): Promise<string | null> {
+  if (!isGpgAvailable()) {
+    await chat.send(
+      'GPG is not installed. ' +
+        'Install it (`apt install gnupg` or `brew install gnupg`) and try again.',
+    );
+    return null;
+  }
+
+  let pgpEncryptUrl: string;
+  try {
+    ensureGpgKey(scope);
+    pgpEncryptUrl = buildPgpEncryptUrl(scope);
+  } catch (err) {
+    logger.warn({ scope, err }, 'GPG key setup failed');
+    await chat.send(
+      'Failed to initialize GPG keypair: ' +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+
+  // Send instructions with embedded key URL + cancel hint
+  const instructions = formatGpgInstructions(pgpEncryptUrl, opts?.hint);
+  await chat.send(instructions + '\n\nReply *0* to abort.');
+
+  // Retry loop — user can keep trying until success or cancel
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const reply = await chat.receive(timeoutMs);
+
+    // Always hide + advance so nothing leaks to the agent
+    if (reply) {
+      chat.hideMessage();
+      chat.advanceCursor();
+    }
+
+    if (!reply || reply.trim() === '0') {
+      await chat.send('Cancelled.');
+      return null;
+    }
+
+    if (!isPgpMessage(reply)) {
+      await chat.send(
+        'Expected a GPG-encrypted message (-----BEGIN PGP MESSAGE-----).\n' +
+          'Plaintext keys are not accepted for security reasons.\n\n' +
+          'Paste the encrypted output, or reply *0* to abort.',
+      );
+      continue;
+    }
+
+    let plaintext: string;
+    try {
+      plaintext = gpgDecrypt(scope, normalizeArmoredBlock(reply)).trim();
+    } catch (err) {
+      logger.error({ scope, err }, 'GPG decrypt failed');
+      await chat.send(
+        'Failed to decrypt. Make sure you encrypted with the public key shown above.\n\n' +
+          'Try again, or reply *0* to abort.',
+      );
+      continue;
+    }
+
+    // Optional caller validation (e.g. "must start with sk-ant-api")
+    const validationError = opts?.validate?.(plaintext) ?? null;
+    if (validationError) {
+      await chat.send(validationError + '\n\nTry again, or reply *0* to abort.');
+      continue;
+    }
+
+    return plaintext;
+  }
 }

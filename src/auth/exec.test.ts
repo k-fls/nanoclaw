@@ -12,6 +12,10 @@ vi.mock('../config.js', () => ({
   TIMEZONE: 'UTC',
 }));
 
+vi.mock('../container-runner.js', () => ({
+  getSnapshotDir: () => '/mock/snapshot',
+}));
+
 vi.mock('../container-runtime.js', () => ({
   CONTAINER_RUNTIME_BIN: 'docker',
   stopContainer: vi.fn(() => 'docker stop'),
@@ -23,7 +27,7 @@ vi.mock('../logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock('../credential-proxy.js', () => ({
+vi.mock('./credential-proxy.js', () => ({
   getProxy: () => ({
     registerContainerIP: vi.fn(),
     unregisterContainerIP: vi.fn(),
