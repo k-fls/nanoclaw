@@ -110,7 +110,7 @@ function startSshdContainer(publicKey: string): {
     [
       '#!/bin/sh',
       'set -e',
-      'apk add --no-cache openssh >/dev/null 2>&1',
+      'apk add --no-cache openssh >/dev/null',
       'adduser -D -s /bin/sh testuser',
       'passwd -u testuser',  // unlock account — locked accounts reject pubkey auth
       'mkdir -p /home/testuser/.ssh',
@@ -142,18 +142,36 @@ function startSshdContainer(publicKey: string): {
     { stdio: 'pipe' },
   );
 
-  // Wait for sshd to be ready
-  let retries = 20;
-  while (retries-- > 0) {
+  // Wait for sshd to be listening on port 22 (not just process existing)
+  let ready = false;
+  for (let i = 0; i < 60; i++) {
     try {
+      // Check container is still running
+      const status = execSync(
+        `${CONTAINER_RUNTIME_BIN} inspect --format='{{.State.Status}}' ${containerName}`,
+        { encoding: 'utf-8', stdio: 'pipe' },
+      ).trim();
+      if (status !== 'running') {
+        const logs = execSync(`${CONTAINER_RUNTIME_BIN} logs ${containerName} 2>&1`, {
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        });
+        throw new Error(`sshd container exited (${status}):\n${logs}`);
+      }
+      // Check sshd is listening
       execSync(
-        `${CONTAINER_RUNTIME_BIN} exec ${containerName} sh -c "pgrep sshd"`,
+        `${CONTAINER_RUNTIME_BIN} exec ${containerName} sh -c "netstat -tlnp 2>/dev/null | grep -q :22"`,
         { stdio: 'pipe', timeout: 2000 },
       );
+      ready = true;
       break;
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('sshd container exited')) throw err;
       execSync('sleep 0.5', { stdio: 'pipe' });
     }
+  }
+  if (!ready) {
+    throw new Error('sshd container never became ready after 30s');
   }
 
   // Get the mapped port
