@@ -44,6 +44,22 @@ const DEFAULT_CONNECT_TIMEOUT = 5;
 const SOCKET_POLL_INTERVAL_MS = 100;
 const SOCKET_POLL_MARGIN_MS = 2000;
 
+/** Whitespace field separator for SSH key lines. */
+const WS = /\s+/;
+
+/** Extract the key-type field (e.g. "ssh-ed25519") from a key line. */
+function keyTypeOf(keyLine: string): string {
+  return keyLine.split(WS)[1] ?? '';
+}
+
+/**
+ * Extract the identity portion (keytype + keydata) from a key line.
+ * The host field is stripped so two lines from different hostnames can be compared.
+ */
+function keyIdentity(keyLine: string): string {
+  return keyLine.split(WS).slice(-2).join(' ');
+}
+
 // ── Socket path helpers ───────────────────────────────────────────
 
 export function scopeHash(scope: GroupScope): string {
@@ -140,8 +156,9 @@ export class SSHManager {
 
   /**
    * Scan remote host keys via ssh-keyscan.
+   * Returns all key lines (one per key type), preferring ed25519 first.
    */
-  private scanHostKey(host: string, port: number): string | null {
+  private scanHostKeys(host: string, port: number): string[] {
     try {
       const result = execFileSync(
         'ssh-keyscan',
@@ -152,14 +169,20 @@ export class SSHManager {
           stdio: ['ignore', 'pipe', 'ignore'],
         },
       );
-      // Take the first line that isn't a comment
+      const keys: string[] = [];
       for (const line of result.split('\n')) {
         const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#')) return trimmed;
+        if (trimmed && !trimmed.startsWith('#')) keys.push(trimmed);
       }
-      return null;
+      // Prefer ed25519 first for consistent TOFU pinning.
+      keys.sort((a, b) => {
+        const aEd = keyTypeOf(a) === 'ssh-ed25519' ? 0 : 1;
+        const bEd = keyTypeOf(b) === 'ssh-ed25519' ? 0 : 1;
+        return aEd - bEd;
+      });
+      return keys;
     } catch {
-      return null;
+      return [];
     }
   }
 
@@ -175,7 +198,7 @@ export class SSHManager {
           encoding: 'utf-8',
           timeout: 5000,
         });
-        return result.trim().split(/\s+/)[1] || keyLine;
+        return result.trim().split(WS)[1] || keyLine;
       } finally {
         try {
           fs.unlinkSync(tmpFile);
@@ -209,28 +232,30 @@ export class SSHManager {
       return { keyLine: null, action: 'ignored' };
     }
 
-    const scanned = this.scanHostKey(meta.host, meta.port);
+    const scannedKeys = this.scanHostKeys(meta.host, meta.port);
 
-    // Pinned: compare stored value against scanned key
+    // Pinned: compare stored value against scanned key(s)
     if (meta.hostKey) {
       if (isFingerprint(meta.hostKey)) {
-        // Stored as fingerprint (SHA256:...) — compare fingerprints
-        if (!scanned) {
-          // Can't verify a fingerprint without a scan result
+        // Stored as fingerprint (SHA256:...) — check all scanned keys
+        if (scannedKeys.length === 0) {
           throw new SSHError(
             'connection_refused',
             `Host key verification failed for '${alias}': stored fingerprint ${meta.hostKey} but ssh-keyscan returned no key from ${meta.host}:${meta.port}`,
           );
         }
-        const scannedFp = this.fingerprint(scanned);
-        if (fingerprintEqual(meta.hostKey, scannedFp)) {
-          // Use scanned key line for known_hosts (fingerprint can't go there)
-          return {
-            keyLine: scanned,
-            action: 'matched',
-            fingerprint: meta.hostKey,
-          };
+        for (const key of scannedKeys) {
+          const fp = this.fingerprint(key);
+          if (fingerprintEqual(meta.hostKey, fp)) {
+            return {
+              keyLine: key,
+              action: 'matched',
+              fingerprint: meta.hostKey,
+            };
+          }
         }
+        // No key matched — report the first scanned fingerprint in the error
+        const scannedFp = this.fingerprint(scannedKeys[0]);
         throw new SSHHostKeyMismatchError(
           alias,
           meta.host,
@@ -240,27 +265,26 @@ export class SSHManager {
         );
       }
 
-      // Stored as raw key line — compare keytype+keydata
+      // Stored as raw key line — find matching key type among scanned keys
       const storedFp = this.fingerprint(meta.hostKey);
-      if (!scanned) {
+      if (scannedKeys.length === 0) {
         return {
           keyLine: meta.hostKey,
           action: 'matched',
           fingerprint: storedFp,
         };
       }
-      const storedParts = meta.hostKey.split(/\s+/);
-      const scannedParts = scanned.split(/\s+/);
-      const storedKey = storedParts.slice(-2).join(' ');
-      const scannedKey = scannedParts.slice(-2).join(' ');
-      if (storedKey === scannedKey) {
-        return {
-          keyLine: meta.hostKey,
-          action: 'matched',
-          fingerprint: storedFp,
-        };
+      const storedId = keyIdentity(meta.hostKey);
+      for (const key of scannedKeys) {
+        if (keyIdentity(key) === storedId) {
+          return {
+            keyLine: meta.hostKey,
+            action: 'matched',
+            fingerprint: storedFp,
+          };
+        }
       }
-      const scannedFp = this.fingerprint(scanned);
+      const scannedFp = this.fingerprint(scannedKeys[0]);
       throw new SSHHostKeyMismatchError(
         alias,
         meta.host,
@@ -271,25 +295,25 @@ export class SSHManager {
     }
 
     // TOFU: no stored key
-    if (!scanned) {
+    if (scannedKeys.length === 0) {
       return { keyLine: null, action: 'unverified' };
     }
 
-    const fp = this.fingerprint(scanned);
+    // Prefer ed25519 (already sorted first)
+    const preferred = scannedKeys[0];
+    const fp = this.fingerprint(preferred);
 
     if (!pinAllowed) {
-      // Read-only mode (e.g. /ssh test without pin flag): report but don't store
-      return { keyLine: scanned, action: 'unverified', fingerprint: fp };
+      return { keyLine: preferred, action: 'unverified', fingerprint: fp };
     }
 
-    // Pin the scanned key (first-writer-wins for borrowed creds)
-    this.pinHostKey(credScope, alias, scanned);
+    this.pinHostKey(credScope, alias, preferred);
     logger.info(
       { alias, host: meta.host, port: meta.port, fingerprint: fp },
       'ssh.host_key_pinned',
     );
 
-    return { keyLine: scanned, action: 'pinned', fingerprint: fp };
+    return { keyLine: preferred, action: 'pinned', fingerprint: fp };
   }
 
   /**
