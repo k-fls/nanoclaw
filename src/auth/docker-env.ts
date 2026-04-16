@@ -89,18 +89,26 @@ export function validateEnvVarName(name: string): string | null {
  */
 export function writeEnvVarsFile(
   credentialEnvVars: Record<string, string>,
+  refsEnvVars: Record<string, string>,
   groupDir: string,
   destPath: string,
 ): void {
   const lines: string[] = [];
 
-  // 1. Credential substitute env vars (credentials take precedence)
+  // 1. Credential substitute env vars (static provider envVars — highest precedence)
   const claimedNames = new Set(Object.keys(credentialEnvVars));
   for (const [k, v] of Object.entries(credentialEnvVars)) {
     lines.push(`export ${k}=${v}`);
   }
 
-  // 2. Agent-written custom env vars (curated: reserved/invalid/overridden excluded)
+  // 2. Refs-based env vars (import-registered substitutes)
+  for (const [k, v] of Object.entries(refsEnvVars)) {
+    if (claimedNames.has(k)) continue;
+    claimedNames.add(k);
+    lines.push(`export ${k}=${v}`);
+  }
+
+  // 3. Agent-written custom env vars (curated: reserved/invalid/overridden excluded)
   try {
     const customContent = fs.readFileSync(path.join(groupDir, 'env-custom.jsonl'), 'utf-8');
     const customVars = parseEnvCustomJsonl(customContent, claimedNames);

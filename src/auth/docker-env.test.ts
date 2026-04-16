@@ -201,6 +201,7 @@ describe('writeEnvVarsFile', () => {
   it('writes credential env vars as export lines', () => {
     writeEnvVarsFile(
       { GH_TOKEN: 'ghp_sub123', GITHUB_TOKEN: 'ghp_sub123' },
+      {},
       tmpDir,
       path.join(tmpDir, '.env-vars'),
     );
@@ -217,6 +218,7 @@ describe('writeEnvVarsFile', () => {
 
     writeEnvVarsFile(
       { GH_TOKEN: 'ghp_sub' },
+      {},
       tmpDir,
       path.join(tmpDir, '.env-vars'),
     );
@@ -236,6 +238,7 @@ describe('writeEnvVarsFile', () => {
 
     writeEnvVarsFile(
       { GH_TOKEN: 'ghp_credential_sub' },
+      {},
       tmpDir,
       path.join(tmpDir, '.env-vars'),
     );
@@ -257,7 +260,7 @@ describe('writeEnvVarsFile', () => {
       '{"name":"SAFE_VAR","value":"ok"}',
     ]);
 
-    writeEnvVarsFile({}, tmpDir, path.join(tmpDir, '.env-vars'));
+    writeEnvVarsFile({}, {}, tmpDir, path.join(tmpDir, '.env-vars'));
 
     const content = readOutput();
     expect(content).not.toContain('PATH');
@@ -267,13 +270,13 @@ describe('writeEnvVarsFile', () => {
   });
 
   it('writes empty file when no env vars exist', () => {
-    writeEnvVarsFile({}, tmpDir, path.join(tmpDir, '.env-vars'));
+    writeEnvVarsFile({}, {}, tmpDir, path.join(tmpDir, '.env-vars'));
     expect(readOutput()).toBe('');
   });
 
   it('writes empty file when env-custom.jsonl does not exist', () => {
     // No custom file created — should not throw
-    writeEnvVarsFile({}, tmpDir, path.join(tmpDir, '.env-vars'));
+    writeEnvVarsFile({}, {}, tmpDir, path.join(tmpDir, '.env-vars'));
     expect(readOutput()).toBe('');
   });
 
@@ -284,7 +287,7 @@ describe('writeEnvVarsFile', () => {
       '{"name":"AFTER_BREAK","value":"lost"}',
     ]);
 
-    writeEnvVarsFile({}, tmpDir, path.join(tmpDir, '.env-vars'));
+    writeEnvVarsFile({}, {}, tmpDir, path.join(tmpDir, '.env-vars'));
 
     const content = readOutput();
     expect(content).toContain('export BEFORE_BREAK=ok');
@@ -297,7 +300,7 @@ describe('writeEnvVarsFile', () => {
       '{"name":"GOOD","value":"yes"}\n{"name":"TRUNC',
     );
 
-    writeEnvVarsFile({}, tmpDir, path.join(tmpDir, '.env-vars'));
+    writeEnvVarsFile({}, {}, tmpDir, path.join(tmpDir, '.env-vars'));
 
     const content = readOutput();
     expect(content).toContain('export GOOD=yes');
@@ -312,6 +315,7 @@ describe('writeEnvVarsFile', () => {
 
     writeEnvVarsFile(
       { GH_TOKEN: 'sub' },
+      {},
       tmpDir,
       path.join(tmpDir, '.env-vars'),
     );
@@ -328,7 +332,7 @@ describe('writeEnvVarsFile', () => {
       '{"name":"CONFIG","value":"v2"}',
     ]);
 
-    writeEnvVarsFile({}, tmpDir, path.join(tmpDir, '.env-vars'));
+    writeEnvVarsFile({}, {}, tmpDir, path.join(tmpDir, '.env-vars'));
 
     const content = readOutput();
     expect(content).toContain('export CONFIG=v2');
@@ -338,7 +342,96 @@ describe('writeEnvVarsFile', () => {
 
   it('output ends with newline when non-empty', () => {
     writeCustomJsonl(['{"name":"FOO","value":"bar"}']);
-    writeEnvVarsFile({}, tmpDir, path.join(tmpDir, '.env-vars'));
+    writeEnvVarsFile({}, {}, tmpDir, path.join(tmpDir, '.env-vars'));
     expect(readOutput()).toMatch(/\n$/);
+  });
+
+  // ── refs env vars (middle tier) ──────────────────────────────────
+
+  it('writes refs env vars between credentials and custom', () => {
+    writeCustomJsonl(['{"name":"CUSTOM_VAR","value":"custom"}']);
+
+    writeEnvVarsFile(
+      { CRED_VAR: 'cred_sub' },
+      { REFS_VAR: 'refs_sub' },
+      tmpDir,
+      path.join(tmpDir, '.env-vars'),
+    );
+
+    const lines = readOutput().trim().split('\n');
+    expect(lines[0]).toBe('export CRED_VAR=cred_sub');
+    expect(lines[1]).toBe('export REFS_VAR=refs_sub');
+    expect(lines[2]).toBe('export CUSTOM_VAR=custom');
+  });
+
+  it('credentials take priority over refs env vars with same name', () => {
+    writeEnvVarsFile(
+      { GH_TOKEN: 'cred_sub' },
+      { GH_TOKEN: 'refs_sub', EXTRA: 'refs_extra' },
+      tmpDir,
+      path.join(tmpDir, '.env-vars'),
+    );
+
+    const content = readOutput();
+    expect(content).toContain('export GH_TOKEN=cred_sub');
+    expect(content).not.toContain('refs_sub');
+    expect(content).toContain('export EXTRA=refs_extra');
+  });
+
+  it('refs env vars take priority over custom env vars with same name', () => {
+    writeCustomJsonl(['{"name":"MY_KEY","value":"custom_val"}']);
+
+    writeEnvVarsFile(
+      {},
+      { MY_KEY: 'refs_sub' },
+      tmpDir,
+      path.join(tmpDir, '.env-vars'),
+    );
+
+    const content = readOutput();
+    expect(content).toContain('export MY_KEY=refs_sub');
+    expect(content).not.toContain('custom_val');
+  });
+
+  it('refs env vars only — no credentials, no custom', () => {
+    writeEnvVarsFile(
+      {},
+      { IMPORTED_KEY: 'sub_token' },
+      tmpDir,
+      path.join(tmpDir, '.env-vars'),
+    );
+
+    expect(readOutput()).toBe('export IMPORTED_KEY=sub_token\n');
+  });
+
+  it('all three tiers combined with no overlap', () => {
+    writeCustomJsonl(['{"name":"AGENT_VAR","value":"agent"}']);
+
+    writeEnvVarsFile(
+      { CRED_VAR: 'cred' },
+      { REFS_VAR: 'refs' },
+      tmpDir,
+      path.join(tmpDir, '.env-vars'),
+    );
+
+    const lines = readOutput().trim().split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('export CRED_VAR=cred');
+    expect(lines[1]).toBe('export REFS_VAR=refs');
+    expect(lines[2]).toBe('export AGENT_VAR=agent');
+  });
+
+  it('three-way conflict: credentials win over refs and custom', () => {
+    writeCustomJsonl(['{"name":"TOKEN","value":"custom"}']);
+
+    writeEnvVarsFile(
+      { TOKEN: 'cred' },
+      { TOKEN: 'refs' },
+      tmpDir,
+      path.join(tmpDir, '.env-vars'),
+    );
+
+    const content = readOutput();
+    expect(content).toBe('export TOKEN=cred\n');
   });
 });

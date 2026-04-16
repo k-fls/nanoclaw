@@ -19,7 +19,7 @@ import {
   hasSubscriptionCredential,
   PROVIDER_ID as CLAUDE_PROVIDER_ID,
 } from '../auth/providers/claude.js';
-import { handleSetKey, handleDeleteKeys } from '../auth/key-management.js';
+import { handleSetKey, handleDeleteKeys, handleImport } from '../auth/key-management.js';
 import { isGpgAvailable, ensureGpgKey, exportPublicKey } from '../auth/gpg.js';
 import { runReauth } from '../auth/reauth.js';
 import { getTokenEngine } from '../auth/registry.js';
@@ -75,6 +75,24 @@ registerCommand('auth', {
             providerId,
             scopeOf(ctx.group),
             tokenEngine,
+          );
+          if (msg) await chat.send(msg);
+        },
+      };
+    }
+
+    // (e) /auth <provider> import <pgp block>
+    if (subcommand === 'import') {
+      const rest = args.slice(args.indexOf('import') + 6).trim();
+      return {
+        asyncAction: async (io) => {
+          const chat = brandChat(io, AUTH_PREFIX);
+          const msg = await handleImport(
+            providerId,
+            rest,
+            scopeOf(ctx.group),
+            tokenEngine,
+            chat,
           );
           if (msg) await chat.send(msg);
         },
