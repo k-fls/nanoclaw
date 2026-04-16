@@ -249,6 +249,109 @@ describe('verifyHostKey', () => {
     expect(result.keyLine).toBeNull();
   });
 
+  // ── Multi-key scanning (ed25519 + RSA oscillation fix) ──────────
+
+  it('matches pinned fingerprint against second scanned key type', () => {
+    // Server returns RSA first, but the pinned fingerprint is for ed25519
+    const ed25519Fp = 'SHA256:7+gvK8gKLrIIbMHaE0DRYN1VIoXMjMJhag0bWIpwbZs';
+    const rsaFp = 'SHA256:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+    const meta = makeMeta({ hostKey: ed25519Fp });
+
+    mockExecFileSync.mockImplementation((cmd: string, args?: string[]) => {
+      if (cmd === 'ssh-keyscan') {
+        // Return both key types — RSA first (simulates non-deterministic order)
+        return [
+          'prod.example.com ssh-rsa AAAARSA...',
+          'prod.example.com ssh-ed25519 AAAAEd...',
+        ].join('\n') + '\n';
+      }
+      if (cmd === 'ssh-keygen') {
+        // Read the temp file to determine which key we're fingerprinting
+        const filePath = args?.[1];
+        if (filePath) {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          if (content.includes('ssh-rsa')) return `2048 ${rsaFp} (RSA)\n`;
+          if (content.includes('ssh-ed25519')) return `256 ${ed25519Fp} (ED25519)\n`;
+        }
+        return `256 ${rsaFp} (UNKNOWN)\n`;
+      }
+      return '';
+    });
+
+    const result = manager.verifyHostKey('db', meta, credScope, false);
+    expect(result.action).toBe('matched');
+    expect(result.fingerprint).toBe(ed25519Fp);
+  });
+
+  it('matches pinned raw key line when other key type is scanned first', () => {
+    const stored = 'prod.example.com ssh-ed25519 AAAAEd base64ed';
+    const meta = makeMeta({ hostKey: stored });
+
+    mockExecFileSync.mockImplementation((cmd: string) => {
+      if (cmd === 'ssh-keyscan') {
+        return [
+          'prod.example.com ssh-rsa AAAARSA base64rsa',
+          'prod.example.com ssh-ed25519 AAAAEd base64ed',
+        ].join('\n') + '\n';
+      }
+      if (cmd === 'ssh-keygen') return '256 SHA256:xxxx (ED25519)\n';
+      return '';
+    });
+
+    const result = manager.verifyHostKey('db', meta, credScope, false);
+    expect(result.action).toBe('matched');
+  });
+
+  it('TOFU pins ed25519 even when RSA is returned first', () => {
+    const meta = makeMeta({ hostKey: null });
+    seedResolver(resolver, credScope, 'db', 'secret', meta);
+
+    mockExecFileSync.mockImplementation((cmd: string) => {
+      if (cmd === 'ssh-keyscan') {
+        return [
+          'prod.example.com ssh-rsa AAAARSA...',
+          'prod.example.com ssh-ed25519 AAAAEd...',
+        ].join('\n') + '\n';
+      }
+      if (cmd === 'ssh-keygen') return '256 SHA256:pinnedfp (ED25519)\n';
+      return '';
+    });
+
+    const result = manager.verifyHostKey('db', meta, credScope, true);
+    expect(result.action).toBe('pinned');
+    // The pinned key should be the ed25519 one, not RSA
+    expect(resolver.store).toHaveBeenCalledWith(
+      'ssh',
+      credScope,
+      'db',
+      expect.objectContaining({
+        authFields: expect.objectContaining({
+          hostKey: 'prod.example.com ssh-ed25519 AAAAEd...',
+        }),
+      }),
+    );
+  });
+
+  it('throws mismatch when no scanned key matches pinned fingerprint', () => {
+    const storedFp = 'SHA256:7+gvK8gKLrIIbMHaE0DRYN1VIoXMjMJhag0bWIpwbZs';
+    const meta = makeMeta({ hostKey: storedFp });
+
+    mockExecFileSync.mockImplementation((cmd: string) => {
+      if (cmd === 'ssh-keyscan') {
+        return [
+          'prod.example.com ssh-rsa AAAARSA...',
+          'prod.example.com ssh-ed25519 AAAAEd...',
+        ].join('\n') + '\n';
+      }
+      if (cmd === 'ssh-keygen') return '256 SHA256:nope_doesnt_match_anything_at_all (KEY)\n';
+      return '';
+    });
+
+    expect(() =>
+      manager.verifyHostKey('db', meta, credScope, false),
+    ).toThrowError(SSHHostKeyMismatchError);
+  });
+
   it('first-writer-wins: does not overwrite existing hostKey', () => {
     const meta = makeMeta({ hostKey: null });
     // Seed credential that already has hostKey pinned

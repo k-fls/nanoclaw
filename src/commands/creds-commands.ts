@@ -164,11 +164,24 @@ registerCommand('creds', {
         // Clean up manifests from grantee
         revokeGranteeManifests(grantorGroup.folder, target);
 
-        // Revoke borrowed substitutes for the target
+        // Revoke borrowed substitutes and clear borrower's credentialSource
         const targetEntry = findGroupByFolder(target);
         if (targetEntry) {
           const engine = getTokenEngine();
           engine.revokeByScope(scopeOf(targetEntry.group));
+
+          // Clear the borrower's link back if it points at the revoking grantor
+          if (
+            targetEntry.group.containerConfig?.credentialSource ===
+            grantorGroup.folder
+          ) {
+            targetEntry.group.containerConfig = {
+              ...targetEntry.group.containerConfig,
+              credentialSource: undefined,
+            };
+            setRegisteredGroup(targetEntry.jid, targetEntry.group);
+            removeBorrowedLink(target);
+          }
         }
 
         return reply(
