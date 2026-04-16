@@ -35,7 +35,13 @@ cat /workspace/group/credentials/tokens/github.jsonl
 {"provider":"github","name":"oauth","token":"ghp_RaNdOmFaKe..."}
 ```
 
-Fields: `provider` (service ID), `name` (credential type — `oauth` or `api_key`), `token` (substitute — safe to use in env vars and HTTP requests; the host swaps it for the real token transparently). If `borrowed` is `true`, the credential comes from a shared scope.
+Fields: `provider` (service ID), `name` (credential path — an arbitrary label for this credential within the provider), `token` (substitute — safe to use in env vars and HTTP requests; the host swaps it for the real token transparently). If `borrowed` is `true`, the credential comes from a shared scope.
+
+### Multiple credentials per provider
+
+A provider can have multiple named credentials (e.g. `oauth`, `deploy_key`, `staging_token` all under `github`). The `name` field is just a label — not a provider ID. Use `get_credential(providerId, credentialPath: "<name>")` to pull the substitute for a specific named credential. This enables per-use-case token isolation without adding new providers.
+
+The name `oauth` is special — it's the default path where OAuth flows (device-code, token-exchange) store tokens and where automatic refresh looks. All other names are custom and must be managed manually via `/auth <provider>` commands.
 
 ### Borrowed credentials
 
