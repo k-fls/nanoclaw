@@ -137,7 +137,7 @@ describe('provision with token engine', () => {
 
     const { env } = claudeProvider.provision(makeGroup('scope'), engine);
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
-    expect(env.CLAUDE_REFRESH_TOKEN).toBeUndefined();
+    expect((env as Record<string, unknown>).CLAUDE_REFRESH_TOKEN).toBeUndefined();
   });
 
   it('returns empty env when no substitutes exist', () => {

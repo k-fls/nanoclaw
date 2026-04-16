@@ -5,29 +5,72 @@ description: Find available credentials, authenticate with external services, an
 
 # Credentials & Authentication
 
-## Finding available credentials
+## Credential layout
 
-Each provider has its own JSONL file in the credentials/tokens subfolder:
-
-```bash
-ls /workspace/group/credentials/tokens/
+```
+/workspace/group/credentials/
+  keys/                ← own-scope credential manifest (what exists)
+  tokens/              ← substitute tokens (ready to use)
+  borrowed → granted/{grantor}/  ← active borrowed scope (symlink)
+  granted/             ← manifests pushed by grantors (not usable until borrowed)
 ```
 
-Example: `github.jsonl`, `claude.jsonl`. Each file has one JSON line per credential type:
+### Own credentials — keys and tokens
+
+**Keys** list which credentials exist for this scope (no real tokens, no substitutes):
+
+```bash
+cat /workspace/group/credentials/keys/github.jsonl
+```
+```
+{"provider":"github","name":"oauth","credScope":"my-group"}
+```
+
+**Tokens** contain substitute tokens ready for use:
 
 ```bash
 cat /workspace/group/credentials/tokens/github.jsonl
 ```
-
 ```
 {"provider":"github","name":"oauth","token":"ghp_RaNdOmFaKe..."}
 ```
 
-Fields: `provider` (service ID), `name` (credential type — `oauth` or `api_key`), `token` (substitute — safe to use in env vars and HTTP requests; the host swaps it for the real token transparently). If `borrowed` is `true`, the credential comes from a shared scope.
+Fields: `provider` (service ID), `name` (credential path — an arbitrary label for this credential within the provider), `token` (substitute — safe to use in env vars and HTTP requests; the host swaps it for the real token transparently). If `borrowed` is `true`, the credential comes from a shared scope.
 
-To scan all available credentials:
+### Multiple credentials per provider
+
+A provider can have multiple named credentials (e.g. `oauth`, `deploy_key`, `staging_token` all under `github`). The `name` field is just a label — not a provider ID. Use `get_credential(providerId, credentialPath: "<name>")` to pull the substitute for a specific named credential. This enables per-use-case token isolation without adding new providers.
+
+The name `oauth` is special — it's the default path where OAuth flows (device-code, token-exchange) store tokens and where automatic refresh looks. All other names are custom and must be managed manually via `/auth <provider>` commands.
+
+### Borrowed credentials
+
+Credential sharing is bilateral — a grantor pushes manifests, but the grantee must actively **borrow** from that grantor. The `borrowed` symlink points to the active grantor:
+
 ```bash
+ls -l /workspace/group/credentials/borrowed
+# borrowed -> granted/main-group/
+```
+
+Only credentials reachable through `borrowed/` are available. Check what's borrowed:
+
+```bash
+cat /workspace/group/credentials/borrowed/*.jsonl 2>/dev/null
+```
+
+Same format as keys — `{"provider","name","credScope"}`. The host generates substitute tokens for borrowed credentials on demand.
+
+### Scanning all available credentials
+
+```bash
+# All ready-to-use tokens (own + borrowed with substitutes)
 cat /workspace/group/credentials/tokens/*.jsonl
+
+# All own-scope keys (may not have tokens yet)
+cat /workspace/group/credentials/keys/*.jsonl 2>/dev/null
+
+# All borrowed keys from the active grantor
+cat /workspace/group/credentials/borrowed/*.jsonl 2>/dev/null
 ```
 
 The substitute token works transparently — use it in HTTP headers, env vars, or CLI tools. The host proxy intercepts outbound HTTPS and swaps the substitute for the real credential.
@@ -75,7 +118,9 @@ grep '<domain>' /workspace/global/credentials/providers/*.jsonl
 
 ## Pulling substitute tokens at runtime
 
-Credentials added after your container started (e.g. user ran `/auth` mid-session) won't appear as env vars — those are only set at container startup. Use the `get_credential` MCP tool to pull a substitute for a newly added credential without restarting:
+Use `get_credential` **only** when a credential appears in `keys/` or `borrowed/` but has no entry in `tokens/`. This means the key exists but no substitute token has been generated yet — typically because the credential was added after container startup or a borrowed credential hasn't been activated.
+
+If the credential already has an entry in `tokens/`, just use that token directly — do not call `get_credential`.
 
 ```
 get_credential(providerId: "github", credentialPath: "oauth")
@@ -87,9 +132,8 @@ Both parameters are required. Check the provider's `.jsonl` file in `/workspace/
 The tool returns the substitute token and any env var mappings. Export the returned env vars in your shell to use them for the rest of the session.
 
 **When to use this:**
-- After the user runs `/auth` to add credentials mid-session
-- After an OAuth flow completes (device-code or browser-based) and you need the substitute
-- For providers without `envVars` mapping that weren't provisioned at startup
+- Credential in `keys/` but not in `tokens/` (added mid-session via `/auth`)
+- Credential in `borrowed/` but not in `tokens/` (grantor added or updated a credential)
 
 ## When a credential is missing
 

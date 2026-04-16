@@ -50,7 +50,7 @@ import {
   buildVolumeMounts,
   snapshotContainerFiles,
 } from '../container-runner.js';
-import { allocateContainerIP, ensureNetwork } from './container-args.js';
+import { allocateContainerIP, applyCredentialProxyArgs, ensureNetwork } from './container-args.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from '../config.js';
 import {
@@ -498,10 +498,13 @@ export class OAuthE2EHarness {
     const containerArgs = buildContainerArgs(
       volumeMounts,
       containerName,
-      group,
-      this.tokenEngine,
       containerIP,
     );
+    const envFileVars = applyCredentialProxyArgs(containerArgs, group, this.tokenEngine);
+    // In e2e tests, inject env-file vars as Docker -e (no persistent home dir)
+    for (const [k, v] of Object.entries(envFileVars)) {
+      containerArgs.push('-e', `${k}=${v}`);
+    }
 
     // Override PROXY_PORT — buildContainerArgs uses CREDENTIAL_PROXY_PORT from config
     // but our test proxy is on a dynamic port.
@@ -537,22 +540,18 @@ export class OAuthE2EHarness {
     const noopTsc = path.join(this.tmpDir, `tsc-${runId}`);
     fs.writeFileSync(noopTsc, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
-    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
-    containerArgs.splice(
-      imageIdx,
-      0,
-      '-v',
-      `${testScript}:/tmp/dist/index.js`,
-      '-v',
-      `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
+    containerArgs.push(
+      '-v', `${testScript}:/tmp/dist/index.js`,
+      '-v', `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
     );
 
     // Inject extra env vars from test
     for (const [k, v] of Object.entries(env)) {
-      // Insert before the image name (last few args are: --entrypoint '' IMAGE /bin/bash -c ...)
-      const imageIdx = containerArgs.indexOf(CONTAINER_IMAGE);
-      containerArgs.splice(imageIdx, 0, '-e', `${k}=${v}`);
+      containerArgs.push('-e', `${k}=${v}`);
     }
+
+    // Image name must come last — after all -e/-v flags
+    containerArgs.push(CONTAINER_IMAGE);
 
     return new Promise((resolve) => {
       const proc = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
@@ -631,10 +630,13 @@ export class OAuthE2EHarness {
     const containerArgs = buildContainerArgs(
       volumeMounts,
       containerName,
-      group,
-      this.tokenEngine,
       containerIP,
     );
+    const envFileVars = applyCredentialProxyArgs(containerArgs, group, this.tokenEngine);
+    // In e2e tests, inject env-file vars as Docker -e (no persistent home dir)
+    for (const [k, v] of Object.entries(envFileVars)) {
+      containerArgs.push('-e', `${k}=${v}`);
+    }
 
     for (let i = 0; i < containerArgs.length; i++) {
       if (
@@ -656,15 +658,13 @@ export class OAuthE2EHarness {
     const noopTsc = path.join(this.tmpDir, `tsc-${runId}`);
     fs.writeFileSync(noopTsc, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
-    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
-    containerArgs.splice(
-      imageIdx,
-      0,
-      '-v',
-      `${testScript}:/tmp/dist/index.js`,
-      '-v',
-      `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
+    containerArgs.push(
+      '-v', `${testScript}:/tmp/dist/index.js`,
+      '-v', `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
     );
+
+    // Image name must come last
+    containerArgs.push(CONTAINER_IMAGE);
 
     const proc = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],

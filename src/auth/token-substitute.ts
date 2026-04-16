@@ -315,12 +315,12 @@ interface RefsFileV3 {
   >;
 }
 
-/** V4 refs file format — per-entry sourceScope. */
+/** V4 refs file format — per-entry sourceScope, optional envNames. */
 interface RefsFileV4 {
   v: 4;
   substitutes: Record<
     string,
-    { credentialPath: string; scopeAttrs: Record<string, string>; sourceScope?: string }
+    { credentialPath: string; scopeAttrs: Record<string, string>; sourceScope?: string; envNames?: string[] }
   >;
 }
 
@@ -735,6 +735,29 @@ export class TokenSubstituteEngine {
     return undefined;
   }
 
+  /**
+   * Merge additional env var names into an existing substitute entry.
+   * Deduplicates and persists if changed.
+   */
+  mergeEnvNames(
+    groupScope: GroupScope,
+    providerId: string,
+    substitute: string,
+    newNames: string[],
+  ): void {
+    const ps = this.scopes.get(groupScope)?.get(providerId);
+    const entry = ps?.substitutes.get(substitute);
+    if (!entry) return;
+
+    const existing = new Set(entry.envNames ?? []);
+    const sizeBefore = existing.size;
+    for (const name of newNames) existing.add(name);
+    if (existing.size === sizeBefore) return; // no change
+
+    entry.envNames = [...existing].sort();
+    this.persistRefs(groupScope, providerId);
+  }
+
   /** For nested paths (e.g. oauth/refresh), inherit sourceScope from parent entry. */
   private findParentSourceScope(
     groupScope: GroupScope,
@@ -815,9 +838,16 @@ export class TokenSubstituteEngine {
     groupScope: GroupScope,
     config: SubstituteConfig,
     credentialPath: string = CRED_OAUTH,
+    envNames?: string[],
   ): string | null {
     const existing = this.getSubstitute(providerId, groupScope, credentialPath);
-    if (existing) return existing;
+    if (existing) {
+      // Merge new envNames into existing entry if provided
+      if (envNames && envNames.length > 0) {
+        this.mergeEnvNames(groupScope, providerId, existing, envNames);
+      }
+      return existing;
+    }
 
     // Per-key scope resolution with bilateral access check
     const credScope = this.resolveCredentialScope(groupScope, providerId, credentialPath);
@@ -840,6 +870,7 @@ export class TokenSubstituteEngine {
       config,
       credentialPath,
       sourceScope,
+      envNames,
     );
   }
 
@@ -861,6 +892,7 @@ export class TokenSubstituteEngine {
     config: SubstituteConfig,
     credentialPath: string = CRED_OAUTH,
     sourceScope?: CredentialScope,
+    envNames?: string[],
   ): string | null {
     const { prefixLen, suffixLen, delimiters } = config;
 
@@ -903,6 +935,7 @@ export class TokenSubstituteEngine {
       );
       const entry: SubstituteEntry = { credentialPath, scopeAttrs };
       if (effectiveSource) entry.sourceScope = effectiveSource;
+      if (envNames && envNames.length > 0) entry.envNames = [...new Set(envNames)];
       this.insertSub(groupScope, providerId, substitute, entry);
 
       // Persist substitute → role mapping (no secrets)
@@ -1292,6 +1325,26 @@ export class TokenSubstituteEngine {
     }
   }
 
+  /**
+   * Collect all env var assignments for a group scope.
+   * Returns a map of envName → substitute token, across all providers.
+   */
+  collectEnvVars(groupScope: GroupScope): Record<string, string> {
+    const result: Record<string, string> = {};
+    const providers = this.scopes.get(groupScope);
+    if (!providers) return result;
+
+    for (const [, ps] of providers) {
+      for (const [substitute, entry] of ps.substitutes) {
+        if (!entry.envNames) continue;
+        for (const name of entry.envNames) {
+          result[name] = substitute;
+        }
+      }
+    }
+    return result;
+  }
+
   // ── Metrics ──────────────────────────────────────────────────────
 
   /** Number of active substitutes across all scopes. */
@@ -1327,6 +1380,9 @@ export class TokenSubstituteEngine {
         ref.sourceScope = entry.sourceScope as string;
       } else {
         ref.sourceScope = undefined
+      }
+      if (entry.envNames && entry.envNames.length > 0) {
+        ref.envNames = entry.envNames;
       }
       data.substitutes[sub] = ref;
     }
@@ -1495,6 +1551,8 @@ export class TokenSubstituteEngine {
         scopeAttrs: (entryRaw.scopeAttrs as Record<string, string>) ?? {},
       };
       if (entrySourceScope) entry.sourceScope = entrySourceScope;
+      const rawEnvNames = entryRaw.envNames as string[] | undefined;
+      if (rawEnvNames && rawEnvNames.length > 0) entry.envNames = [...new Set(rawEnvNames)];
       this.insertSub(groupScope, providerId, substitute, entry);
     }
 

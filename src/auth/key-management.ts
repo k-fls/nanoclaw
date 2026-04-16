@@ -21,6 +21,7 @@ import {
   normalizeArmoredBlock,
   promptGpgEncrypt,
 } from './gpg.js';
+import { ENV_NAME_RE, validateEnvVarName } from './docker-env.js';
 import { chooseName, AUTH_PROMPT_TIMEOUT } from './chat-prompts.js';
 import { logger } from '../logger.js';
 
@@ -295,4 +296,126 @@ export function handleDeleteKeys(
     'Credentials deleted via /auth delete',
   );
   return `Credentials deleted for *${providerId}* (${count} substitute${count !== 1 ? 's' : ''} revoked).`;
+}
+
+// ---------------------------------------------------------------------------
+// Import (multi-key PGP block)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a PGP-encrypted block of KEY=VALUE lines and store each credential.
+ * Capitalized keys that pass env-var validation are registered as container
+ * env vars on the substitute entry (via envNames).
+ */
+export async function handleImport(
+  providerId: string,
+  argsAfterImport: string,
+  groupScope: GroupScope,
+  tokenEngine: TokenSubstituteEngine,
+  chat: ChatIO,
+): Promise<string | null> {
+  if (!isKeyEligibleProvider(providerId)) {
+    return `Provider *${providerId}* has no bearer-swap rules — cannot import keys.`;
+  }
+
+  const provider = getDiscoveryProvider(providerId)!;
+
+  // Reverse map: envVarName → credentialPath (e.g. GH_TOKEN → oauth)
+  const envToCredPath = new Map<string, string>();
+  if (provider.envVars) {
+    for (const [envName, credPath] of Object.entries(provider.envVars)) {
+      envToCredPath.set(envName, credPath);
+    }
+  }
+
+  // Decrypt — inline PGP block or interactive prompt
+  const pgpIdx = argsAfterImport.indexOf(PGP_BEGIN);
+  let plaintext: string;
+
+  if (pgpIdx >= 0 && isPgpMessage(argsAfterImport.slice(pgpIdx))) {
+    if (!isGpgAvailable()) return 'GPG is not available. Install gnupg first.';
+    ensureGpgKey(groupScope);
+    try {
+      plaintext = gpgDecrypt(groupScope, normalizeArmoredBlock(argsAfterImport.slice(pgpIdx)));
+    } catch (err) {
+      logger.error({ groupScope, err }, 'GPG decrypt failed in import');
+      return 'Failed to decrypt PGP message. Make sure you encrypted with the correct public key.';
+    }
+  } else {
+    const result = await promptGpgEncrypt(groupScope, chat, AUTH_PROMPT_TIMEOUT, {
+      hint: `key=value pairs for ${providerId}`,
+    });
+    if (!result) return null;
+    plaintext = result;
+  }
+
+  // Parse KEY=VALUE lines
+  const entries = new Map<string, string>();
+  for (const line of plaintext.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx < 1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const value = trimmed.slice(eqIdx + 1).trim();
+    if (!value) continue;
+    entries.set(key, value); // last-write-wins for duplicates
+  }
+
+  if (entries.size === 0) {
+    return 'No valid KEY=VALUE pairs found in decrypted message.';
+  }
+
+  // Store each credential and register env vars
+  let needsRestart = false;
+  const envVarsRegistered: string[] = [];
+  const warnings: string[] = [];
+
+  for (const [key, value] of entries) {
+    // Resolve credential path: known envVar mapping wins, otherwise key itself
+    const credentialPath = envToCredPath.get(key) ?? key;
+
+    const result = storeProviderKey(
+      providerId,
+      groupScope,
+      credentialPath,
+      value,
+      0,
+      tokenEngine,
+    );
+    if (result.needsRestart) needsRestart = true;
+
+    // Register as env var if key is ALL_CAPS and valid
+    if (ENV_NAME_RE.test(key)) {
+      const envErr = validateEnvVarName(key);
+      if (envErr) {
+        warnings.push(`${key}: ${envErr}`);
+      } else {
+        tokenEngine.getOrCreateSubstitute(
+          providerId, {}, groupScope, provider.substituteConfig, credentialPath, [key],
+        );
+        envVarsRegistered.push(key);
+      }
+    }
+  }
+
+  // Summary
+  const parts: string[] = [
+    `Imported ${entries.size} credential${entries.size !== 1 ? 's' : ''} for *${providerId}*.`,
+  ];
+  if (envVarsRegistered.length > 0) {
+    parts.push(`Env vars: ${envVarsRegistered.join(', ')}`);
+  }
+  if (warnings.length > 0) {
+    parts.push(`Warnings:\n${warnings.map(w => `  - ${w}`).join('\n')}`);
+  }
+  if (needsRestart) {
+    parts.push('⚠️ Container restart may be needed for new keys to take effect.');
+  }
+
+  logger.info(
+    { groupScope, providerId, count: entries.size, envVars: envVarsRegistered },
+    'Credentials imported',
+  );
+  return parts.join('\n');
 }

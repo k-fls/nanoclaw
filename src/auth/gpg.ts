@@ -11,6 +11,8 @@
  * the encrypted reply, decrypts it, and properly hides/advances the
  * cursor so the message never leaks to the agent.
  */
+import crypto from 'crypto';
+
 import { initGpg, gpg, isGpgAvailable, isPgpMessage } from '../crypto/index.js';
 import { CREDENTIALS_DIR } from './store.js';
 import type { ChatIO } from './types.js';
@@ -33,6 +35,17 @@ export function exportPublicKey(scope: GroupScope): string {
   return gpg.export(scope);
 }
 
+/**
+ * Build a pgp-encrypt URL with the scope's binary public key embedded.
+ * Format: ?key=<base64url-encoded-binary-key>&hash=<sha256-hex>
+ */
+export function buildPgpEncryptUrl(scope: GroupScope): string {
+  const binaryKey = gpg.exportBinary(scope);
+  const keyParam = binaryKey.toString('base64url');
+  const hashParam = crypto.createHash('sha256').update(binaryKey).digest('hex');
+  return `https://k-fls.github.io/pgp-encrypt/?key=${keyParam}&hash=${hashParam}`;
+}
+
 /** Decrypt a PGP-encrypted message. Returns the plaintext. */
 export function gpgDecrypt(scope: GroupScope, ciphertext: string): string {
   return gpg.decrypt(scope, ciphertext);
@@ -46,15 +59,17 @@ export function gpgDecrypt(scope: GroupScope, ciphertext: string): string {
  * Build the encryption-instructions message. Re-used by both interactive
  * prompts (which append "reply 0 to abort") and non-interactive error
  * replies (which just tell the user what to do).
+ *
+ * @param pgpEncryptUrl — pre-built URL with embedded key (from buildPgpEncryptUrl)
  */
-export function formatGpgInstructions(hint?: string): string {
+export function formatGpgInstructions(pgpEncryptUrl: string, hint?: string): string {
   const what = hint ?? 'your secret';
   return (
-    `Encrypt ${what} with the public key above.\n` +
-    'Use your preferred PGP encryption tool, or follow these steps:\n\n' +
-    '*Step 1.* Open https://k-fls.github.io/pgp-encrypt/\n' +
-    '*Step 2.* Paste the public key and your secret, copy the encrypted output.\n' +
-    '*Step 3.* Paste the encrypted output here.'
+    `Encrypt ${what}:\n\n` +
+    `*Step 1.* Open ${pgpEncryptUrl}\n` +
+    '*Step 2.* Enter your secret, copy the encrypted output.\n' +
+    '*Step 3.* Paste the encrypted output here.\n\n' +
+    'Alternatively, use your preferred PGP tool — get the public key with */auth-gpg*.'
   );
 }
 
@@ -96,10 +111,10 @@ export async function promptGpgEncrypt(
     return null;
   }
 
-  let pubKey: string;
+  let pgpEncryptUrl: string;
   try {
     ensureGpgKey(scope);
-    pubKey = exportPublicKey(scope);
+    pgpEncryptUrl = buildPgpEncryptUrl(scope);
   } catch (err) {
     logger.warn({ scope, err }, 'GPG key setup failed');
     await chat.send(
@@ -109,11 +124,8 @@ export async function promptGpgEncrypt(
     return null;
   }
 
-  // Send raw public key (copy-pasteable, no prefix)
-  await chat.sendRaw(pubKey);
-
-  // Send instructions + cancel hint
-  const instructions = formatGpgInstructions(opts?.hint);
+  // Send instructions with embedded key URL + cancel hint
+  const instructions = formatGpgInstructions(pgpEncryptUrl, opts?.hint);
   await chat.send(instructions + '\n\nReply *0* to abort.');
 
   // Retry loop — user can keep trying until success or cancel

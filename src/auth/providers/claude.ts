@@ -17,6 +17,7 @@ import { authSessionDir, scopeClaudeDir } from '../exec.js';
 import { promptGpgEncrypt } from '../gpg.js';
 import { IDLE_TIMEOUT } from '../../config.js';
 import { importEnvCredentials } from '../provision.js';
+import type { DockerEnvName } from '../docker-env.js';
 import { logger } from '../../logger.js';
 import { CONTAINER_RUNTIME_BIN } from '../../container-runtime.js';
 import { getProxy } from '../credential-proxy.js';
@@ -688,9 +689,9 @@ export const claudeProvider: CredentialProvider = {
   provision(
     group: import('../../types.js').RegisteredGroup,
     tokenEngine: import('../token-substitute.js').TokenSubstituteEngine,
-  ): { env: Record<string, string> } {
+  ): { env: Partial<Record<DockerEnvName, string>> } {
     const scope = scopeOf(group);
-    const env: Record<string, string> = {};
+    const env: Partial<Record<DockerEnvName, string>> = {};
 
     // API key mode
     const subApiKey = tokenEngine.getOrCreateSubstitute(

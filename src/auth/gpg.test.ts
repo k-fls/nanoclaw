@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -33,6 +34,7 @@ const {
   isGpgAvailable,
   ensureGpgKey,
   exportPublicKey,
+  buildPgpEncryptUrl,
   gpgDecrypt,
   isPgpMessage,
   formatGpgInstructions,
@@ -124,6 +126,43 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
     expect(pubKey).toContain('-----END PGP PUBLIC KEY BLOCK-----');
   });
 
+  it('buildPgpEncryptUrl produces a valid binary key that GPG can import', () => {
+    ensureGpgKey(SCOPE_A);
+    const url = buildPgpEncryptUrl(SCOPE_A);
+
+    // Extract key param from the URL
+    const parsed = new URL(url);
+    const keyParam = parsed.searchParams.get('key')!;
+    const hashParam = parsed.searchParams.get('hash')!;
+    expect(keyParam).toBeTruthy();
+    expect(hashParam).toBeTruthy();
+
+    // Decode the binary key
+    const binaryKey = Buffer.from(keyParam, 'base64url');
+    expect(binaryKey.length).toBeGreaterThan(0);
+
+    // Verify SHA-256 hash matches
+    const expectedHash = crypto.createHash('sha256').update(binaryKey).digest('hex');
+    expect(hashParam).toBe(expectedHash);
+
+    // Import the binary key into a fresh GPG homedir — proves it's a real PGP key
+    const verifyHome = path.join(tmpDir, 'verify-binary');
+    fs.mkdirSync(verifyHome, { mode: 0o700, recursive: true });
+    execFileSync('gpg', ['--homedir', verifyHome, '--batch', '--import'], {
+      input: binaryKey,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    // Re-export as armor and compare to the original
+    const reExported = execFileSync(
+      'gpg',
+      ['--homedir', verifyHome, '--armor', '--export', 'nanoclaw'],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    ).toString('utf-8').trim();
+    const original = exportPublicKey(SCOPE_A);
+    expect(reExported).toBe(original);
+  });
+
   it('encrypt and decrypt round-trip', () => {
     ensureGpgKey(SCOPE_A);
     const pubKey = exportPublicKey(SCOPE_A);
@@ -190,19 +229,26 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatGpgInstructions', () => {
-  it('includes the online tool link', () => {
-    const result = formatGpgInstructions('my key');
-    expect(result).toContain('https://k-fls.github.io/pgp-encrypt/');
+  const fakeUrl = 'https://k-fls.github.io/pgp-encrypt/?key=abc&hash=def';
+
+  it('includes the pgp-encrypt URL', () => {
+    const result = formatGpgInstructions(fakeUrl, 'my key');
+    expect(result).toContain(fakeUrl);
   });
 
   it('uses hint in the message', () => {
-    const result = formatGpgInstructions('my Todoist API key');
+    const result = formatGpgInstructions(fakeUrl, 'my Todoist API key');
     expect(result).toContain('Encrypt my Todoist API key');
   });
 
   it('defaults to "your secret" when no hint', () => {
-    const result = formatGpgInstructions();
+    const result = formatGpgInstructions(fakeUrl);
     expect(result).toContain('Encrypt your secret');
+  });
+
+  it('mentions /auth-gpg as alternative', () => {
+    const result = formatGpgInstructions(fakeUrl);
+    expect(result).toContain('/auth-gpg');
   });
 });
 
@@ -239,12 +285,12 @@ describe.skipIf(!gpgAvailable)('promptGpgEncrypt', () => {
     expect(chat.advanceCursor).toHaveBeenCalled();
   });
 
-  it('sends raw public key block first', async () => {
+  it('sends pgp-encrypt URL with embedded key', async () => {
     const encrypted = encryptForScope(SCOPE_A, 'key');
     const chat = createChat([encrypted]);
 
     await promptGpgEncrypt(SCOPE_A, chat, 5000);
-    expect(chat.sentRaw[0]).toContain('-----BEGIN PGP PUBLIC KEY BLOCK-----');
+    expect(chat.sent.some((m) => m.includes('https://k-fls.github.io/pgp-encrypt/?key='))).toBe(true);
   });
 
   it('sends instructions with abort hint', async () => {

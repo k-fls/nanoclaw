@@ -133,6 +133,8 @@ export interface SubstituteEntry {
   scopeAttrs: Record<string, string>;
   /** Per-entry source scope for borrowed credentials. Absent = owned by this group. */
   sourceScope?: CredentialScope;
+  /** Env var names this substitute should be published as (e.g. ['GH_TOKEN', 'GITHUB_TOKEN']). Unique. */
+  envNames?: string[];
 }
 
 /**

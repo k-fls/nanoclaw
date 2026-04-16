@@ -2,6 +2,7 @@
  * Per-group credential system — type definitions.
  */
 import type { CredentialScope, GroupScope } from './oauth-types.js';
+import type { DockerEnvName } from './docker-env.js';
 import type { ChatIO } from '../interaction/types.js';
 
 /** On-disk credential file format at ~/.config/nanoclaw/credentials/{scope}/{service}.json */
@@ -41,7 +42,7 @@ export interface CredentialProvider {
     group: import('../types.js').RegisteredGroup,
     tokenEngine: import('./token-substitute.js').TokenSubstituteEngine,
   ): {
-    env: Record<string, string>;
+    env: Partial<Record<DockerEnvName, string>>;
   };
 
   /** After flow completes, parse raw result and save via token engine. */

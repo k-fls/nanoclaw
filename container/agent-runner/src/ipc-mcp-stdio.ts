@@ -594,14 +594,21 @@ server.tool(
   },
 );
 
+const ENV_VARS_PATH = path.join(process.env.HOME || '/home/node', '.env-vars');
+
 server.tool(
   'get_credential',
-  `Pull a substitute token for a provider's credentials. Use this when:
-- Credentials were added after your container started (e.g. user ran /auth mid-session)
-- An OAuth flow just completed and you need the substitute token
-- A provider wasn't provisioned at startup (no env var set)
+  `Pull a substitute token for a credential that exists in keys/ or borrowed/ but not yet in tokens/.
 
-The substitute token works transparently — use it in Authorization headers, env vars, or CLI tools. The host proxy swaps it for the real credential on outbound HTTPS.`,
+Use this when a credential appears in /workspace/group/credentials/keys/ (or borrowed/) but has no corresponding entry in /workspace/group/credentials/tokens/. This happens when:
+- A credential was added after your container started (e.g. user ran /auth mid-session)
+- A grantor added or updated a credential that is borrowed by this scope
+
+Do NOT call this if the credential already has an entry in tokens/ — just use that token directly.
+
+The returned substitute token works transparently — use it in Authorization headers, env vars, or CLI tools. The host proxy swaps it for the real credential on outbound HTTPS.
+
+Env vars are automatically injected into ~/.env-vars so subsequent Bash calls pick them up.`,
   {
     providerId: z
       .string()
@@ -613,9 +620,17 @@ The substitute token works transparently — use it in Authorization headers, en
       .describe(
         'Credential type path. Use "oauth" for OAuth tokens, "api_key" for API key credentials. Check the provider\'s .jsonl file in /workspace/global/credentials/providers/ for the correct path.',
       ),
+    envVar: z
+      .string()
+      .optional()
+      .describe(
+        'Optional env var name to publish this credential as (e.g. "MY_API_KEY"). Must be uppercase with underscores. Reserved system names are rejected.',
+      ),
   },
   async (args) => {
-    const url = `${proxyBase}/credentials/${encodeURIComponent(args.providerId)}/substitute?${new URLSearchParams({ path: args.credentialPath })}`;
+    const params = new URLSearchParams({ path: args.credentialPath });
+    if (args.envVar) params.set('envVar', args.envVar);
+    const url = `${proxyBase}/credentials/${encodeURIComponent(args.providerId)}/substitute?${params.toString()}`;
 
     try {
       const resp = await fetch(url);
@@ -633,15 +648,22 @@ The substitute token works transparently — use it in Authorization headers, en
         };
       }
 
-      const lines = [`Substitute token for ${args.providerId}:`, `  ${body.substitute}`];
-      if (body.envVars && Object.keys(body.envVars).length > 0) {
-        lines.push('', 'Env var mapping:');
-        for (const [name, value] of Object.entries(body.envVars)) {
-          lines.push(`  export ${name}=${value}`);
+      // Append env var declarations to ~/.env-vars (sourced by BASH_ENV)
+      const envNames: string[] = body.envNames ?? [];
+      if (envNames.length > 0) {
+        const lines = envNames.map((name: string) => `export ${name}=${body.substitute}`);
+        fs.appendFileSync(ENV_VARS_PATH, lines.join('\n') + '\n');
+      }
+
+      const resultLines = [`Substitute token for ${args.providerId}:`, `  ${body.substitute}`];
+      if (envNames.length > 0) {
+        resultLines.push('', 'Env vars injected into ~/.env-vars:');
+        for (const name of envNames) {
+          resultLines.push(`  ${name}=${body.substitute}`);
         }
       }
 
-      return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      return { content: [{ type: 'text' as const, text: resultLines.join('\n') }] };
     } catch (err: unknown) {
       return {
         content: [
