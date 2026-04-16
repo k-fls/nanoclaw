@@ -154,6 +154,52 @@ describe('createAccessCheck', () => {
       check(asGroupScope('borrower'), asCredentialScope('nonexistent')),
     ).toBe(false);
   });
+
+  it('logs warning when borrower has stale credentialSource (grant revoked)', async () => {
+    const { logger } = await import('../logger.js');
+
+    groups.set(
+      'borrower',
+      makeGroup('borrower', { credentialSource: 'grantor' }),
+    );
+    // Grantor exists but does NOT list borrower as grantee
+    groups.set('grantor', makeGroup('grantor'));
+
+    vi.mocked(logger.warn).mockClear();
+
+    const denied = check(
+      asGroupScope('borrower'),
+      asCredentialScope('grantor'),
+    );
+    expect(denied).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        group: asGroupScope('borrower'),
+        source: asCredentialScope('grantor'),
+      }),
+      expect.stringContaining('credentialSource'),
+    );
+  });
+
+  it('does not log warning for bilateral grant', async () => {
+    const { logger } = await import('../logger.js');
+
+    groups.set(
+      'borrower',
+      makeGroup('borrower', { credentialSource: 'grantor' }),
+    );
+    groups.set(
+      'grantor',
+      makeGroup('grantor', { credentialGrantees: ['borrower'] }),
+    );
+
+    vi.mocked(logger.warn).mockClear();
+
+    expect(check(asGroupScope('borrower'), asCredentialScope('grantor'))).toBe(
+      true,
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
 });
 
 describe('importEnvToMainGroup', () => {

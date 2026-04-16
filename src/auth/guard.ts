@@ -126,12 +126,15 @@ export function createAuthGuard(
     },
 
     onStreamResult(result): void {
-      if (
-        typeof result.error === 'string' &&
-        isConfirmedAuthError(result.error)
-      ) {
+      // result.error is set by the runner protocol — agent cannot forge it.
+      // Trust isAuthError() directly, no proxy confirmation needed.
+      if (typeof result.error === 'string' && isAuthError(result.error)) {
         streamedAuthError = result.error;
-      } else if (
+      }
+      // result.result is agent text output — could be spoofed.
+      // Require proxy confirmation before treating as auth error.
+      if (
+        !streamedAuthError &&
         typeof result.result === 'string' &&
         isConfirmedAuthError(result.result)
       ) {

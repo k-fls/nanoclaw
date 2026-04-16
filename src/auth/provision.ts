@@ -154,10 +154,19 @@ export function createAccessCheck(
     // Grantor must have listed this borrower
     const grantor = groupResolver(asGroupScope(sourceScope as string));
     if (!grantor) return false;
-    return (
+    const granted =
       grantor.containerConfig?.credentialGrantees?.has(
         groupScope as string,
-      ) === true
-    );
+      ) === true;
+
+    if (!granted) {
+      logger.warn(
+        { group: groupScope, source: sourceScope },
+        'Credential access denied: credentialSource points at a grantor that no longer lists this group. ' +
+          'Run `/creds stop-borrowing` in the borrower group or `/creds share` in the grantor group.',
+      );
+    }
+
+    return granted;
   };
 }

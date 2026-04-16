@@ -87,10 +87,32 @@ function parseApiError(error: string): AuthErrorInfo | null {
   return { code, message };
 }
 
+/**
+ * SDK synthetic auth errors — shorter messages that don't match the
+ * structured API_ERROR_RE format.
+ * Format: "Invalid API key · Fix external API key"
+ * (isApiErrorMessage=true, error="authentication_failed")
+ * The SDK may also emit other short-form auth messages that
+ * don't match the old API_ERROR_RE format.
+ */
+const SDK_AUTH_PHRASES = [
+  'invalid api key',
+  'authentication_failed',
+  'fix external api key',
+];
+
+function parseSdkAuthError(error: string): AuthErrorInfo | null {
+  const lower = error.trim().toLowerCase();
+  if (SDK_AUTH_PHRASES.some((p) => lower.includes(p))) {
+    return { code: 401, message: error.trim() };
+  }
+  return null;
+}
+
 /** Classify a container error. Returns null if not auth-related. */
 export function classifyAuthError(error?: string): AuthErrorInfo | null {
   if (!error) return null;
-  return parseApiError(error);
+  return parseApiError(error) ?? parseSdkAuthError(error);
 }
 
 /** Check if a container error indicates credentials should be replaced. */
