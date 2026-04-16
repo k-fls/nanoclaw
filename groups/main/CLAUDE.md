@@ -121,6 +121,22 @@ Your home directory (`/home/node`) is persisted across sessions, but **only subd
 
 If a tool expects a dotfile in `~`, create the config in a subfolder and symlink it, or use the tool's env var to point at the subfolder path.
 
+### Custom environment variables
+
+To persist environment variables across sessions, append JSONL entries to `/workspace/group/env-custom.jsonl`. Each line is a JSON object with `name` and `value`:
+
+```bash
+echo '{"name":"MY_API_URL","value":"https://example.com/api"}' >> /workspace/group/env-custom.jsonl
+```
+
+Rules:
+- Names must be uppercase with underscores (e.g. `MY_VAR`, `_PRIVATE`), matching `^[A-Z_][A-Z0-9_]*$`
+- System and credential env vars cannot be overridden (e.g. `PATH`, `HOME`, `PROXY_HOST`, `GH_TOKEN`)
+- Duplicate names: last entry wins
+- The file is curated on each container start — invalid or reserved entries are silently excluded
+- Variables become available in bash and the SDK environment on the next session start
+- For **immediate** use in the current session, also call `get_credential` with the `envVar` parameter, or write directly to `~/.env-vars` (but note `~/.env-vars` is overwritten on restart)
+
 ---
 
 ## Managing Groups

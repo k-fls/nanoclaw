@@ -29,7 +29,9 @@ import {
   allocateContainerIP,
   applyCredentialProxyArgs,
   networkArgs,
+  pushEnv,
 } from './auth/container-args.js';
+import { writeEnvVarsFile } from './auth/docker-env.js';
 import { CREDENTIALS_DIR } from './auth/store.js';
 import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { validateAdditionalMounts } from './mount-security.js';
@@ -372,17 +374,12 @@ export function buildVolumeMounts(
 export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
-  group: RegisteredGroup,
-  tokenEngine: TokenSubstituteEngine,
   ip: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
-  args.push('-e', `TZ=${TIMEZONE}`);
-
-  // Credential proxy args: MITM certs, iptables env vars, substitute tokens, user mapping
-  applyCredentialProxyArgs(args, group, tokenEngine);
+  pushEnv(args, 'TZ', TIMEZONE);
 
   // Runtime-specific args for host gateway resolution and network placement
   args.push(...hostGatewayArgs());
@@ -396,8 +393,8 @@ export function buildContainerArgs(
     }
   }
 
-  args.push(CONTAINER_IMAGE);
-
+  // NOTE: CONTAINER_IMAGE is NOT pushed here — callers must push it after
+  // injecting credential proxy args and any other -e/-v flags.
   return args;
 }
 
@@ -433,10 +430,19 @@ export async function runContainerAgent(
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,
-    group,
-    tokenEngine,
     containerIP,
   );
+
+  // Credential proxy args: MITM certs, iptables env vars, substitute tokens, user mapping.
+  // Discovery providers return env vars for ~/.env-vars instead of Docker -e.
+  const envFileVars = applyCredentialProxyArgs(containerArgs, group, tokenEngine);
+
+  // Build ~/.env-vars: credential substitutes + curated agent env-custom.jsonl
+  const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder, 'home');
+  writeEnvVarsFile(envFileVars, groupDir, path.join(groupHomeDir, '.env-vars'));
+
+  // Image name must come after all -e/-v flags
+  containerArgs.push(CONTAINER_IMAGE);
 
   logger.debug(
     {

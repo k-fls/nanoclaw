@@ -645,6 +645,25 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
+  /**
+   * Re-read ~/.env-vars and merge into sdkEnv.
+   * Called before each query() so mid-session get_credential additions are picked up.
+   */
+  const envVarsPath = path.join(process.env.HOME || '/home/node', '.env-vars');
+  function refreshEnvVars(): void {
+    let content: string;
+    try {
+      content = fs.readFileSync(envVarsPath, 'utf-8');
+    } catch {
+      return; // file doesn't exist yet
+    }
+    for (const line of content.split('\n')) {
+      // Parse "export KEY=VALUE" or "KEY=VALUE" lines
+      const m = /^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line);
+      if (m) sdkEnv[m[1]] = m[2];
+    }
+  }
+
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
@@ -701,6 +720,7 @@ async function main(): Promise<void> {
       );
 
       lastErrorEmitted = false;
+      refreshEnvVars();
       const queryResult = await runQuery(
         prompt,
         sessionId,

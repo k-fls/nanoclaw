@@ -118,7 +118,7 @@ describe('claudeProvider', () => {
       });
 
       expect(result.env.ANTHROPIC_API_KEY).toBeDefined();
-      expect(result.env.ANTHROPIC_API_KEY.slice(0, 14)).toBe(real.slice(0, 14));
+      expect(result.env.ANTHROPIC_API_KEY!.slice(0, 14)).toBe(real.slice(0, 14));
       expect(result.env.ANTHROPIC_API_KEY).not.toBe(real);
     });
 
@@ -132,7 +132,7 @@ describe('claudeProvider', () => {
       });
 
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN!.slice(0, 14)).toBe(
         real.slice(0, 14),
       );
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).not.toBe(real);
@@ -194,11 +194,11 @@ describe('claudeProvider', () => {
       );
 
       expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
-      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN.slice(0, 14)).toBe(
+      expect(result.env.CLAUDE_CODE_OAUTH_TOKEN!.slice(0, 14)).toBe(
         realAccess.slice(0, 14),
       );
       // Refresh token is NOT in env — only in .credentials.json
-      expect(result.env.CLAUDE_REFRESH_TOKEN).toBeUndefined();
+      expect((result.env as Record<string, unknown>).CLAUDE_REFRESH_TOKEN).toBeUndefined();
     });
   });
 

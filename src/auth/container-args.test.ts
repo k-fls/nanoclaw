@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import type { RegisteredGroup } from '../types.js';
+import type { DockerEnvName } from './docker-env.js';
 
 // Mock logger to capture warnings
 vi.mock('../logger.js', () => ({
@@ -15,7 +16,7 @@ vi.mock('../logger.js', () => ({
 // Mock registry — control which providers exist
 const mockBuiltinProviders: Array<{
   id: string;
-  provision: () => { env: Record<string, string> };
+  provision: () => { env: Partial<Record<DockerEnvName, string>> };
 }> = [];
 const mockDiscoveryIds: string[] = [];
 const mockDiscoveryProviders = new Map<string, { id: string; envVars?: Record<string, string>; substituteConfig: any }>();
@@ -54,7 +55,7 @@ describe('injectSubstituteCredentials', () => {
     vi.mocked(logger.warn).mockClear();
   });
 
-  it('injects env vars from builtin and discovery providers', () => {
+  it('injects builtin env vars via Docker -e and returns discovery vars for file', () => {
     mockBuiltinProviders.push({
       id: 'claude',
       provision: () => ({ env: { ANTHROPIC_API_KEY: 'sub_key' } }),
@@ -67,35 +68,41 @@ describe('injectSubstituteCredentials', () => {
     });
 
     const args: string[] = [];
-    injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
 
+    // Builtin provider goes to Docker -e args
     expect(args).toContain('-e');
     expect(args).toContain('ANTHROPIC_API_KEY=sub_key');
-    expect(args).toContain('GH_TOKEN=sub_GH_TOKEN_github');
+
+    // Discovery provider goes to env file vars (not in Docker -e)
+    expect(envFileVars).toEqual({ GH_TOKEN: 'sub_GH_TOKEN_github' });
+    expect(args).not.toContain('GH_TOKEN=sub_GH_TOKEN_github');
   });
 
   it('logs warning and skips when env var is claimed by another provider', () => {
     mockBuiltinProviders.push({
       id: 'builtin-a',
-      provision: () => ({ env: { SHARED_TOKEN: 'sub_a' } }),
+      provision: () => ({ env: { ANTHROPIC_API_KEY: 'sub_a' } }),
     });
     mockDiscoveryIds.push('discovery-b');
     mockDiscoveryProviders.set('discovery-b', {
       id: 'discovery-b',
-      envVars: { SHARED_TOKEN: 'oauth' },
+      envVars: { ANTHROPIC_API_KEY: 'oauth' },
       substituteConfig: {},
     });
 
     const args: string[] = [];
-    injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
 
-    // First provider wins
-    expect(args.filter(a => a.startsWith('SHARED_TOKEN='))).toEqual(['SHARED_TOKEN=sub_a']);
+    // First provider wins (builtin via Docker -e)
+    expect(args.filter(a => a.startsWith('ANTHROPIC_API_KEY='))).toEqual(['ANTHROPIC_API_KEY=sub_a']);
+    // Discovery collision not in env file vars
+    expect(envFileVars).toEqual({});
 
     // Warning logged for the duplicate
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
-        envVar: 'SHARED_TOKEN',
+        envVar: 'ANTHROPIC_API_KEY',
         provider: 'discovery-b',
         existingProvider: 'builtin-a',
       }),
@@ -117,10 +124,55 @@ describe('injectSubstituteCredentials', () => {
     });
 
     const args: string[] = [];
-    injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
 
-    expect(args).toContain('GH_TOKEN=sub_GH_TOKEN_github');
-    expect(args).toContain('SLACK_TOKEN=sub_SLACK_TOKEN_slack');
+    // Both go to env file vars (discovery providers)
+    expect(envFileVars).toEqual({
+      GH_TOKEN: 'sub_GH_TOKEN_github',
+      SLACK_TOKEN: 'sub_SLACK_TOKEN_slack',
+    });
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('logs warning when two discovery providers claim the same env var', () => {
+    mockDiscoveryIds.push('provider-a', 'provider-b');
+    mockDiscoveryProviders.set('provider-a', {
+      id: 'provider-a',
+      envVars: { SHARED_VAR: 'oauth' },
+      substituteConfig: {},
+    });
+    mockDiscoveryProviders.set('provider-b', {
+      id: 'provider-b',
+      envVars: { SHARED_VAR: 'oauth' },
+      substituteConfig: {},
+    });
+
+    const args: string[] = [];
+    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+
+    // First discovery provider wins
+    expect(envFileVars).toEqual({ SHARED_VAR: 'sub_SHARED_VAR_provider-a' });
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        envVar: 'SHARED_VAR',
+        provider: 'provider-b',
+        existingProvider: 'provider-a',
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('returns empty env file vars when no discovery providers exist', () => {
+    mockBuiltinProviders.push({
+      id: 'claude',
+      provision: () => ({ env: { ANTHROPIC_API_KEY: 'sub_key' } }),
+    });
+
+    const args: string[] = [];
+    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+
+    expect(args).toContain('ANTHROPIC_API_KEY=sub_key');
+    expect(envFileVars).toEqual({});
   });
 });

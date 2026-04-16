@@ -1241,4 +1241,158 @@ describe('TokenSubstituteEngine', () => {
       expect(sub).toBeNull();
     });
   });
+
+  // ── envNames ──────────────────────────────────────────────────────
+
+  describe('envNames', () => {
+    const envScope = asGroupScope('env-scope');
+    const envCredScope = asCredentialScope('env-scope');
+    const envConfig: SubstituteConfig = { prefixLen: 4, suffixLen: 4, delimiters: '-' };
+
+    function storeToken(providerId: string): void {
+      resolver.store(providerId, envCredScope, CRED_OAUTH, {
+        value: 'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+    }
+
+    it('stores envNames on generateSubstitute', () => {
+      storeToken('github');
+      const sub = engine.generateSubstitute(
+        'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'github', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        ['GH_TOKEN', 'GITHUB_TOKEN'],
+      );
+      expect(sub).not.toBeNull();
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.GH_TOKEN).toBe(sub);
+      expect(vars.GITHUB_TOKEN).toBe(sub);
+    });
+
+    it('deduplicates envNames on generateSubstitute', () => {
+      storeToken('dedup-gen');
+      const sub = engine.generateSubstitute(
+        'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'dedup-gen', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        ['MY_TOKEN', 'MY_TOKEN', 'MY_TOKEN'],
+      );
+      expect(sub).not.toBeNull();
+
+      const vars = engine.collectEnvVars(envScope);
+      // Only one entry for MY_TOKEN
+      expect(Object.keys(vars).filter(k => k === 'MY_TOKEN')).toHaveLength(1);
+    });
+
+    it('getOrCreateSubstitute passes envNames to new substitutes', () => {
+      storeToken('orcreate-env');
+      const sub = engine.getOrCreateSubstitute(
+        'orcreate-env', {}, envScope, envConfig, CRED_OAUTH,
+        ['MY_VAR'],
+      );
+      expect(sub).not.toBeNull();
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.MY_VAR).toBe(sub);
+    });
+
+    it('getOrCreateSubstitute merges envNames into existing substitutes', () => {
+      storeToken('merge-env');
+      const sub1 = engine.getOrCreateSubstitute(
+        'merge-env', {}, envScope, envConfig, CRED_OAUTH,
+        ['FIRST_VAR'],
+      );
+      expect(sub1).not.toBeNull();
+
+      // Call again with different envNames — should merge
+      const sub2 = engine.getOrCreateSubstitute(
+        'merge-env', {}, envScope, envConfig, CRED_OAUTH,
+        ['SECOND_VAR'],
+      );
+      expect(sub2).toBe(sub1); // same substitute
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.FIRST_VAR).toBe(sub1);
+      expect(vars.SECOND_VAR).toBe(sub1);
+    });
+
+    it('mergeEnvNames adds new names without duplicating', () => {
+      storeToken('merge-dedup');
+      const sub = engine.getOrCreateSubstitute(
+        'merge-dedup', {}, envScope, envConfig, CRED_OAUTH,
+        ['EXISTING'],
+      );
+      expect(sub).not.toBeNull();
+
+      engine.mergeEnvNames(envScope, 'merge-dedup', sub!, ['EXISTING', 'NEW_ONE']);
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.EXISTING).toBe(sub);
+      expect(vars.NEW_ONE).toBe(sub);
+    });
+
+    it('mergeEnvNames produces sorted output regardless of insertion order', () => {
+      storeToken('merge-sort');
+      const sub = engine.getOrCreateSubstitute(
+        'merge-sort', {}, envScope, envConfig, CRED_OAUTH,
+        ['ZEBRA', 'ALPHA'],
+      );
+      expect(sub).not.toBeNull();
+
+      engine.mergeEnvNames(envScope, 'merge-sort', sub!, ['MIDDLE', 'BETA']);
+
+      // Access the entry's envNames directly via collectEnvVars order isn't enough —
+      // we need to verify the underlying array. Use getSubstitute + collectEnvVars.
+      const ps = (engine as any).scopes.get(envScope)?.get('merge-sort');
+      const entry = ps?.substitutes.get(sub!);
+      expect(entry.envNames).toEqual(['ALPHA', 'BETA', 'MIDDLE', 'ZEBRA']);
+    });
+
+    it('mergeEnvNames is a no-op for unknown substitute', () => {
+      // Should not throw
+      engine.mergeEnvNames(envScope, 'nonexistent', 'fake_sub', ['FOO']);
+    });
+
+    it('collectEnvVars returns empty for scope with no substitutes', () => {
+      const vars = engine.collectEnvVars(asGroupScope('empty-env'));
+      expect(vars).toEqual({});
+    });
+
+    it('collectEnvVars aggregates across providers', () => {
+      storeToken('provider-a');
+      resolver.store('provider-b', envCredScope, CRED_OAUTH, {
+        value: 'tok_env_bbbb_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      const subA = engine.generateSubstitute(
+        'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'provider-a', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        ['TOKEN_A'],
+      );
+      const subB = engine.generateSubstitute(
+        'tok_env_bbbb_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'provider-b', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        ['TOKEN_B'],
+      );
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(vars.TOKEN_A).toBe(subA);
+      expect(vars.TOKEN_B).toBe(subB);
+    });
+
+    it('omits entries without envNames from collectEnvVars', () => {
+      storeToken('no-env');
+      engine.generateSubstitute(
+        'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'no-env', {}, envScope, envConfig, CRED_OAUTH,
+      );
+      // No envNames set
+
+      const vars = engine.collectEnvVars(envScope);
+      expect(Object.keys(vars)).toHaveLength(0);
+    });
+  });
 });

@@ -79,15 +79,21 @@ function detectProxyBindHost(): string {
  * Providers handle writing any provider-specific files (e.g. .credentials.json).
  */
 /** @internal Exported for testing. */
+/**
+ * Provision substitute credentials from all providers.
+ * Builtin providers (Claude) inject via Docker -e. Discovery providers
+ * return their env vars for writing to ~/.env-vars instead.
+ */
 export function injectSubstituteCredentials(
   args: string[],
   group: RegisteredGroup,
   tokenEngine: TokenSubstituteEngine,
-): void {
+): Record<string, string> {
   const claimed = new Map<string, string>(); // env var name → provider id
 
-  function inject(env: Record<string, string>, providerId: string): void {
+  function injectDocker(env: Partial<Record<DockerEnvName, string>>, providerId: string): void {
     for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) continue;
       const owner = claimed.get(key);
       if (owner) {
         logger.warn(
@@ -97,24 +103,44 @@ export function injectSubstituteCredentials(
         continue;
       }
       claimed.set(key, providerId);
-      args.push('-e', `${key}=${value}`);
+      pushEnv(args, key as DockerEnvName, value);
     }
   }
 
-  // Builtin providers (Claude)
+  // Builtin providers (Claude) — inject via Docker -e
   for (const provider of getAllProviders()) {
     const { env } = provider.provision(group, tokenEngine);
-    inject(env, provider.id);
+    injectDocker(env, provider.id);
   }
 
-  // Discovery providers (GitHub, Google, etc.)
+  // Discovery providers (GitHub, Google, etc.) — collect for ~/.env-vars file
+  const envFileVars: Record<string, string> = {};
   for (const id of getAllDiscoveryProviderIds()) {
     const provider = getDiscoveryProvider(id);
     if (!provider) continue;
     const env = provisionEnvVars(provider, group, tokenEngine);
-    inject(env, id);
+    for (const [key, value] of Object.entries(env)) {
+      const owner = claimed.get(key);
+      if (owner) {
+        logger.warn(
+          { envVar: key, provider: id, existingProvider: owner, group: group.folder },
+          'Env var already claimed by another provider, skipping',
+        );
+        continue;
+      }
+      claimed.set(key, id);
+      envFileVars[key] = value;
+    }
   }
+
+  return envFileVars;
 }
+
+// Re-export from docker-env.ts (separated to avoid circular imports)
+export { DOCKER_ENV_NAMES, pushEnv } from './docker-env.js';
+export type { DockerEnvName } from './docker-env.js';
+import { pushEnv } from './docker-env.js';
+import type { DockerEnvName } from './docker-env.js';
 
 // ── Shared proxy plumbing ──────────────────────────────────────────
 
@@ -131,8 +157,8 @@ export function applyTransparentProxyArgs(args: string[]): void {
   // no-new-privileges prevents re-escalation via setuid binaries after privilege drop.
   args.push('--cap-add=NET_ADMIN');
   args.push('--security-opt=no-new-privileges');
-  args.push('-e', `PROXY_HOST=${CONTAINER_HOST_GATEWAY}`);
-  args.push('-e', `PROXY_PORT=${CREDENTIAL_PROXY_PORT}`);
+  pushEnv(args, 'PROXY_HOST', CONTAINER_HOST_GATEWAY);
+  pushEnv(args, 'PROXY_PORT', String(CREDENTIAL_PROXY_PORT));
 
   // Mount MITM CA cert so system CA store trusts our forged certs
   const caCertPath = getMitmCaCertPath();
@@ -141,20 +167,20 @@ export function applyTransparentProxyArgs(args: string[]): void {
     `${caCertPath}:/usr/local/share/ca-certificates/nanoclaw-mitm.crt:ro`,
   );
   // Also set NODE_EXTRA_CA_CERTS for Node.js apps that don't use system store
-  args.push(
-    '-e',
-    'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/nanoclaw-mitm.crt',
-  );
+  pushEnv(args, 'NODE_EXTRA_CA_CERTS', '/usr/local/share/ca-certificates/nanoclaw-mitm.crt');
 
   // Transparent proxy: entrypoint starts as root for iptables, then drops
   // privileges via setpriv. Pass host uid/gid so it drops to the right user.
   const hostUid = process.getuid?.();
   const hostGid = process.getgid?.();
   if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-    args.push('-e', `HOST_UID=${hostUid}`);
-    args.push('-e', `HOST_GID=${hostGid}`);
-    args.push('-e', 'HOME=/home/node');
+    pushEnv(args, 'HOST_UID', String(hostUid));
+    pushEnv(args, 'HOST_GID', String(hostGid));
+    pushEnv(args, 'HOME', '/home/node');
   }
+
+  // Source ~/.env-vars on every non-interactive bash invocation
+  pushEnv(args, 'BASH_ENV', '/home/node/.env-vars');
 }
 
 // ── Main entry point ───────────────────────────────────────────────
@@ -163,16 +189,22 @@ export function applyTransparentProxyArgs(args: string[]): void {
  * Apply all credential-proxy-related Docker args to a container args array.
  * Transparent proxy plumbing + substitute token injection.
  */
+/**
+ * Apply all credential-proxy-related Docker args to a container args array.
+ * Transparent proxy plumbing + substitute token injection.
+ * Returns env vars for discovery providers (to write to ~/.env-vars).
+ */
 export function applyCredentialProxyArgs(
   args: string[],
   group: RegisteredGroup,
   tokenEngine: TokenSubstituteEngine,
-): void {
+): Record<string, string> {
   applyTransparentProxyArgs(args);
 
   // Generate format-preserving substitute tokens for the container.
   // Real credentials stay on the host; containers only see substitutes.
-  injectSubstituteCredentials(args, group, tokenEngine);
+  // Builtin providers inject via Docker -e; discovery providers return env vars for file.
+  return injectSubstituteCredentials(args, group, tokenEngine);
 }
 
 // ── Dedicated Docker network for static container IPs ─────────────────
