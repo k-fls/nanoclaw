@@ -337,6 +337,64 @@ describe('universal-oauth-handler', () => {
       expect(res.status).toBe(200);
     });
 
+    it('invokes onUpstreamResponse hook on non-401 responses', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider();
+      const hookCalls: Array<{ scope: string; url: string; chunks: string[] }> = [];
+      provider.onUpstreamResponse = (ctx) => {
+        const chunks: string[] = [];
+        ctx.upRes.on('data', (c: Buffer) => chunks.push(c.toString()));
+        hookCalls.push({
+          scope: ctx.scope as unknown as string,
+          url: ctx.clientReq.url || '',
+          chunks,
+        });
+      };
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const res = await executeHandler(handler, { path: '/v1/messages' });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toBe('{"ok":true}');
+      expect(hookCalls).toHaveLength(1);
+      expect(hookCalls[0].scope).toBe('test-scope');
+      expect(hookCalls[0].url).toBe('/v1/messages');
+      // Tee must observe the same bytes the client received
+      expect(hookCalls[0].chunks.join('')).toBe('{"ok":true}');
+    });
+
+    it('does not invoke onUpstreamResponse on 401 responses', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider();
+      let hookCount = 0;
+      provider.onUpstreamResponse = () => {
+        hookCount++;
+      };
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      serverResponseOverride = { status: 401, body: '{"error":"unauthorized"}' };
+      const res = await executeHandler(handler);
+
+      expect(res.status).toBe(401);
+      expect(hookCount).toBe(0);
+    });
+
+    it('swallows hook errors and still pipes response', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider();
+      provider.onUpstreamResponse = () => {
+        throw new Error('hook boom');
+      };
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const res = await executeHandler(handler);
+      expect(res.status).toBe(200);
+      expect(res.body).toBe('{"ok":true}');
+    });
+
     it('does not resolve refresh token substitutes in headers', async () => {
       const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();

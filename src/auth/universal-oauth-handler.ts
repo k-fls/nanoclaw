@@ -550,6 +550,20 @@ function createBearerSwapHandler(
           // Happy path: not an auth error, pipe through
           if (statusCode !== 401) {
             clientRes.writeHead(statusCode, upRes.headers);
+            if (provider.onUpstreamResponse) {
+              try {
+                provider.onUpstreamResponse({
+                  clientReq,
+                  upRes,
+                  scope: groupScope,
+                });
+              } catch (err) {
+                logger.error(
+                  { err, provider: provider.id },
+                  'onUpstreamResponse hook threw',
+                );
+              }
+            }
             upRes.pipe(clientRes);
             resolve();
             return;

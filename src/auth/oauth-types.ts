@@ -86,6 +86,19 @@ export interface OAuthProvider {
     scopeExclude?: string[];
     scopeInclude?: string[];
   };
+  /**
+   * Optional hook invoked on the bearer-swap happy path (non-401 responses)
+   * just before the upstream response is piped to the client. Consumers can
+   * attach their own tee (e.g. via a PassThrough) to observe the response
+   * body for usage accounting or similar. Must not modify the response.
+   */
+  onUpstreamResponse?(ctx: UpstreamResponseContext): void;
+}
+
+export interface UpstreamResponseContext {
+  clientReq: import('http').IncomingMessage;
+  upRes: import('http').IncomingMessage;
+  scope: GroupScope;
 }
 
 // ---------------------------------------------------------------------------
