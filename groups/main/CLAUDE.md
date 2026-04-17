@@ -77,9 +77,23 @@ Standard Markdown: `**bold**`, `*italic*`, `[links](url)`, `# headings`.
 
 This is the **main channel**, which has elevated privileges.
 
-## Authentication
+## Authentication & Credentials
 
-Anthropic credentials must be either an API key from console.anthropic.com (`ANTHROPIC_API_KEY`) or a long-lived OAuth token from `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`). Short-lived tokens from the system keychain or `~/.claude/.credentials.json` expire within hours and can cause recurring container 401s. The `/setup` skill walks through this. OneCLI manages credentials (including Anthropic auth) — run `onecli --help`.
+You never hold real API keys or tokens. The host runs a MITM credential proxy that sits between your container and the internet. All your HTTPS traffic routes through it.
+
+**How token swapping works:**
+- When your container starts, the host generates format-preserving substitute tokens for each configured provider. These look like real tokens (same prefix, suffix, length, character classes) but the middle is cryptographically randomized. You receive them via environment variables (e.g. `GH_TOKEN`, `ANTHROPIC_API_KEY`) and use them normally.
+- On every outbound request: the proxy matches the destination host+path, looks up your substitute token, swaps it for the real credential, and forwards to the upstream API.
+- On every response: if the response body contains a real token (e.g. from an OAuth token exchange), the proxy swaps it for a substitute before you see it.
+- You never see a real credential — not in env vars, not in headers, not in response bodies.
+
+**Auto-refresh:** When the proxy gets a 401/403 from an upstream API, it automatically attempts a token refresh using stored refresh tokens. Your request retries transparently.
+
+**Supported providers:** 60+ OAuth providers are supported (GitHub, Google, Slack, Stripe, Todoist, Linear, etc.). Each group has its own encrypted credential scope — your credentials are isolated from other groups.
+
+**Adding credentials:** The user can add or update credentials for any supported provider by running `/auth` in the messaging channel. You cannot invoke `/auth` yourself. If you encounter a 401 or need credentials for a service that isn't configured, tell the user to run `/auth` to set it up.
+
+**Anthropic credentials specifically:** Must be either an API key from console.anthropic.com (`ANTHROPIC_API_KEY`) or a long-lived OAuth token from `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`). Short-lived tokens from the system keychain expire within hours and cause recurring 401s.
 
 ## Container Mounts
 
@@ -95,6 +109,33 @@ Key paths inside the container:
 - `/workspace/project/store/messages.db` - SQLite database (read-write)
 - `/workspace/project/store/messages.db` (registered_groups table) - Group config
 - `/workspace/project/groups/` - All group folders
+
+### Home directory (`~`)
+
+Your home directory (`/home/node`) is persisted across sessions, but **only subdirectories survive** — files directly in `~` are removed between runs. To persist configuration, use a subfolder:
+
+- `~/.gitconfig` — will be lost
+- `~/.gitconfig.d/config` — persists
+- `~/.ssh/config` — persists (it's in a subfolder)
+- `~/.config/something/` — persists
+
+If a tool expects a dotfile in `~`, create the config in a subfolder and symlink it, or use the tool's env var to point at the subfolder path.
+
+### Custom environment variables
+
+To persist environment variables across sessions, append JSONL entries to `/workspace/group/env-custom.jsonl`. Each line is a JSON object with `name` and `value`:
+
+```bash
+echo '{"name":"MY_API_URL","value":"https://example.com/api"}' >> /workspace/group/env-custom.jsonl
+```
+
+Rules:
+- Names must be uppercase with underscores (e.g. `MY_VAR`, `_PRIVATE`), matching `^[A-Z_][A-Z0-9_]*$`
+- System and credential env vars cannot be overridden (e.g. `PATH`, `HOME`, `PROXY_HOST`, `GH_TOKEN`)
+- Duplicate names: last entry wins
+- The file is curated on each container start — invalid or reserved entries are silently excluded
+- Variables become available in bash and the SDK environment on the next session start
+- For **immediate** use in the current session, also call `get_credential` with the `envVar` parameter, or write directly to `~/.env-vars` (but note `~/.env-vars` is overwritten on restart)
 
 ---
 

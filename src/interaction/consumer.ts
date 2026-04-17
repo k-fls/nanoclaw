@@ -11,7 +11,7 @@ import type { InteractionQueue, InteractionEntry } from './queue.js';
 import type { InteractionEventKind } from './queue.js';
 import type { InteractionStatusRegistry } from './status.js';
 import type { ChatIO } from './types.js';
-import { getInteractionPrefix } from './types.js';
+import { brandChat } from './chat-io.js';
 import { logger } from '../logger.js';
 
 // ── InteractionAbortedError ─────────────────────────────────────────
@@ -151,7 +151,7 @@ export async function defaultHandler(
   entry: InteractionEntry,
   ctx: HandlerContext,
 ): Promise<void> {
-  const prefix = getInteractionPrefix();
+  const chat = brandChat(ctx.chat, '');
 
   ctx.statusRegistry.emit(
     entry.interactionId,
@@ -162,8 +162,8 @@ export async function defaultHandler(
 
   // Notification-only: no reply expected
   if (!entry.replyFn) {
-    await ctx.chat.send(
-      `${prefix}*${entry.sourceId}* ${entry.eventType}\n${entry.eventParam}` +
+    await chat.send(
+      `*${entry.sourceId}* ${entry.eventType}\n${entry.eventParam}` +
         (entry.eventUrl ? `\n${entry.eventUrl}` : ''),
     );
     ctx.statusRegistry.emit(
@@ -181,21 +181,21 @@ export async function defaultHandler(
 
   // Interactive: present and collect reply, loop until done
   const parts = [
-    `${prefix}*${entry.sourceId}* needs input.`,
+    `*${entry.sourceId}* needs input.`,
     entry.eventParam,
     entry.eventUrl,
-    'Reply when ready, or "cancel" to stop.',
+    'Reply when ready, or *0* to cancel.',
   ].filter(Boolean);
-  await ctx.chat.send(parts.join('\n'));
+  await chat.send(parts.join('\n'));
 
   let done = false;
   while (!done) {
     const timeoutMs = 10 * 60 * 1000; // 10 minutes
-    const reply = await ctx.chat.receive(timeoutMs);
+    const reply = await chat.receive(timeoutMs);
 
-    if (!reply || reply.trim().toLowerCase() === 'cancel') {
-      ctx.chat.hideMessage();
-      ctx.chat.advanceCursor();
+    if (!reply || reply.trim() === '0') {
+      chat.hideMessage();
+      chat.advanceCursor();
       ctx.statusRegistry.emit(
         entry.interactionId,
         entry.eventType,
@@ -209,8 +209,8 @@ export async function defaultHandler(
       return;
     }
 
-    ctx.chat.hideMessage();
-    ctx.chat.advanceCursor();
+    chat.hideMessage();
+    chat.advanceCursor();
 
     const result = await entry.replyFn(reply.trim());
     done = result.done;
@@ -222,8 +222,8 @@ export async function defaultHandler(
         'completed',
         result.response ?? 'done',
       );
-      await ctx.chat.send(
-        `${prefix}*${entry.sourceId}* completed.` +
+      await chat.send(
+        `*${entry.sourceId}* completed.` +
           (result.response ? ` ${result.response}` : ''),
       );
       logger.info(
@@ -232,7 +232,7 @@ export async function defaultHandler(
       );
     } else {
       // Not done — show response and prompt again
-      await ctx.chat.send(`${prefix}${result.response ?? 'Please try again.'}`);
+      await chat.send(result.response ?? 'Please try again.');
     }
   }
 }

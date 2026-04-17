@@ -1,15 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-
-vi.mock('@onecli-sh/sdk', () => ({
-  OneCLI: class {
-    applyContainerConfig = vi.fn().mockResolvedValue(true);
-    ensureAgent = vi.fn().mockResolvedValue({ name: 'test', identifier: 'test', created: true });
-  },
-}));
-
 import { dirFingerprint } from './container-runner.js';
 
 describe('dirFingerprint', () => {

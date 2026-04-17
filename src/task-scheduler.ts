@@ -19,6 +19,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
+import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -66,6 +67,7 @@ export interface SchedulerDependencies {
   getGroupByFolder: (folder: string) => RegisteredGroup | undefined;
   getSessions: () => Record<string, string>;
   queue: GroupQueue;
+  tokenEngine: TokenSubstituteEngine;
   onProcess: (
     groupJid: string,
     proc: ChildProcess,
@@ -188,6 +190,7 @@ async function runTask(
           task.group_folder,
           controls,
         ),
+      deps.tokenEngine,
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;

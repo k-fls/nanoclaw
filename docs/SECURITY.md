@@ -64,18 +64,19 @@ Messages and task operations are verified against group identity:
 | View all tasks | ✓ | Own only |
 | Manage other groups | ✓ | ✗ |
 
-### 5. Credential Isolation (OneCLI Agent Vault)
+### 5. Credential Isolation (MITM Credential Proxy)
 
-Real API credentials **never enter containers**. NanoClaw uses [OneCLI's Agent Vault](https://github.com/onecli/onecli) to proxy outbound requests and inject credentials at the gateway level.
+Real API credentials **never enter containers**. NanoClaw runs a host-side MITM credential proxy that intercepts all container HTTPS traffic.
 
 **How it works:**
-1. Credentials are registered once with `onecli secrets create`, stored and managed by OneCLI
-2. When NanoClaw spawns a container, it calls `applyContainerConfig()` to route outbound HTTPS through the OneCLI gateway
-3. The gateway matches requests by host and path, injects the real credential, and forwards
-4. Agents cannot discover real credentials — not in environment, stdin, files, or `/proc`
+1. At container startup, the host generates format-preserving substitute tokens for each provider — same prefix, suffix, length, and character classes as real tokens, but with a cryptographically randomized middle section
+2. Substitutes are passed to the container via environment variables (e.g. `GH_TOKEN`, `ANTHROPIC_API_KEY`)
+3. On every outbound request, the proxy matches the destination host+path against registered provider rules, swaps the substitute for the real credential, and forwards to the upstream
+4. On responses containing tokens (e.g. OAuth token exchanges), the proxy swaps real tokens back to substitutes before the container sees them
+5. Agents cannot discover real credentials — not in environment, stdin, files, `/proc`, or response bodies
 
-**Per-agent policies:**
-Each NanoClaw group gets its own OneCLI agent identity. This allows different credential policies per group (e.g. your sales agent vs. support agent). OneCLI supports rate limits, and time-bound access and approval flows are on the roadmap.
+**Per-group credential scopes:**
+Each NanoClaw group has its own encrypted credential scope at `~/.config/nanoclaw/credentials/{scope}/`. Groups can borrow credentials from other scopes with bilateral access checks. Automatic token refresh handles expired credentials transparently.
 
 **NOT Mounted:**
 - Channel auth sessions (`store/auth/`) — host only
@@ -110,7 +111,7 @@ Each NanoClaw group gets its own OneCLI agent identity. This allows different cr
 │  • IPC authorization                                              │
 │  • Mount validation (external allowlist)                          │
 │  • Container lifecycle                                            │
-│  • OneCLI Agent Vault (injects credentials, enforces policies)   │
+│  • Credential proxy (swaps substitute tokens for real credentials)│
 └────────────────────────────────┬─────────────────────────────────┘
                                  │
                                  ▼ Explicit mounts only, no secrets
@@ -119,7 +120,7 @@ Each NanoClaw group gets its own OneCLI agent identity. This allows different cr
 │  • Agent execution                                                │
 │  • Bash commands (sandboxed)                                      │
 │  • File operations (limited to mounts)                            │
-│  • API calls routed through OneCLI Agent Vault                   │
+│  • API calls routed through host credential proxy                │
 │  • No real credentials in environment or filesystem              │
 └──────────────────────────────────────────────────────────────────┘
 ```

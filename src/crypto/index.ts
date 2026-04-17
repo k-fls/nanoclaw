@@ -6,19 +6,18 @@ import os from 'os';
 import path from 'path';
 
 import { AesSecretBackend } from './aes.js';
-import { isEncrypted } from './types.js';
 import { logger } from '../logger.js';
 
 // ── Re-exports ──────────────────────────────────────────────────────────────
 
 export type { SecretBackend } from './types.js';
-export { isEncrypted, ENC_PREFIX } from './types.js';
 export { AesSecretBackend } from './aes.js';
 export type { GpgKeyMeta } from './gpg.js';
 export {
   isGpgAvailable,
   ensureGpgKey,
   exportPublicKey,
+  exportPublicKeyBinary,
   gpgDecrypt,
   isPgpMessage,
   gpgHome,
@@ -70,21 +69,12 @@ export function encrypt(plaintext: string): string {
   return getSecretBackend().encrypt(plaintext);
 }
 
-/** Decrypt value with the file-based AES backend. Passes through plaintext. */
+/** Decrypt value with the file-based AES backend. Throws on non-encrypted input. */
 export function decrypt(value: string): string {
   return getSecretBackend().decrypt(value);
 }
 
 // ── Key rotation helpers ────────────────────────────────────────────────────
-
-/**
- * Check whether a value needs re-encryption (encrypted with a different key).
- * Returns false for plaintext values.
- */
-export function needsReEncryption(value: string): boolean {
-  if (!backend) return false;
-  return isEncrypted(value) && !backend.isCurrentKey(value);
-}
 
 /**
  * Re-encrypt a value with the current key. Decrypts then re-encrypts.

@@ -78,11 +78,11 @@ export class AesSecretBackend implements SecretBackend {
 
   /** Decrypt enc: prefixed string, or return plaintext as-is. */
   decrypt(value: string): string {
-    if (!value.startsWith(ENC_PREFIX)) return value;
-
     const parts = value.split(':');
     // enc : algorithm : keyHash : iv : tag : ciphertext
-    if (parts.length !== 6) throw new Error('Malformed encrypted value');
+    if (parts.length !== 6 || !value.startsWith(ENC_PREFIX)) {
+      throw new Error('Malformed encrypted value');
+    }
 
     const storedHash = parts[2];
     if (storedHash && storedHash !== this.hash16) {
@@ -101,9 +101,8 @@ export class AesSecretBackend implements SecretBackend {
   }
 
   isCurrentKey(value: string): boolean {
-    if (!value.startsWith(ENC_PREFIX)) return false;
     const parts = value.split(':');
-    if (parts.length !== 6) return false;
+    if (parts.length !== 6 || !value.startsWith(ENC_PREFIX)) return false;
     return parts[2] === this.hash16;
   }
 

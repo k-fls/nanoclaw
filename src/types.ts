@@ -30,6 +30,8 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  credentialSource?: string; // folder name of the group to borrow credentials from (borrower side)
+  credentialGrantees?: Set<string>; // folder names of groups granted access to this group's credentials (grantor side)
 }
 
 export interface RegisteredGroup {
@@ -40,6 +42,13 @@ export interface RegisteredGroup {
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+}
+
+/** Group's folder as a typed GroupScope for engine use. */
+export function scopeOf(
+  group: RegisteredGroup,
+): import('./auth/oauth-types.js').GroupScope {
+  return group.folder as unknown as import('./auth/oauth-types.js').GroupScope;
 }
 
 export interface NewMessage {

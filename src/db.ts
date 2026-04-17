@@ -613,6 +613,16 @@ export function getAllSessions(): Record<string, string> {
 
 // --- Registered group accessors ---
 
+import type { ContainerConfig } from './types.js';
+
+/** Hydrate Set fields after JSON.parse (credentialGrantees: array → Set). */
+function hydrateContainerConfig(raw: ContainerConfig): ContainerConfig {
+  if (Array.isArray(raw.credentialGrantees)) {
+    raw.credentialGrantees = new Set(raw.credentialGrantees as unknown as string[]);
+  }
+  return raw;
+}
+
 export function getRegisteredGroup(
   jid: string,
 ): (RegisteredGroup & { jid: string }) | undefined {
@@ -645,7 +655,7 @@ export function getRegisteredGroup(
     trigger: row.trigger_pattern,
     added_at: row.added_at,
     containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
+      ? hydrateContainerConfig(JSON.parse(row.container_config))
       : undefined,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
@@ -666,7 +676,9 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.folder,
     group.trigger,
     group.added_at,
-    group.containerConfig ? JSON.stringify(group.containerConfig) : null,
+    group.containerConfig ? JSON.stringify(group.containerConfig, (_k, v) =>
+      v instanceof Set ? [...v].sort() : v,
+    ) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     group.isMain ? 1 : 0,
   );
@@ -698,7 +710,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       trigger: row.trigger_pattern,
       added_at: row.added_at,
       containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
+        ? hydrateContainerConfig(JSON.parse(row.container_config))
         : undefined,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,

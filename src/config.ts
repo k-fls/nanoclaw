@@ -5,10 +5,12 @@ import { readEnvFile } from './env.js';
 import { isValidTimezone } from './timezone.js';
 
 // Read config values from .env (falls back to process.env).
+// Secrets (API keys, tokens) are NOT read here — they are loaded only
+// by the credential proxy (credential-proxy.ts), never exposed to containers.
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
-  'ONECLI_URL',
+  'NEW_GROUPS_USE_DEFAULT_CREDENTIALS',
   'TZ',
 ]);
 
@@ -17,6 +19,12 @@ export const ASSISTANT_NAME =
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER ||
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+// Whether newly registered groups can use default scope credentials.
+// Set to 'false' to require per-group credentials for new groups.
+export const NEW_GROUPS_USE_DEFAULT_CREDENTIALS =
+  (process.env.NEW_GROUPS_USE_DEFAULT_CREDENTIALS ||
+    envConfig.NEW_GROUPS_USE_DEFAULT_CREDENTIALS) !== 'false';
+
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -47,12 +55,14 @@ export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,
 ); // 30min
+export const CREDENTIAL_PROXY_PORT = parseInt(
+  process.env.CREDENTIAL_PROXY_PORT || '3001',
+  10,
+);
 export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   process.env.CONTAINER_MAX_OUTPUT_SIZE || '10485760',
   10,
 ); // 10MB default
-export const ONECLI_URL =
-  process.env.ONECLI_URL || envConfig.ONECLI_URL || 'http://localhost:10254';
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,

@@ -503,6 +503,104 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+const ENV_VARS_PATH = path.join(process.env.HOME || '/home/node', '.env-vars');
+
+server.tool(
+  'get_credential',
+  `Pull a substitute token for a credential that exists in keys/ or borrowed/ but not yet in tokens/.
+
+Use this when a credential appears in /workspace/group/credentials/keys/ (or borrowed/) but has no corresponding entry in /workspace/group/credentials/tokens/. This happens when:
+- A credential was added after your container started (e.g. user ran /auth mid-session)
+- A grantor added or updated a credential that is borrowed by this scope
+
+Do NOT call this if the credential already has an entry in tokens/ — just use that token directly.
+
+The returned substitute token works transparently — use it in Authorization headers, env vars, or CLI tools. The host proxy swaps it for the real credential on outbound HTTPS.
+
+Env vars are automatically injected into ~/.env-vars so subsequent Bash calls pick them up.`,
+  {
+    providerId: z
+      .string()
+      .describe(
+        'Provider identifier (e.g. "github", "todoist", "claude"). Must match a provider known to the proxy — check /workspace/global/credentials/providers/ for available providers.',
+      ),
+    credentialPath: z
+      .string()
+      .describe(
+        'Credential type path. Use "oauth" for OAuth tokens, "api_key" for API key credentials. Check the provider\'s .jsonl file in /workspace/global/credentials/providers/ for the correct path.',
+      ),
+    envVar: z
+      .string()
+      .optional()
+      .describe(
+        'Optional env var name to publish this credential as (e.g. "MY_API_KEY"). Must be uppercase with underscores. Reserved system names are rejected.',
+      ),
+  },
+  async (args) => {
+    const proxyHost = process.env.PROXY_HOST;
+    const proxyPort = process.env.PROXY_PORT;
+    if (!proxyHost || !proxyPort) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Credential proxy not configured (PROXY_HOST/PROXY_PORT not set).',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const params = new URLSearchParams({ path: args.credentialPath });
+    if (args.envVar) params.set('envVar', args.envVar);
+    const url = `http://${proxyHost}:${proxyPort}/credentials/${encodeURIComponent(args.providerId)}/substitute?${params.toString()}`;
+
+    try {
+      const resp = await fetch(url);
+      const body = await resp.json();
+
+      if (!resp.ok) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `No credentials found: ${body.error || resp.statusText}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Append env var declarations to ~/.env-vars (sourced by BASH_ENV)
+      const envNames: string[] = body.envNames ?? [];
+      if (envNames.length > 0) {
+        const lines = envNames.map((name: string) => `export ${name}=${body.substitute}`);
+        fs.appendFileSync(ENV_VARS_PATH, lines.join('\n') + '\n');
+      }
+
+      const resultLines = [`Substitute token for ${args.providerId}:`, `  ${body.substitute}`];
+      if (envNames.length > 0) {
+        resultLines.push('', 'Env vars injected into ~/.env-vars:');
+        for (const name of envNames) {
+          resultLines.push(`  ${name}=${body.substitute}`);
+        }
+      }
+
+      return { content: [{ type: 'text' as const, text: resultLines.join('\n') }] };
+    } catch (err: unknown) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to reach credential proxy: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

@@ -391,6 +391,7 @@ async function runQuery(
   let ipcPolling = true;
   let closedDuringQuery = false;
   let errorEmitted = false;
+  let sdkAuthError = false;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -505,6 +506,31 @@ async function runQuery(
       lastAssistantUuid = (message as { uuid: string }).uuid;
     }
 
+    // SDK synthetic auth errors: assistant messages with error="authentication_failed".
+    // The SDK emits these instead of result messages when credentials are invalid.
+    // Surface them as error results so the host-side auth guard can trigger reauth.
+    if (
+      message.type === 'assistant' &&
+      (message as Record<string, unknown>).error === 'authentication_failed'
+    ) {
+      const any = message as Record<string, unknown>;
+      let errText = 'Authentication failed';
+      if (any.message && typeof any.message === 'object') {
+        const msg = any.message as { content?: Array<{ text?: string }> };
+        if (msg.content?.[0]?.text) errText = msg.content[0].text;
+      }
+      log(`SDK auth error: ${errText}`);
+      sdkAuthError = true;
+      errorEmitted = true;
+      writeOutput({
+        status: 'error',
+        result: null,
+        newSessionId,
+        error: errText,
+      });
+      continue;
+    }
+
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
       log(`Session initialized: ${newSessionId}`);
@@ -536,6 +562,12 @@ async function runQuery(
       log(
         `Result #${resultCount}: subtype=${subtype}${stopReason ? ` stop_reason=${stopReason}` : ''}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
+      // Suppress result after SDK auth error — the SDK re-emits the error text
+      // as a "success" result which would leak to the user as normal output.
+      if (sdkAuthError) {
+        log('Suppressing result after SDK auth error');
+        continue;
+      }
       if (subtype === 'success') {
         writeOutput({
           status: 'success',
@@ -645,6 +677,25 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
+  /**
+   * Re-read ~/.env-vars and merge into sdkEnv.
+   * Called before each query() so mid-session get_credential additions are picked up.
+   */
+  const envVarsPath = path.join(process.env.HOME || '/home/node', '.env-vars');
+  function refreshEnvVars(): void {
+    let content: string;
+    try {
+      content = fs.readFileSync(envVarsPath, 'utf-8');
+    } catch {
+      return; // file doesn't exist yet
+    }
+    for (const line of content.split('\n')) {
+      // Parse "export KEY=VALUE" or "KEY=VALUE" lines
+      const m = /^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line);
+      if (m) sdkEnv[m[1]] = m[2];
+    }
+  }
+
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
@@ -701,6 +752,7 @@ async function main(): Promise<void> {
       );
 
       lastErrorEmitted = false;
+      refreshEnvVars();
       const queryResult = await runQuery(
         prompt,
         sessionId,

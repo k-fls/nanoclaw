@@ -1,0 +1,15 @@
+{
+  "issuer": "https://github.com",
+  "authorization_endpoint": "https://github.com/login/oauth/authorize",
+  "token_endpoint": "https://github.com/login/oauth/access_token",
+  "device_authorization_endpoint": "https://github.com/login/device/code",
+  "userinfo_endpoint": "https://api.github.com/user",
+  "api_base_url": "https://api.github.com",
+  "_env_vars": {
+    "GH_TOKEN": "oauth",
+    "GITHUB_TOKEN": "oauth"
+  },
+  "_source": "manually researched from official docs (docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)",
+  "_note": "GitHub OAuth2 for OAuth Apps and GitHub Apps. Supports authorization_code and device_code grant types. Token endpoint accepts Accept: application/json header to get JSON responses. No standard revocation endpoint; app authorizations are managed via the GitHub API (DELETE /applications/{client_id}/grant).",
+  "_well_known_url": false
+}

@@ -1,18 +1,25 @@
 import fs from 'fs';
 import path from 'path';
 
-import { OneCLI } from '@onecli-sh/sdk';
-
 import {
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
   MAX_MESSAGES_PER_PROMPT,
-  ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
   triggerToName,
 } from './config.js';
+import { initAuthSystem } from './auth/init.js';
+import { NEW_GROUPS_USE_DEFAULT_CREDENTIALS } from './config.js';
+import {
+  distributeAllManifests,
+  createBorrowedLink,
+} from './auth/manifest.js';
+import { createAuthGuard } from './auth/guard.js';
+import { runReauth } from './auth/reauth.js';
+import { getProxy } from './auth/credential-proxy.js';
+import { getTokenEngine } from './auth/registry.js';
 import {
   createChatIO,
   startInteractionSession,
@@ -26,6 +33,7 @@ import {
 import {
   ContainerOutput,
   runContainerAgent,
+  snapshotContainerFiles,
   updateAgentRunnerFingerprint,
   writeGroupsSnapshot,
   writeTasksSnapshot,
@@ -53,6 +61,8 @@ import {
   setRouterState,
   setSession,
   storeChatMetadata,
+  HIDE_REASON,
+  hideMessage,
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
@@ -73,11 +83,15 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { Channel, NewMessage, RegisteredGroup, scopeOf } from './types.js';
+import type { TokenSubstituteEngine } from './auth/token-substitute.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
+
+/** Shared token engine — set during startup, used by runtime code. */
+let tokenEngine: TokenSubstituteEngine;
 
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
@@ -89,27 +103,6 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
-
-const onecli = new OneCLI({ url: ONECLI_URL });
-
-function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
-  if (group.isMain) return;
-  const identifier = group.folder.toLowerCase().replace(/_/g, '-');
-  onecli.ensureAgent({ name: group.name, identifier }).then(
-    (res) => {
-      logger.info(
-        { jid, identifier, created: res.created },
-        'OneCLI agent ensured',
-      );
-    },
-    (err) => {
-      logger.debug(
-        { jid, identifier, err: String(err) },
-        'OneCLI agent ensure skipped',
-      );
-    },
-  );
-}
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -172,6 +165,39 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   folderIndex.set(group.folder, group);
   setRegisteredGroup(jid, group);
 
+  // Auto grant+borrow from main when NEW_GROUPS_USE_DEFAULT_CREDENTIALS is true
+  if (
+    NEW_GROUPS_USE_DEFAULT_CREDENTIALS &&
+    !group.isMain &&
+    !group.containerConfig?.credentialSource
+  ) {
+    const mainEntry = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain,
+    );
+    if (mainEntry) {
+      const [mainJid, mainGroup] = mainEntry;
+      // Add this group to main's grantees
+      const grantees = mainGroup.containerConfig?.credentialGrantees ?? new Set<string>();
+      if (!grantees.has(group.folder)) {
+        grantees.add(group.folder);
+        mainGroup.containerConfig = {
+          ...mainGroup.containerConfig,
+          credentialGrantees: grantees,
+        };
+        setRegisteredGroup(mainJid, mainGroup);
+      }
+      // Set this group's credentialSource to main
+      group.containerConfig = {
+        ...group.containerConfig,
+        credentialSource: mainGroup.folder,
+      };
+      setRegisteredGroup(jid, group);
+      // Distribute manifests and create borrowed symlink
+      distributeAllManifests(mainGroup.folder, group.folder);
+      createBorrowedLink(group.folder, mainGroup.folder);
+    }
+  }
+
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
@@ -195,9 +221,6 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
       logger.info({ folder: group.folder }, 'Created CLAUDE.md from template');
     }
   }
-
-  // Ensure a corresponding OneCLI agent exists (best-effort, non-blocking)
-  ensureOneCLIAgent(jid, group);
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
@@ -224,8 +247,8 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
 }
 
 /** O(1) group lookup by folder name. Used by auth resolvers. */
-export function getGroupByFolder(folder: string): RegisteredGroup | undefined {
-  return folderIndex.get(folder);
+export function getGroupByFolder(folder: string | import('./auth/oauth-types.js').GroupScope): RegisteredGroup | undefined {
+  return folderIndex.get(folder as string);
 }
 
 /** @internal - exported for testing */
@@ -285,6 +308,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
+  // Start interaction session — must be up before auth guard so the
+  // proxy can push auth interactions to the shared queue/consumer.
+  const session = startInteractionSession(chatJid, chatIODeps(channel, chatJid));
+  try {
+
+  const guard = createAuthGuard(
+    group,
+    getProxy(),
+    () => createChatIO(chatIODeps(channel, chatJid)),
+    () => queue.softStop(chatJid),
+    session,
+  );
+  const credentialsOk = await guard.start();
+
   const missedMessages = getMessagesSince(
     chatJid,
     getOrRecoverCursor(chatJid),
@@ -293,10 +330,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // If reauth failed, advance cursor so trigger messages don't re-trigger
+  if (!credentialsOk) {
+    lastAgentTimestamp[chatJid] =
+      missedMessages[missedMessages.length - 1].timestamp;
+    saveState();
+    return true;
+  }
+
   // Decode channel-specific encoding (e.g. Slack entities) for processing
   const decoded = decodeMessages(missedMessages, channel);
 
-  // Check for /command before invoking the agent
+  // Check for /command before trigger check — commands work without trigger
   const cmdCtx = commandContext(channel, chatJid, group);
   if (await executeCommand(decoded, cmdCtx)) {
     lastAgentTimestamp[chatJid] =
@@ -322,8 +367,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
-  lastAgentTimestamp[chatJid] =
-    missedMessages[missedMessages.length - 1].timestamp;
+  const lastOriginalTs = missedMessages[missedMessages.length - 1].timestamp;
+  lastAgentTimestamp[chatJid] = lastOriginalTs;
   saveState();
 
   logger.info(
@@ -331,47 +376,70 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
-  // Start interaction session so queued interactions reach the user
-  const session = startInteractionSession(chatJid, chatIODeps(channel, chatJid));
-
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
-        await session.chatLock.acquire();
-        try {
-          await channel.sendMessage(chatJid, text);
-        } finally {
-          session.chatLock.release();
+  const agentResult = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    (name) => guard.setContainerName(name),
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        if (text) {
+          await session.chatLock.acquire();
+          try {
+            await channel.sendMessage(chatJid, text);
+          } finally {
+            session.chatLock.release();
+          }
+          outputSentToUser = true;
         }
-        outputSentToUser = true;
+      } else {
+        // Non-text events (tool use, thinking, etc.) — refresh typing indicator
+        channel.setTyping?.(chatJid, true)?.catch(() => {});
       }
-    }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
-
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  });
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
+      if (result.status === 'error') {
+        hadError = true;
+      }
+      guard.onStreamResult(result);
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   await session.stop();
 
-  if (output === 'error' || hadError) {
+  // Handle auth errors, clean up session context
+  const authResult = await guard.finish(
+    agentResult.status === 'error' || hadError ? agentResult.error : undefined,
+  );
+
+  if (authResult === 'reauth-failed') return true;
+  if (authResult === 'reauth-ok') {
+    // Reauth hides scripted messages, so always retry the user's original request
+    lastAgentTimestamp[chatJid] = previousCursor;
+    saveState();
+    return false;
+  }
+
+  // authResult === 'not-auth' — check for non-auth errors
+  if (agentResult.status === 'error' || hadError) {
+    // Fatal infrastructure errors (e.g. container IP not detected) — retrying won't help.
+    if (agentResult.fatal) return true;
+
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -392,14 +460,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   return true;
+
+  } finally {
+    await session.stop();
+  }
 }
 
 async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  onContainerName?: (name: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-): Promise<'success' | 'error'> {
+): Promise<{ status: 'success' | 'error'; error?: string; fatal?: boolean }> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
@@ -451,14 +524,17 @@ async function runAgent(
         isMain,
         assistantName: triggerToName(group.trigger),
       },
-      (proc, containerName, controls) =>
+      (proc, containerName, controls) => {
+        onContainerName?.(containerName);
         queue.registerProcess(
           chatJid,
           proc,
           containerName,
           group.folder,
           controls,
-        ),
+        );
+      },
+      tokenEngine,
       wrappedOnOutput,
       () => queue.softStop(chatJid),
     );
@@ -493,13 +569,16 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
-      return 'error';
+      return { status: 'error', error: output.error, fatal: output.fatal };
     }
 
-    return 'success';
+    return { status: 'success' };
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
-    return 'error';
+    return {
+      status: 'error',
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -637,28 +716,29 @@ function recoverPendingMessages(): void {
 
 function ensureContainerSystemRunning(): void {
   ensureContainerRuntimeRunning();
+  snapshotContainerFiles();
   cleanupOrphans();
 }
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
   updateAgentRunnerFingerprint();
+
+  // Initialize the full auth/credential proxy system (providers, token engine, proxy server).
+  const auth = await initAuthSystem(() => registeredGroups, getGroupByFolder);
+  tokenEngine = auth.tokenEngine;
+
   await startUpdateManager();
   initDatabase();
   logger.info('Database initialized');
   loadState();
-
-  // Ensure OneCLI agents exist for all registered groups.
-  // Recovers from missed creates (e.g. OneCLI was down at registration time).
-  for (const [jid, group] of Object.entries(registeredGroups)) {
-    ensureOneCLIAgent(jid, group);
-  }
 
   restoreRemoteControl();
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    auth.shutdown();
     stopUpdateManager();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
@@ -724,6 +804,7 @@ async function main(): Promise<void> {
     getGroupByFolder,
     getSessions: () => sessions,
     queue,
+    tokenEngine,
     onProcess: (groupJid, proc, containerName, groupFolder, controls) =>
       queue.registerProcess(
         groupJid,

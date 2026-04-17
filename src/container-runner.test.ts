@@ -15,7 +15,7 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
-  ONECLI_URL: 'http://localhost:10254',
+  CREDENTIAL_PROXY_PORT: 3001,
   TIMEZONE: 'America/Los_Angeles',
 }));
 
@@ -43,6 +43,7 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      cpSync: vi.fn(),
     },
   };
 });
@@ -60,6 +61,15 @@ vi.mock('./container-runtime.js', () => ({
   stopContainer: vi.fn(),
 }));
 
+// Mock credential-proxy — provide a minimal proxy instance
+vi.mock('./auth/credential-proxy.js', () => ({
+  getProxy: vi.fn(() => ({
+    hasContainerIP: vi.fn(() => false),
+    registerContainerIP: vi.fn(),
+    unregisterContainerIP: vi.fn(),
+  })),
+}));
+
 // Mock claude-updater
 vi.mock('./claude-updater/updater.js', () => ({
   cliLock: {
@@ -67,17 +77,6 @@ vi.mock('./claude-updater/updater.js', () => ({
     releaseShared: vi.fn(),
   },
   getClaudeCliPackageDir: vi.fn(() => null),
-}));
-
-// Mock OneCLI SDK
-vi.mock('@onecli-sh/sdk', () => ({
-  OneCLI: class {
-    applyContainerConfig = vi.fn().mockResolvedValue(true);
-    createAgent = vi.fn().mockResolvedValue({ id: 'test' });
-    ensureAgent = vi
-      .fn()
-      .mockResolvedValue({ name: 'test', identifier: 'test', created: true });
-  },
 }));
 
 // Create a controllable fake ChildProcess
@@ -112,11 +111,23 @@ vi.mock('child_process', async () => {
         return new EventEmitter();
       },
     ),
+    execFileSync: vi.fn((_bin: string, args?: string[]) => {
+      const fmt = args?.[2] ?? '';
+      if (fmt.includes('State.Status')) return 'running';
+      if (fmt.includes('IPAddress')) return '172.17.0.2';
+      return '';
+    }),
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  runContainerAgent,
+  buildVolumeMounts,
+  snapshotContainerFiles,
+  ContainerOutput,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
+import fs from 'fs';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
@@ -152,12 +163,17 @@ describe('container-runner timeout behavior', () => {
 
   it('timeout after output resolves as success', async () => {
     const onOutput = vi.fn(async () => {});
+    const mockEngine = {} as any;
     const resultPromise = runContainerAgent(
       testGroup,
       testInput,
       () => {},
+      mockEngine,
       onOutput,
     );
+
+    // Let IP retry loop resolve (first retry at 500ms)
+    await vi.advanceTimersByTimeAsync(600);
 
     // Emit output with a result
     emitOutputMarker(fakeProc, {
@@ -188,12 +204,17 @@ describe('container-runner timeout behavior', () => {
 
   it('timeout with no output resolves as error', async () => {
     const onOutput = vi.fn(async () => {});
+    const mockEngine = {} as any;
     const resultPromise = runContainerAgent(
       testGroup,
       testInput,
       () => {},
+      mockEngine,
       onOutput,
     );
+
+    // Let IP retry loop resolve
+    await vi.advanceTimersByTimeAsync(600);
 
     // No output emitted — fire the hard timeout
     await vi.advanceTimersByTimeAsync(1830000);
@@ -211,12 +232,17 @@ describe('container-runner timeout behavior', () => {
 
   it('normal exit after output resolves as success', async () => {
     const onOutput = vi.fn(async () => {});
+    const mockEngine = {} as any;
     const resultPromise = runContainerAgent(
       testGroup,
       testInput,
       () => {},
+      mockEngine,
       onOutput,
     );
+
+    // Let IP retry loop resolve
+    await vi.advanceTimersByTimeAsync(600);
 
     // Emit output
     emitOutputMarker(fakeProc, {
@@ -235,5 +261,61 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('buildVolumeMounts home persistence', () => {
+  const group: RegisteredGroup = {
+    name: 'Test',
+    folder: 'test-home',
+    trigger: '@test',
+    added_at: new Date().toISOString(),
+  };
+
+  beforeEach(() => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.readdirSync).mockReturnValue([]);
+  });
+
+  it('agent container mounts /home/node for persistence', () => {
+    const mounts = buildVolumeMounts(group, false);
+    const homeMount = mounts.find((m) => m.containerPath === '/home/node');
+    expect(homeMount).toBeDefined();
+    expect(homeMount!.readonly).toBe(false);
+    expect(homeMount!.hostPath).toContain('sessions/test-home/home');
+  });
+
+  it('/home/node is mounted before /home/node/.claude', () => {
+    const mounts = buildVolumeMounts(group, false);
+    const homeIdx = mounts.findIndex((m) => m.containerPath === '/home/node');
+    const claudeIdx = mounts.findIndex(
+      (m) => m.containerPath === '/home/node/.claude',
+    );
+    expect(homeIdx).toBeGreaterThanOrEqual(0);
+    expect(claudeIdx).toBeGreaterThan(homeIdx);
+  });
+
+  it('works the same for main group', () => {
+    const mounts = buildVolumeMounts(group, true);
+    const homeMount = mounts.find((m) => m.containerPath === '/home/node');
+    expect(homeMount).toBeDefined();
+    expect(homeMount!.readonly).toBe(false);
+  });
+});
+
+describe('snapshotContainerFiles', () => {
+  beforeEach(() => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.cpSync).mockClear();
+  });
+
+  it('copies with preserveTimestamps so agent-runner mtime check works', () => {
+    snapshotContainerFiles();
+
+    expect(fs.cpSync).toHaveBeenCalledWith(
+      expect.stringContaining('container'),
+      expect.stringContaining('snapshot'),
+      { recursive: true, preserveTimestamps: true },
+    );
   });
 });
