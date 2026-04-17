@@ -26,22 +26,27 @@ Full scope: [phase-0.md](phase-0.md).
 
 ## Phase 1 — P1 upstream intake
 
-Handle ongoing upstream merges with agent-drafted conflict resolutions.
+Handle ongoing upstream merges with agent-drafted triage and conflict resolutions. Splits the merge into reviewable sub-merges before touching the worktree.
 
 **Deliverables**
-- `intake-upstream.ts` — fetch + compute merge range + detect conflicts
-- `/fls-intake` slash command — orchestrate the flow
-- `fls-resolve-conflict` agent subroutine — draft resolutions for non-trivial conflicts (three-way diff + surrounding code + nearby comments as input; never mutates)
-- Divergence surfacing: `cascade divergence-report` rendered from `git diff core..upstream/main` (no registry file)
-- Decision: whether to recommend an inline-comment grammar for non-obvious divergences, or skip and rely on the diff + P4
+- `intake-analyze.ts` — read-only analysis: commit list, aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points, rename tracking. Produces structured JSON + human-readable pretty-print.
+- Mechanical segmentation in `intake-analyze.ts` — splits the range into `clean` / `divergence` / `conflict` / `structural` / `break_point` segments. Strict splitting (any kind change starts a new segment). Pure graph + merge-tree output, no judgment.
+- `intake-upstream.ts` — per-group merge executor (runs once per approved group from the decomposition plan). Fetch, merge, conflict loop.
+- `/cascade-intake` slash command — orchestrate: analyze → triage → human-approve plan → per-group merge loop.
+- `cascade-triage-intake` agent subroutine — read the segmented report, propose decomposition plan (grouping overlay + risk ratings + merge order). Never mutates.
+- `cascade-resolve-conflict` agent subroutine — draft resolutions for non-trivial conflicts (three-way diff + surrounding code + nearby comments as input). Never mutates.
+- Divergence surfacing: `cascade divergence-report` rendered from `git diff core..upstream/main` (no registry file).
+- Decision: whether to recommend an inline-comment grammar for non-obvious divergences, or skip and rely on the diff + P4.
 
 **Done when**
-- A real upstream pull runs end-to-end through `/fls-intake`
-- Conflicts get drafted resolutions the human reviews and confirms
-- `merge-preserve.ts` lands the resolved content with correct history
+- `intake-analyze.ts` runs against a real upstream range and emits both JSON and human-readable reports with segments.
+- A real upstream pull runs end-to-end through `/cascade-intake`: triage, approved plan, per-group merges with drafted resolutions.
+- Segment determinism: same range produces the same segments on reruns.
+- `merge-preserve.ts` lands each sub-merge's resolved content with correct history.
 
 **Risks**
 - Agent silently flipping behavior during resolution (red-team finding). Mitigation: human review is mandatory; divergence-report before and after the intake shows any behavioral shifts in diverged areas.
+- Triage agent proposing a decomposition that under-covers risk (groups a divergence-touching commit into a "clean" batch). Mitigation: mechanical segmentation is strict, so this can only happen if the agent overrides a segment boundary during plan review; the override is explicit and human-visible.
 
 ## Phase 2 — P2 downstream propagation + auto-versioning
 
@@ -49,7 +54,7 @@ Complete the version system and land propagation.
 
 **Deliverables**
 - `version.ts` **mutating** — auto-bump per the D-bump rules in [versioning.md](versioning.md); write tags `<branch>/<A.B.C.D>`
-- `propagate.ts` + `/fls-propagate` — dry-run planner + executor
+- `propagate.ts` + `/cascade-propagate` — dry-run planner + executor
 - Prefix-mismatch enforcement halts runs with actionable errors
 - `/.edition-snapshot.json` generation at edition build
 - Cross-repo write path: patch handoff (default) + forge-API option
@@ -86,8 +91,8 @@ Highest-risk phase. Ships read-only first, mutating only after shadow-mode valid
 
 **Deliverables (4b, mutating, only after 4a validates)**
 - `reclassify.ts` — ephemeral branches off proposed homes; cherry-pick hunks; open PRs
-- `/fls-reclassify` slash command
-- `fls-classify-ambiguous` agent for low-confidence hunks
+- `/cascade-reclassify` slash command
+- `cascade-classify-ambiguous` agent for low-confidence hunks
 - Follow-up plan storage in `.cascade/reclassify/<id>.json`
 - Inline-removal step **gated on P2 confirmation** — never touches the source branch until the propagated version has landed and CI is green
 - Third-outcome support: relocate clean version + keep deployment-specific delta on top
@@ -105,14 +110,14 @@ Light-touch processes whose value scales with accumulated history from earlier p
 
 **Deliverables**
 - `cascade divergence-report` (expanded from Phase 1's minimal version) — grouped, annotated
-- `/fls-divergences` slash command — annotate entries as keep / upstream-candidate / obsolete / investigate; annotations live in commit messages or issue tracker, not a registry
+- `/cascade-divergences` slash command — annotate entries as keep / upstream-candidate / obsolete / investigate; annotations live in commit messages or issue tracker, not a registry
 - `cascade upstream-candidates` — list candidates; build patch series against upstream's current tip; open draft PR
-- `/fls-upstream-candidates` slash command
+- `/cascade-upstream-candidates` slash command
 - Outcome recording for attempted upstream contributions (accepted / rejected / closed / superseded)
 
 **Done when**
-- Quarterly divergence review can be run through `/fls-divergences`
-- An upstream candidate can be turned into a draft upstream PR through `/fls-upstream-candidates`
+- Quarterly divergence review can be run through `/cascade-divergences`
+- An upstream candidate can be turned into a draft upstream PR through `/cascade-upstream-candidates`
 - Rejected candidates are not re-attempted without a reason recorded
 
 ## Dependencies

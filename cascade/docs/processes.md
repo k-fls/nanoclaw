@@ -5,28 +5,55 @@ Implements [§11 of the requirements](../../docs/FLSCLAW-BRANCHING-REQUIREMENTS.
 ## Three tiers
 
 - **Scripts** (`cascade/scripts/*.ts`) — deterministic mechanics. No LLM. Always safe to re-run.
-- **Agent subroutines** — LLM calls bounded to exactly two places:
-  - `fls-resolve-conflict` — draft a resolution for a P1 merge conflict given the three-way diff and surrounding code.
-  - `fls-classify-ambiguous` — draft a classification recommendation for a P3 hunk where signals disagree.
-  Both propose only. Neither writes to disk.
+- **Agent subroutines** — LLM calls bounded to three places:
+  - `cascade-triage-intake` — read a segmented P1 analysis report; propose a decomposition plan (grouping-plan overlay, risk ratings, merge order).
+  - `cascade-resolve-conflict` — draft a resolution for a P1 merge conflict given the three-way diff and surrounding code.
+  - `cascade-classify-ambiguous` — draft a classification recommendation for a P3 hunk where signals disagree.
+  All propose only. None writes to disk.
 - **Humans** — confirm any merge into a long-lived branch. Make ownership decisions for unowned new files. Accept, edit, or reject agent drafts.
 
-Slash commands (`.claude/commands/fls-*.md`) orchestrate each process: run the script, dispatch an agent subroutine if the script hits something non-mechanical, present the result, ask confirmation, execute the mutating half.
+Slash commands (`.claude/commands/cascade-*.md`) orchestrate each process: run the script, dispatch an agent subroutine if the script hits something non-mechanical, present the result, ask confirmation, execute the mutating half.
 
 ## P1 — Upstream intake
 
 **Input:** new commits on upstream main and upstream skill branches.
 **Output:** updated `core` and updated `channel/<name>` branches.
 
-1. `intake-upstream.ts` fetches upstream, computes the merge range per branch.
-2. For each conflicted file:
+### Pre-merge analysis and decomposition
+
+1. **`intake-analyze.ts`** fetches upstream, computes the merge range, and emits a structured report: commit list, aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points (tags / upstream merge commits), and rename tracking on divergence-set files. Read-only; deterministic; cacheable by `(from_sha, to_sha, merge_base)`.
+
+2. The analyzer additionally emits **mechanical segments** — contiguous commit ranges grouped by kind. Pure graph + merge-tree output, no judgment:
+
+   | Kind | Rule |
+   |---|---|
+   | `clean` | no predicted conflicts, no intersection with the divergence set |
+   | `divergence` | touches a file in the fls divergence set |
+   | `conflict` | predicted conflict, no divergence-set intersection |
+   | `structural` | singleton — merge commit (>1 parents), large rename, or apparent revert |
+   | `break_point` | marker at an upstream tag or upstream merge commit |
+
+   **Splitting is strict.** Any change of kind starts a new segment; any break point ends the current segment. Over-splitting is recoverable by the agent merging adjacent segments in its proposal; under-splitting would hide risk signal.
+
+3. **`cascade-triage-intake`** agent reads the segmented report and proposes a **decomposition plan**: grouping-plan overlay (merge adjacent clean segments that share a theme; split a divergence segment further if risks differ within it), risk ratings per group, and recommended merge order. Agent proposes only; never mutates.
+
+4. **Human reviews the plan.** Accepts as-is, edits grouping, overrides back to a single merge, or aborts.
+
+### Per-group merge loop
+
+5. For each approved group, `intake-upstream.ts` performs the merge. For each conflicted file:
    - Script presents three-way diff and relevant file context.
-   - If the conflict is non-trivial, dispatch `fls-resolve-conflict` with the diff, surrounding code, and (if any) nearby inline comments. Agent drafts a resolution and rationale.
+   - If the conflict is non-trivial, dispatch `cascade-resolve-conflict` with the diff, surrounding code, and (if any) nearby inline comments. Agent drafts a resolution and rationale.
    - Human reviews and accepts/edits/rejects.
-3. `merge-preserve.ts` performs the `--no-ff` merge with the resolved content.
-4. `version.ts` auto-bumps per [versioning.md](versioning.md).
+
+6. `merge-preserve.ts` performs the `--no-ff` merge with the resolved content.
+7. `version.ts` auto-bumps per [versioning.md](versioning.md).
 
 Default resolution rule (§7): prefer fls behavior where fls has diverged. Reviewer confirms the default applied correctly and that behavior wasn't silently flipped.
+
+### Decomposition safety
+
+Sub-merge groups are contiguous ranges in upstream's history, never shuffled cherry-picks. Within a group, commit order is preserved. Each sub-merge leaves the tree buildable before the next one starts. The triage agent may propose merging adjacent segments or splitting one further, but may not reorder commits or skip over them.
 
 ## P2 — Downstream propagation
 
@@ -62,7 +89,7 @@ Signals are combined as a rule cascade, not a weighted vote — deterministic ru
 
 1. `classify-change.ts` runs read-only, emits proposals with signal scores and confidence tier.
 2. **High-confidence** proposals (all signals agree, single candidate home): batched, one-click accept/reject.
-3. **Low-confidence** proposals (signals disagree, or ambiguous): presented individually with top-2 candidate homes and signal explanations. `fls-classify-ambiguous` agent may draft a recommendation.
+3. **Low-confidence** proposals (signals disagree, or ambiguous): presented individually with top-2 candidate homes and signal explanations. `cascade-classify-ambiguous` agent may draft a recommendation.
 4. Human confirms each relocation. Commits split where hunks belong to different homes.
 5. `reclassify.ts` creates ephemeral branches off proposed homes; cherry-picks hunks; opens PRs (in-repo or cross-repo).
 6. Records follow-up plan in `.cascade/reclassify/<id>.json`:

@@ -36,10 +36,10 @@ Scope for the first implementation pass. No process commands yet; just make the 
 
 | Phase | Deliverable |
 |---|---|
-| 1 | P1 intake automation, `fls-resolve-conflict` agent, inline-divergence-comment conventions |
+| 1 | P1 intake automation, `intake-analyze.ts` + mechanical segmentation, `cascade-triage-intake` + `cascade-resolve-conflict` agents, inline-divergence-comment conventions |
 | 2 | Auto-bump version logic, P2 propagation, edition snapshots, cross-repo tooling |
 | 3 | Adapter-model formalization, adapter coverage reporting |
-| 4 | P3 signals (path-ownership + size/shape + diff-vs-upstream) in shadow mode; `fls-classify-ambiguous` agent; mutating half |
+| 4 | P3 signals (path-ownership + size/shape + diff-vs-upstream) in shadow mode; `cascade-classify-ambiguous` agent; mutating half |
 | 5 | P4 divergence review tooling; P5 upstream candidates |
 
 ## Done criteria for Phase 0
