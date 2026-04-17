@@ -22,6 +22,7 @@ import { appendBypass } from './bypass.js';
 import { mergePreserve } from './merge-preserve.js';
 import { analyzeIntake, formatReport as formatIntakeReport } from './intake-analyze.js';
 import { divergenceReport, formatDivergenceReport } from './divergence-report.js';
+import { validatePlan, formatValidateReport } from './intake-validate.js';
 import {
   abortIntakeMerge,
   continueIntakeMerge,
@@ -269,6 +270,21 @@ function formatMergeResult(
   return lines.join('\n') + '\n';
 }
 
+function cmdIntakeValidate(args: string[]): number {
+  const json = removeFlag(args, '--json');
+  const [analyzerPath, planPath] = args;
+  if (!analyzerPath || !planPath) {
+    die('usage: cascade intake-validate <analyzer.json> <plan.json> [--json]');
+  }
+  const res = validatePlan({ analyzerPath, planPath });
+  if (json) {
+    process.stdout.write(JSON.stringify(res, null, 2) + '\n');
+  } else {
+    process.stdout.write(formatValidateReport(res));
+  }
+  return res.errors === 0 ? 0 : 1;
+}
+
 function cmdSelfTest(): number {
   const st = runSelfTest();
   process.stdout.write(`self-test: ${st.passed} passed, ${st.failed.length} failed\n`);
@@ -291,6 +307,7 @@ function usage(): string {
     '  intake-upstream <upto-sha> -m <msg> [--source <name>] [--dry-run] [--json]',
     '  intake-upstream --continue [-m <msg>] [--json]',
     '  intake-upstream --abort',
+    '  intake-validate <analyzer.json> <plan.json> [--json]',
     '  self-test',
     '  help',
   ].join('\n');
@@ -316,6 +333,8 @@ function main(): number {
         return cmdDivergenceReport(rest);
       case 'intake-upstream':
         return cmdIntakeUpstream(rest);
+      case 'intake-validate':
+        return cmdIntakeValidate(rest);
       case 'self-test':
         return cmdSelfTest();
       case 'help':

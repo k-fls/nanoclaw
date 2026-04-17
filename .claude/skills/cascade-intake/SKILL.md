@@ -68,16 +68,38 @@ Invoke the `cascade-triage-intake` agent with:
 - The divergence-report plain-text output
 - **The fls-deletion verdicts from step 2a**, if any, so triage can raise risk on groups that touch files flagged `port-candidate` / `reintroduce-candidate` / `escalate` or appear in a `rationale-reopened` / `inconclusive` deletion group.
 
-The agent returns a decomposition plan as JSON plus a prose summary. Write the JSON to `.cascade/.intake/<cacheKey>/plan.json`. Show the prose summary to the user verbatim. Show the JSON plan collapsed / summarized (groups with kind, attention, outcome, commitCount).
+The agent returns a decomposition plan as JSON plus a prose summary. Write the JSON to `.cascade/.intake/<cacheKey>/plan.json`.
 
-**If any deletion group's header is `rationale-reopened` or `inconclusive`**, surface it prominently to the user before asking for plan approval — this is the signal they are most likely to miss on a skim.
+### 2c. Validate the plan (before showing the human)
+
+Run `npm run cascade -- intake-validate .cascade/.intake/<cacheKey>/analyzer.json .cascade/.intake/<cacheKey>/plan.json --json`.
+
+- If exit 0 and no errors: plan is valid; proceed to step 3 (human approval).
+- If exit 1 (errors): **do not show the plan to the user yet.** Re-invoke `cascade-triage-intake` with:
+  - The original analyzer JSON
+  - The original divergence-report
+  - The original deletion-verdicts
+  - The **previous plan** (verbatim)
+  - The **validator violations** (verbatim — the full JSON from the validator)
+
+  Instruction to the agent: "Previous plan failed validation. Violations follow. Produce a revised plan addressing every error. Re-emit the full plan."
+
+  Capture the revised plan, overwrite `plan.json`, re-run the validator. Accept up to **3 retries** before escalating to the user with the final violations and asking for manual intervention.
+
+- Warnings-only (exit 0 with `warnings > 0`): proceed to step 3, but include the warnings in the summary shown to the user so they can judge whether to accept.
+
+Never show an error-state plan to the user. The validator is the gate.
 
 ### 3. Approve
+
+Show the prose summary to the user verbatim. Show the JSON plan collapsed / summarized (groups with kind, attention, outcome, commitCount).
+
+**If any deletion group's header is `rationale-reopened` or `inconclusive`**, surface it prominently to the user before asking for plan approval — this is the signal they are most likely to miss on a skim.
 
 Ask the user:
 
 - "Accept this plan?" — if yes, proceed.
-- If no, collect their edits (re-group, change risk, change order) and re-invoke the triage agent with the feedback, or edit the JSON directly if the ask is mechanical.
+- If no, collect their edits (re-group, change attention, change order) and re-invoke the triage agent with the feedback, or edit the JSON directly if the ask is mechanical. Re-run `cascade intake-validate` after any edit.
 
 Require an explicit yes. Silence / ambiguity → ask again.
 
@@ -168,8 +190,9 @@ When another agent invokes this skill (not a human), the "approve plan" and "app
 
 | Command | Purpose |
 |---|---|
-| `npm run cascade -- intake-analyze [--json]` | Read-only analysis + segmentation |
+| `npm run cascade -- intake-analyze [--json]` | Read-only analysis (per-commit signals, divergence, conflicts, deletion groups) |
 | `npm run cascade -- divergence-report [-v]` | fls-vs-upstream divergence view |
+| `npm run cascade -- intake-validate <analyzer.json> <plan.json>` | Gate between triage and human approval |
 | `npm run cascade -- intake-upstream <sha> -m <msg>` | Execute a group merge |
 | `npm run cascade -- intake-upstream --continue -m <msg>` | Finalize a merge after resolutions |
 | `npm run cascade -- intake-upstream --abort` | Abort an in-progress merge |

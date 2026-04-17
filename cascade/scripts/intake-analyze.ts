@@ -1,12 +1,13 @@
 // Read-only P1 intake analyzer.
-// Implements cascade/docs/processes.md § P1 pre-merge analysis and
-// mechanical segmentation. Deterministic: same (target, source) input
-// produces the same output at the same repo state.
+// Implements cascade/docs/processes.md § P1 pre-merge analysis.
+// Deterministic: same (target, source) input produces the same output at
+// the same repo state.
 //
 // Scope: analyze the range merge-base(target, source)..source (commits in
-// source not yet in target). Emit a structured report plus mechanical
-// segments (clean / divergence / conflict / structural / break_point).
-// No mutation, no merging — strictly read-only.
+// source not yet in target). Emit a structured report with per-commit
+// signals (kinds, divergence, conflicts, break points, renames, fls-
+// deletion groups). No grouping — the triage agent forms groups from these
+// signals. The intake-validate script enforces post-triage invariants.
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -42,15 +43,6 @@ export interface CommitInfo {
   primaryKind: SegmentKind;
   // Upstream tag(s) pointing at this commit.
   tags: string[];
-}
-
-export interface Segment {
-  index: number;
-  kind: SegmentKind;
-  commits: string[];
-  files: string[];
-  // When kind === 'break_point', the first tag name (if any).
-  breakPointRef?: string;
 }
 
 // A file fls deleted on target that upstream has kept modifying, grouped by
@@ -92,7 +84,6 @@ export interface IntakeReport {
   // deletion commit. Filtered to upstream deltas above the threshold set by
   // config.yaml `fls_deletion_min_lines`.
   flsDeletionGroups: FlsDeletionGroup[];
-  segments: Segment[];
   cacheKey: string;
 }
 
@@ -160,8 +151,6 @@ export function analyzeIntake(opts: AnalyzeOptions): IntakeReport {
     c.primaryKind = selectPrimaryKind(c.kinds);
   }
 
-  const segments = segment(commits);
-
   const breakPoints = commits
     .filter((c) => c.primaryKind === 'break_point')
     .map((c) => ({ sha: c.sha, refs: c.tags }));
@@ -190,7 +179,6 @@ export function analyzeIntake(opts: AnalyzeOptions): IntakeReport {
     breakPoints,
     renames,
     flsDeletionGroups,
-    segments,
     cacheKey,
   };
 }
@@ -529,47 +517,6 @@ function isLargeRename(files: FileChange[]): boolean {
   return renames * 2 > files.length;
 }
 
-// ---------------- segmentation ----------------
-
-// Strict: any change of primary kind starts a new segment. A `break_point`
-// commit is its own segment (closes current segment and stands alone); a
-// `structural` commit is also its own segment singleton.
-function segment(commits: CommitInfo[]): Segment[] {
-  const segs: Segment[] = [];
-  let cur: Segment | null = null;
-  const isSingleton = (k: SegmentKind) => k === 'break_point' || k === 'structural';
-
-  for (const c of commits) {
-    const k = c.primaryKind;
-    if (isSingleton(k) || !cur || cur.kind !== k) {
-      if (cur) segs.push(cur);
-      cur = {
-        index: segs.length,
-        kind: k,
-        commits: [],
-        files: [],
-        breakPointRef: k === 'break_point' ? c.tags[0] : undefined,
-      };
-    }
-    cur.commits.push(c.sha);
-    for (const f of c.files) {
-      if (!cur.files.includes(f.path)) cur.files.push(f.path);
-    }
-    if (isSingleton(k)) {
-      cur.files.sort();
-      segs.push(cur);
-      cur = null;
-    }
-  }
-  if (cur) {
-    cur.files.sort();
-    segs.push(cur);
-  }
-  // Re-index after singletons may have opened/closed segments.
-  segs.forEach((s, i) => (s.index = i));
-  return segs;
-}
-
 // ---------------- helpers ----------------
 
 function computeCacheKey(target: string, source: string, base: string, shas: string[]): string {
@@ -626,13 +573,11 @@ export function formatReport(r: IntakeReport): string {
     `  fls-deleted+upstream-modified: ${flsDelFiles} file(s) in ${r.flsDeletionGroups.length} deletion-commit group(s)`,
   );
   lines.push('');
-  lines.push(`segments (${r.segments.length}):`);
-  for (const s of r.segments) {
-    const tag = s.kind.padEnd(11);
-    const label = s.kind === 'break_point' && s.breakPointRef ? ` [${s.breakPointRef}]` : '';
-    lines.push(
-      `  #${String(s.index).padStart(2, '0')} ${tag} ${s.commits.length} commit(s), ${s.files.length} file(s)${label}`,
-    );
+  lines.push(`commits (${r.commits.length}) by primary kind:`);
+  const byKind: Record<string, number> = {};
+  for (const c of r.commits) byKind[c.primaryKind] = (byKind[c.primaryKind] ?? 0) + 1;
+  for (const [k, n] of Object.entries(byKind).sort()) {
+    lines.push(`  ${k.padEnd(12)} ${n}`);
   }
   if (r.intersection.length > 0) {
     lines.push('');

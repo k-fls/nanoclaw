@@ -31,7 +31,6 @@ describe('analyzeIntake — empty range', () => {
     const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
     expect(r.rangeCount).toBe(0);
     expect(r.commits).toHaveLength(0);
-    expect(r.segments).toHaveLength(0);
     expect(r.aggregateFiles).toHaveLength(0);
   });
 });
@@ -48,9 +47,6 @@ describe('analyzeIntake — clean range', () => {
     const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
     expect(r.rangeCount).toBe(2);
     expect(r.commits.every((c) => c.primaryKind === 'clean')).toBe(true);
-    expect(r.segments).toHaveLength(1);
-    expect(r.segments[0].kind).toBe('clean');
-    expect(r.segments[0].commits).toHaveLength(2);
     expect(r.intersection).toHaveLength(0);
     expect(r.predictedConflicts).toHaveLength(0);
   });
@@ -112,14 +108,11 @@ describe('analyzeIntake — structural (merge commit)', () => {
     const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
     const structural = r.commits.filter((c) => c.primaryKind === 'structural');
     expect(structural.length).toBeGreaterThan(0);
-    const mergeSeg = r.segments.find((s) => s.kind === 'structural');
-    expect(mergeSeg).toBeDefined();
-    expect(mergeSeg!.commits).toHaveLength(1);
   });
 });
 
 describe('analyzeIntake — break point (tag)', () => {
-  it('a tag in the range creates a break_point singleton', () => {
+  it('a tag in the range marks a commit break_point', () => {
     seedBase();
     repo.checkout('upstream/main');
     repo.write('src/x.ts', 'x\n');
@@ -135,14 +128,14 @@ describe('analyzeIntake — break point (tag)', () => {
     expect(bp).toBeDefined();
     expect(bp!.tags).toContain('v1.0');
     expect(r.breakPoints).toHaveLength(1);
-    // Segment singleton, and the segment order: clean, break_point, clean.
-    const kinds = r.segments.map((s) => s.kind);
+    // Surrounding commits stay clean; only the tagged one flips to break_point.
+    const kinds = r.commits.map((c) => c.primaryKind);
     expect(kinds).toEqual(['clean', 'break_point', 'clean']);
   });
 });
 
 describe('analyzeIntake — determinism', () => {
-  it('repeat runs at the same state produce the same cacheKey and segments', () => {
+  it('repeat runs at the same state produce the same cacheKey and commit order', () => {
     seedBase();
     repo.checkout('upstream/main');
     repo.write('src/a.ts', 'a1\n');
@@ -153,7 +146,8 @@ describe('analyzeIntake — determinism', () => {
     const a = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
     const b = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
     expect(b.cacheKey).toBe(a.cacheKey);
-    expect(b.segments.map((s) => s.kind)).toEqual(a.segments.map((s) => s.kind));
+    expect(b.commits.map((c) => c.sha)).toEqual(a.commits.map((c) => c.sha));
+    expect(b.commits.map((c) => c.primaryKind)).toEqual(a.commits.map((c) => c.primaryKind));
     expect(b.aggregateFiles).toEqual(a.aggregateFiles);
     expect(b.divergenceFiles).toEqual(a.divergenceFiles);
   });
