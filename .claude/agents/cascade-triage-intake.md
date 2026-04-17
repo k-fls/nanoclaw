@@ -44,14 +44,21 @@ Return a single JSON object (wrapped in a fenced ```json block) plus a short hum
     {
       "index": 0,
       "name": "short-kebab-case-label",
-      "kind": "clean | divergence | conflict | structural | break_point",
+      "kind": "clean | divergence | conflict | structural | break_point | mixed",
       "segmentIndices": [0, 1],
       "firstSha": "<sha>",
       "lastSha": "<sha>",
       "commitCount": 4,
       "files": ["src/...", "..."],
-      "risk": "low | medium | high",
-      "rationale": "one short paragraph: why this grouping, why this risk, what to watch for",
+
+      "mechanical_complexity": "low | medium | high",
+      "attention": "none | light | heavy",
+      "expected_outcome": "accept | reject | synthesize | unclear",
+      "tags": ["concrete-reason-1", "concrete-reason-2"],
+
+      "functional_summary": "2–4 sentences describing what upstream's changes DO behaviorally — features added, APIs changed, bugs fixed. NOT a list of files. Include fls-side context when relevant (e.g. 'fls deleted this module in commit X').",
+      "grouping_rationale": "one short sentence: why these commits belong together",
+
       "requiresAgentResolution": false
     }
   ],
@@ -62,39 +69,116 @@ Return a single JSON object (wrapped in a fenced ```json block) plus a short hum
 }
 ```
 
-Rules for the plan JSON:
+### Field definitions
 
 - `segmentIndices` must be contiguous and cover every analyzer segment exactly once across all groups.
 - `firstSha` / `lastSha` come from the first and last commits of the group's segments in analyzer order.
 - `mergeOrder` is usually `[0, 1, 2, ...]` — the analyzer's order. Diverge from it only when there is a concrete dependency reason (captured in `notes`).
-- `risk`:
-  - `low` → `clean` group with no rename concerns and low commit count
-  - `medium` → `divergence` group, or `clean` group with renames touching divergent files, or a large structural (merge commit or big rename)
-  - `high` → `conflict` group, or `divergence` group touching files listed in the analyzer's `intersection`, or any group containing a `break_point` that sits on an fls-diverged surface
-- `requiresAgentResolution: true` iff the group's kind is `conflict` OR `risk === 'high'`. The executor uses this flag to decide whether to invoke `cascade-resolve-conflict` for each conflicted file.
+- `kind: "mixed"` is valid when a group spans multiple analyzer kinds after your coalescing; use it rather than misrepresenting.
 
-## Risk assessment checklist
+### `mechanical_complexity`
 
-Before finalizing, walk this list:
+How hard the actual merge mechanics are. Independent of whether the human needs to think.
 
-1. **Intersection coverage.** Every path in the analyzer's `intersection` (range files ∩ divergence files) must appear in a non-`clean` group. If one lands in a `clean` group, split the segment.
-2. **Rename hazard.** For each rename in `renames`, check whether the pre-rename path is in the divergence set or modified later in the range. If yes, flag in `notes` and raise the affected group to `medium`.
-3. **Break-point alignment.** A `break_point` segment is almost always its own group. Do not coalesce with neighbors.
-4. **Structural singletons.** Merge commits and large renames (the analyzer's `structural` kind) stay as singletons. Explain why in `rationale` — they often carry non-obvious tree-wide effects.
-5. **fls-deletion verdicts.** For each entry in `flsDeletionVerdicts`:
-   - `rationale-holds` → no action.
-   - `rationale-partially-holds` → add a line to the plan's top-level `notes` naming the files flagged `port-candidate` / `reintroduce-candidate`. Do not raise group risk unless those files are also in the intersection.
-   - `rationale-reopened` → add to `notes` with emphasis, and raise the risk of the group containing the upstream commits that did the reopening to `high`. Cross-reference `upstreamTouchingCommits` on each flagged file to find which group(s) are affected.
-   - `inconclusive` → add to `notes` with the escalation reason verbatim; set risk on affected groups to at least `medium`.
-6. **Cache key attestation.** Copy `cacheKey` into the plan. If the executor's later analysis has a different key, the plan is stale and must be regenerated.
+- `low` — no predicted conflicts, ≤ 5 commits, no renames touching divergent surface, no large structural.
+- `medium` — renames touching divergence files, or a structural singleton, or ≥ 5 commits with trivial touches on diverged surface.
+- `high` — predicted conflicts, or a structural with ≥ 10 files, or both sides touched ≥ 2 intersection files.
+
+### `attention`
+
+How much the human needs to think about this group at confirmation time. Independent of complexity.
+
+- `none` — outcome is mechanical and pre-determined. Pure clean group, OR pure fls-deleted-area group where the deletion inspector returned `rationale-holds`. The human's "proceed" is a rubber-stamp.
+- `light` — outcome is mostly mechanical but needs a quick sanity check. Renames on diverged surface with no behavioral delta; side-touches on unrelated files that need a glance; predictable SDK/dependency bumps.
+- `heavy` — real judgment required. Genuine conflicts needing synthesis; `rationale-reopened` / `inconclusive` deletion groups; structurals touching ≥ 3 intersection files; anything where `expected_outcome === 'unclear'`.
+
+**A group can be `mechanical_complexity: high` and `attention: none`** — e.g. a 20-file upstream structural where every file is in an fls-deleted area and the inspector confirmed rationale holds. The merge is complex mechanically but the outcome (silent rejection of the upstream work) is pre-decided.
+
+**A group can be `mechanical_complexity: low` and `attention: heavy`** — e.g. one commit, one file, but that file is heavily diverged on fls and the change is a subtle behavior flip.
+
+### `expected_outcome`
+
+Your best guess at what the merge will actually result in. The reviewer uses this to calibrate how surprised to be.
+
+- `accept` — upstream's changes will land cleanly, fls gets them as-is.
+- `reject` — upstream's changes will be silently dropped (fls deleted surface / fls override wins / merge-tree result is all-fls).
+- `synthesize` — non-trivial merge, content from both sides combines.
+- `unclear` — you cannot predict; the reviewer needs to look at the actual diff.
+
+### `tags`
+
+Concrete, specific reasons the group has the attention level it does. Replaces the old single `risk` label. Use canonical tag forms:
+
+- `touches:<path>(diverged)` — file is in analyzer's `intersection`. One tag per file, up to 3 then `...`.
+- `conflict-predicted:<path>` — file in analyzer's `predictedConflicts`.
+- `large-structural:<N-files>` — structural singleton with many files.
+- `rename-crosses-boundary` — rename inside group, the pre- or post-rename path is divergent.
+- `deletion-rationale-holds` — deletion inspector returned `rationale-holds` for this group's files.
+- `deletion-rationale-partial` — inspector returned `rationale-partially-holds`.
+- `deletion-rationale-reopened` — inspector returned `rationale-reopened`. Raises attention to `heavy`.
+- `deletion-rationale-inconclusive` — inspector returned `inconclusive`. Raises attention to at least `light`.
+- `break-point:<ref>` — an upstream tag / upstream-merge commit sits in this group.
+- `clean-mechanical` — add this when `attention === 'none'` to make the "no thought required" signal explicit.
+- `side-touches:<path>` — a file outside the group's main theme that the group modifies; common cause of `attention: light`.
+- `sdk-bump` / `dep-bump` / `version-bump` — dependency-only groups; use when applicable.
+
+Free-form tags are allowed but prefer the canonical forms so the orchestrator can match on them.
+
+### `functional_summary`
+
+2–4 sentences describing **what the group does to product behavior**. The skill shows this at per-group confirmation. Rules:
+
+- Lead with the behavioral delta. "Upstream adds voice-transcription via whisper.cpp" — not "modifies src/transcribe.ts, package.json, and the container build".
+- Mention fls-side context when it matters for the reviewer's decision. "fls deleted the session module in commit abc1234; the upstream helper has no consumer." — tells the reviewer why the expected outcome is `reject`.
+- Never list file paths. Paths belong in `files[]`.
+- If the upstream commit messages are terse and you can't infer behavior without reading the diff, say so: "Commits' subjects are non-descriptive ('fix', 'cleanup'); behavior unclear without diff review."
+- Keep it under 400 characters.
+
+### `grouping_rationale`
+
+One sentence, ≤ 150 chars. Why these commits belong together as one group, distinct from neighbors. The *grouping* justification, not the *review* justification.
+
+### `requiresAgentResolution`
+
+`true` iff the group's kind is `conflict` OR `attention === 'heavy'`. The executor uses this flag to decide whether to pre-dispatch `cascade-resolve-conflict` for each conflicted file.
+
+## Attention assessment
+
+Before finalizing, walk this list and set each group's `attention` and `expected_outcome` accordingly.
+
+1. **All files in fls-deleted area + `rationale-holds`.** Every file in the group is in an fls-deleted path and the deletion inspector returned `rationale-holds` for every relevant group. Set `attention: none`, `expected_outcome: reject`, tag with `clean-mechanical` + `deletion-rationale-holds`. Do not inflate this to `light` just because the merge touches many files — the outcome is deterministic.
+
+2. **All commits clean + no renames + no side-touches.** Pure additive upstream work that doesn't touch any divergent surface. `attention: none`, `expected_outcome: accept`, tag `clean-mechanical`.
+
+3. **Intersection coverage.** Every path in the analyzer's `intersection` must appear in a group whose `attention` is at least `light`. If intersection paths land in an `attention: none` group, split the segment.
+
+4. **Rename hazard.** For each rename in `renames`, check whether the pre-rename path is in the divergence set. If yes: `attention: light` minimum, tag `rename-crosses-boundary`.
+
+5. **Break-point alignment.** A `break_point` segment is almost always its own group. Do not coalesce with neighbors. Tag with `break-point:<ref>`. Attention depends on whether the break point sits on diverged surface.
+
+6. **Structural singletons.**
+   - `< 5 files`, no intersection touch → `attention: light`.
+   - `≥ 5 files` touching intersection → `attention: heavy`, `expected_outcome: unclear`. List the intersection files in `tags`.
+
+7. **Predicted conflicts.** Any group containing a file from `predictedConflicts` → `attention: heavy`, `expected_outcome: synthesize` (or `unclear` if many files conflict). Tag each conflicted file.
+
+8. **fls-deletion verdicts.** For each entry in `flsDeletionVerdicts`:
+   - `rationale-holds` → tag `deletion-rationale-holds` on the affected group(s). Attention derived from other signals, not from this one.
+   - `rationale-partially-holds` → tag `deletion-rationale-partial`. Attention: at least `light`. Mention the port-candidate files in `functional_summary`.
+   - `rationale-reopened` → tag `deletion-rationale-reopened`. Attention: `heavy`. `expected_outcome: unclear`. The inspector is saying upstream's work may invalidate fls's deletion decision.
+   - `inconclusive` → tag `deletion-rationale-inconclusive`. Attention: at least `light`; escalate to `heavy` if the inspector's `escalation_reason` isn't trivially resolvable.
+
+9. **Cache key attestation.** Copy `cacheKey` into the plan. If the executor's later analysis has a different key, the plan is stale and must be regenerated.
+
+Attention is **the max** across all triggered rules. Never downgrade an attention level that any rule raised.
 
 ## What to output for the human
 
 After the JSON, write 5–15 lines of prose:
 
 - One-sentence summary of the range (commit count, files, divergence intersection size, conflict count).
-- For each group: `#<idx> <name> (<kind>, <risk>) — <rationale essentials>`.
-- Explicit callouts for any risk you're flagging that the human might miss on a quick read: a divergence group hiding in clean metadata, a rename chain crossing groups, a structural commit that sprawls.
+- A table (or aligned list) with columns: `#idx | name | kind | attention | outcome | 1-line functional summary`.
+- Explicit callouts for any attention-`heavy` group with a non-obvious reason: a divergence group hiding in clean metadata, a rename chain crossing groups, a structural commit that sprawls, a reopened deletion rationale.
 
 Keep it terse. The human will be reading this back-to-back with the analyzer's pretty-print.
 

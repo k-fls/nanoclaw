@@ -65,13 +65,35 @@ Require an explicit yes. Silence / ambiguity → ask again.
 
 ### 4. Execute per group
 
-For each group in `mergeOrder`:
+For each group in `mergeOrder`, confirm with the user before merging. The confirmation format depends on the group's `attention` field from the plan.
 
-1. Announce the group: `group #N <name> (<kind>, <risk>, <commitCount> commits)`.
-2. Run `npm run cascade -- intake-upstream <lastSha> --source upstream/main -m "intake upstream: group N <name> (<firstSha..lastSha>)"`.
-3. If the result status is `merged`: report the merge SHA, move to the next group.
-4. If `noop`: skip, continue.
-5. If `conflicted`: per-file conflict loop (see below), then `npm run cascade -- intake-upstream --continue -m "..."`.
+**Confirmation format — always include:**
+
+```
+group #N <name>  (<kind>, attention=<level>, outcome=<expected>)
+<functional_summary — 2–4 sentences from the plan>
+
+tags: <comma-separated tags, up to 5; hide the rest unless --verbose>
+commits: <commitCount> (<firstSha..lastSha>)
+
+Proceed?
+```
+
+**Never include the raw file list in the confirmation prompt.** File paths belong in `--verbose` output. The reviewer is deciding based on *what changes behaviorally*, not *which files are touched*.
+
+**Auto-proceed policy by attention level:**
+
+- `attention: none` + `expected_outcome` is `accept` or `reject` — you MAY auto-proceed, but only if the user opted in for this intake session with `autoApprove: 'low-risk-only'`. Default (no opt-in): still ask, but make the prompt one line: `group #N <name>: <functional_summary>. Mechanical <outcome>. Proceed?`.
+- `attention: light` — always ask. Show the 4-line format above.
+- `attention: heavy` — always ask. Show the 4-line format above, and prepend a line: `⚠  This group needs attention: <first tag>, <second tag>`.
+
+**For each group, once confirmed:**
+
+1. Run `npm run cascade -- intake-upstream <lastSha> --source upstream/main -m "intake upstream: group N <name> (<firstSha..lastSha>)"`.
+2. If the result status is `merged`: report the merge SHA + the group's `expected_outcome` ("outcome was: accept — matched"), move on.
+3. If `noop`: skip.
+4. If `conflicted`: run the per-file conflict loop, then `npm run cascade -- intake-upstream --continue -m "..."`.
+5. If the actual outcome doesn't match `expected_outcome` (e.g. plan said `reject` but the merge introduced files), pause and ask the user whether to roll back — plan drift is a real signal.
 
 After every group, run `npm run cascade -- check` and halt the entire flow on the first error. Report the failure; do not attempt the next group. Ask the user how to proceed (abort with `intake-upstream --abort`, reset, or resolve manually).
 
