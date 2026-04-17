@@ -21,6 +21,7 @@ import type { DockerEnvName } from '../docker-env.js';
 import { logger } from '../../logger.js';
 import { CONTAINER_RUNTIME_BIN } from '../../container-runtime.js';
 import { getProxy } from '../credential-proxy.js';
+import { captureClaudeUsage } from '../token-usage/anthropic.js';
 import {
   RESELECT,
   type AuthContext,
@@ -626,6 +627,7 @@ export const CLAUDE_OAUTH_PROVIDER: import('../oauth-types.js').OAuthProvider =
     tokenFieldCapture: {
       scopeInclude: ['user:file_upload'],
     },
+    onUpstreamResponse: captureClaudeUsage,
   };
 
 /**
