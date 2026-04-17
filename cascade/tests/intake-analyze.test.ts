@@ -230,6 +230,23 @@ describe('analyzeIntake — fls deletion inspection', () => {
     expect(r.flsDeletionGroups[1].files).toHaveLength(1);
   });
 
+  it('detects files upstream added in-range that fls never had (case 2: fls-absent, not fls-deleted)', () => {
+    seedBase();
+    // fls makes no changes. main stays at base.
+    // upstream adds a new file that fls has never had.
+    repo.checkout('upstream/main');
+    const body = Array.from({ length: 15 }, (_, i) => `L${i}`).join('\n') + '\n';
+    repo.write('src/new-upstream-only.ts', body);
+    repo.commit('upstream: add skill file');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.flsDeletionGroups.length).toBe(1);
+    const g = r.flsDeletionGroups[0];
+    // No fls deletion commit — fls never had this file.
+    expect(g.deletionSha).toBe('unknown');
+    expect(g.files.map((f) => f.path)).toContain('src/new-upstream-only.ts');
+  });
+
   it('filters out upstream deltas below the threshold', () => {
     seedBase();
     repo.run('rm', 'src/a.ts');

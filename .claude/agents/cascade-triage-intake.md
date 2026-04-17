@@ -19,7 +19,7 @@ You are given:
    - `commits[]` — each with `sha`, `subject`, `author`, `authorDate`, `parents`, `isMerge`, `files[]`, `kinds[]`, `primaryKind`, `tags[]` (upstream refs at that commit). This is your primary grouping input. Each `files[]` entry may carry two optional per-(commit, path) signals:
      - `whitespaceOnly: true` — this commit's diff on this path is non-empty but empty under `--ignore-all-space` (formatting / import order). Suppressed when the repo's `.cascade/config.yaml` sets `intake_whitespace_only: false` (projects where whitespace is semantic — Python, YAML, Makefiles); in that case the field is never present and formatting-only commits are treated like any other divergence touch.
      - `revertedAt: "<sha>"` — this commit lies inside a rollback window on this path: some later commit in the range returns the path to a state it held at or before this commit's pre-state. The `<sha>` is the reverter.
-   - `aggregateFiles`, `divergenceFiles`, `intersection`, `predictedConflicts`, `breakPoints`, `renames`, `flsDeletionGroups`.
+   - `aggregateFiles`, `divergenceFiles`, `intersection`, `predictedConflicts`, `breakPoints`, `renames`, `flsDeletionGroups`. `flsDeletionGroups` covers both "fls deleted the file post-base" and "fls never had it (upstream added it post-base)" — both appear as files present on upstream but absent on fls. The second case is grouped under `deletionSha: "unknown"` (there is no fls deletion commit because fls never had the file).
 2. Optional: the human-readable output of `cascade divergence-report` for context on where fls has diverged.
 3. Optional: `flsDeletionVerdicts` — an array of verdicts produced by `cascade-inspect-fls-deletion`, one per non-empty `flsDeletionGroups` entry. Each verdict has `group_header`, `group_rationale`, and per-file breakdown.
 
@@ -173,7 +173,7 @@ How hard the actual merge mechanics are. Independent of whether the human needs 
 
 How much the human needs to think about this group at confirmation time. Independent of complexity.
 
-- `none` — outcome is mechanical and pre-determined. Pure clean group, OR pure fls-deleted-area group where the deletion inspector returned `rationale-holds`. The human's "proceed" is a rubber-stamp.
+- `none` — outcome is mechanical and pre-determined. Pure clean group, OR pure fls-absent/deleted-area group where the deletion inspector returned `rationale-holds` (case-1 merge drops upstream's work; case-2 merge acquires files the reviewer will delete post-merge). The human's "proceed" is a rubber-stamp.
 - `light` — outcome is mostly mechanical but needs a quick sanity check. Renames on diverged surface with no behavioral delta; side-touches on unrelated files that need a glance; predictable SDK/dependency bumps.
 - `heavy` — real judgment required. Genuine conflicts needing synthesis; `rationale-reopened` / `inconclusive` deletion groups; structurals touching ≥ 3 intersection files; anything where `expected_outcome === 'unclear'`.
 
@@ -186,7 +186,7 @@ How much the human needs to think about this group at confirmation time. Indepen
 Your best guess at what the merge will actually result in. The reviewer uses this to calibrate how surprised to be.
 
 - `accept` — upstream's changes will land cleanly, fls gets them as-is.
-- `reject` — upstream's changes will be silently dropped (fls deleted surface / fls override wins / merge-tree result is all-fls).
+- `reject` — upstream's changes will be silently dropped (**case-1 only**: fls deleted surface / fls override wins / merge-tree result is all-fls). Do NOT use `reject` for fls-absent groups — the merge acquires those files on fls; use `accept` with a post-merge cleanup tag instead.
 - `synthesize` — non-trivial merge, content from both sides combines.
 - `unclear` — you cannot predict; the reviewer needs to look at the actual diff.
 
@@ -199,6 +199,9 @@ Concrete, specific reasons. Canonical forms:
 - `large-structural:<N-files>` — structural singleton with many files.
 - `rename-crosses-boundary` — rename inside group, pre- or post-rename path is divergent.
 - `deletion-rationale-holds` / `deletion-rationale-partial` / `deletion-rationale-reopened` / `deletion-rationale-inconclusive` — derived from `flsDeletionVerdicts`. **Reopened → `attention: heavy`; inconclusive → `attention` ≥ `light`** (validator enforces).
+- `fls-deleted-silent-drop` — case-1 group (real `flsDeletionGroups[k].deletionSha`): fls had the files and deleted them; merge drops upstream's work. Pairs with `expected_outcome: reject`.
+- `fls-absent-silent-acquire` — case-2 group (`deletionSha === 'unknown'`): fls never had the files and upstream added them post-base; merge acquires them on fls. Pairs with `expected_outcome: accept`. Add `post-merge-cleanup` when the inspector returned `rationale-holds` so the reviewer sees the follow-up `git rm` is needed.
+- `post-merge-cleanup` — reviewer should take a deletion action after the merge lands (paired with `fls-absent-silent-acquire` + `rationale-holds`).
 - `break-point:<ref>` — an upstream tag / upstream-merge commit sits in this group.
 - `clean-mechanical` — add this when `attention === 'none'` to make the "no thought required" signal explicit.
 - `side-touches:<path>` — a file outside the group's main theme that the group modifies; common cause of `attention: light`.
@@ -247,7 +250,14 @@ For each group, walk this list in order. Set `attention` to the **maximum** leve
    - `< 5 files`, no intersection touch → `attention: light`.
    - `≥ 5 files` touching intersection → `attention: heavy`, `expected_outcome: unclear`. Tag the specific intersection files.
 
-7. **All files in fls-deleted area + `rationale-holds`.** Every file in the group is in an fls-deleted path and the relevant deletion verdicts are `rationale-holds`. Set `attention: none`, `expected_outcome: reject`, tags include `clean-mechanical` + `deletion-rationale-holds`. The merge touching many files does not inflate this — outcome is deterministic.
+7. **Pure fls-absent-or-deleted area + `rationale-holds`.** Every file in the group sits in a `flsDeletionGroups[k].files[*].path` and the relevant deletion verdicts are `rationale-holds`. Outcome depends on the group's `deletionSha`:
+   - **Case 1 — real `deletionSha` (fls had the files, deleted them).** Merge silently drops upstream's work. Set `attention: none`, `expected_outcome: reject`, tags include `clean-mechanical` + `deletion-rationale-holds` + `fls-deleted-silent-drop`.
+   - **Case 2 — `deletionSha === 'unknown'` (fls never had the files; upstream added them post-base).** Merge silently acquires the files. Set `attention: none`, `expected_outcome: accept`, tags include `clean-mechanical` + `deletion-rationale-holds` + `fls-absent-silent-acquire` + `post-merge-cleanup`. Mention the post-merge `git rm` in `functional_summary` so the reviewer sees the follow-up.
+   - **Mixed group spanning both cases** — a single group whose files come from both a real-sha and an unknown-sha `flsDeletionGroups[k]` entry. This is an honest anti-pattern: the outcomes are opposite (drop vs acquire), so they can't share a single `expected_outcome`. Split the group along the case boundary rather than coalescing.
+   
+   The merge touching many files does not inflate attention in any of these — outcome is deterministic once the case is identified.
+   
+   **Caveat — intersection-touching commits in the group.** A mixed group that includes an upstream merge commit (or any commit) touching files in `intersection` cannot drop to `attention: none` even if the fls-absent/deleted portion is `rationale-holds`. The intersection touches are a separate judgment call and force `attention ≥ light` per rule 3. Split off the intersection-touching commits into their own group, or accept the raised attention for the combined group.
 
 8. **All-clean no-side-touches.** Pure additive upstream work that doesn't touch divergent surface. `attention: none`, `expected_outcome: accept`, tag `clean-mechanical`.
 

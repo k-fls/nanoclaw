@@ -53,14 +53,25 @@ export interface CommitInfo {
   tags: string[];
 }
 
-// A file fls deleted on target that upstream has kept modifying, grouped by
-// the fls commit that performed the deletion. Candidate for human review:
-// mechanically the merge keeps the deletion silently, but upstream's ongoing
-// activity might contain work worth porting or reconsidering.
+// A file absent from target that upstream has kept working on in-range,
+// grouped by the fls commit that performed the deletion when one exists.
+// Covers two cases:
+//   (1) fls deleted the file post-base (`git diff base..target` status D);
+//   (2) upstream added the file post-base and fls never had it (no fls
+//       deletion commit; grouped under 'unknown').
+// Both appear as `D` in `git diff source..target` — "present on upstream,
+// absent on fls". Candidate for human review: mechanically the merge would
+// silently acquire (case 2) or silently drop (case 1) upstream's work; the
+// reviewer decides whether to port, accept, or reject.
+//
+// The name retains `Deletion` for API compatibility with existing consumers
+// (skill, inspect-fls-deletion agent); the widened semantics are documented
+// here and surfaced by the 'unknown' deletionSha for case (2).
 export interface FlsDeletionGroup {
-  // fls commit that deleted the files. 'unknown' when the deletion commit
-  // cannot be identified (e.g. the file was renamed-then-deleted and we
-  // don't follow renames, consistent with ownership.md).
+  // fls commit that deleted the files. 'unknown' when no fls deletion
+  // commit exists — either because the file was renamed-then-deleted (we
+  // don't follow renames, consistent with ownership.md) or because the file
+  // was never on fls in the first place (upstream added it post-base).
   deletionSha: string | 'unknown';
   deletionSubject: string;
   deletionAuthorDate: string; // ISO 8601; empty for 'unknown'
@@ -214,18 +225,21 @@ function computeFlsDeletionGroups(params: {
 }): FlsDeletionGroup[] {
   const { repoRoot, base, target, source, minLines, commits } = params;
 
-  // Files deleted on target since base.
-  const flsDeleted = new Set(
-    gitNames(['diff', '--diff-filter=D', '--name-only', `${base}..${target}`], repoRoot),
+  // Files present on upstream tip but absent from target tip — covers both
+  // "fls deleted post-base" and "fls never had (upstream added post-base)".
+  // The direction `source..target` asks git "what would need to be deleted
+  // going from source to target" — i.e. what source has that target doesn't.
+  const flsAbsent = new Set(
+    gitNames(['diff', '--diff-filter=D', '--name-only', `${source}..${target}`], repoRoot),
   );
-  if (flsDeleted.size === 0) return [];
+  if (flsAbsent.size === 0) return [];
 
-  // Candidates: range files that upstream touched AND fls has since deleted.
+  // Candidates: range files upstream touched that are absent from fls.
   const candidates: string[] = [];
   const touchingByPath = new Map<string, string[]>();
   for (const c of commits) {
     for (const f of c.files) {
-      if (!flsDeleted.has(f.path)) continue;
+      if (!flsAbsent.has(f.path)) continue;
       const list = touchingByPath.get(f.path) ?? [];
       list.push(c.sha);
       touchingByPath.set(f.path, list);

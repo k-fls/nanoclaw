@@ -46,14 +46,14 @@ Also run `npm run cascade -- divergence-report` and save to `.cascade/.intake/<c
 
 ### 2a. Inspect fls deletions (parallel to triage)
 
-If the analyzer's `flsDeletionGroups` is non-empty, dispatch one `cascade-inspect-fls-deletion` subagent per group **in parallel**, before (or alongside) step 2b triage.
+If the analyzer's `flsDeletionGroups` is non-empty, dispatch one `cascade-inspect-fls-deletion` subagent per group **in parallel**, before (or alongside) step 2b triage. Groups cover two shapes: a real fls deletion commit (fls had the files, removed them) or `deletionSha === 'unknown'` (fls never had the files — upstream added them post-base, or a rename we can't follow).
 
 For each group, assemble the subagent input:
 
-- `fls_deletion_commit`: `{ sha, subject, body, author_date }` — fetch via `git show -s --format='%H%n%s%n%aI%n%b' <deletionSha>`. For `deletionSha === 'unknown'`, pass subject/body as empty strings.
+- `fls_deletion_commit`: `{ sha, subject, body, author_date }` — fetch via `git show -s --format='%H%n%s%n%aI%n%b' <deletionSha>`. For `deletionSha === 'unknown'`, pass sha/subject/body/author_date as empty strings.
 - `files`: for each file in the group, pack:
   - `path`
-  - `base_content` — `git show <base>:<path>`
+  - `base_content` — `git show <base>:<path>`; pass `""` when the path did not exist at base (`git show` exits non-zero — treat that as the empty state, which is the case for fls-absent files).
   - `upstream_tip_content` — `git show <source>:<path>`
   - `upstream_touching_commits` — `[{ sha, subject }]` from the analyzer's `upstreamTouchingCommits`, resolved with `git show -s --format=%s <sha>`
   - `port_hints` (optional) — if the deleted file exported named symbols, run a quick `rg -n 'exportedSymbol' src/` for each and pass the results. Cheap and high-signal. Skip if the file is not TypeScript/JavaScript or has no obvious exports.
