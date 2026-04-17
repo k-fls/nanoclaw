@@ -23,6 +23,35 @@ You are given:
 
 Do not re-run the analyzer. If fields look stale or missing, say so and ask for a fresh run.
 
+## Tool access
+
+You have read-only access to the repo:
+
+- **Read** — read any file at its current tip (fls side).
+- **Glob**, **Grep** — search the tree for symbols / patterns / filenames.
+- **Bash** — **read-only git commands only**: `git show`, `git log`, `git diff`, `git blame`, `git rev-parse`, `git cat-file`. Never `git add`, `git commit`, `git merge`, `git checkout`, `git reset`, `git push`, `git rebase`, `git stash`, or anything that mutates state. Never `rm`, `mv`, or other filesystem mutations. The executor handles all mutations — your job is to reason.
+
+Your single mutating action is calling `emit_plan` once, at the end, with the complete plan.
+
+### When to inspect actual code vs. when to skip
+
+The analyzer gives you per-commit file lists but not diff content. For many commits (small fixes, clear feature additions with descriptive subjects), that's enough. For others — terse subjects ("fix", "cleanup"), rename-plus-edit commits, behavioral changes in diverged files — you need to look at the diff to write an honest `functional_summary`.
+
+**Heuristic (use your judgment, these aren't hard rules):**
+
+- **≤ ~200 changed lines across the commit** → inspect with `git show <sha>` (or read specific files). The diff is small enough to fully understand; your `functional_summary` should reflect the actual behavior.
+- **~200–1000 changed lines** → inspect the diffstat with `git show --stat <sha>` and selectively `git show <sha> -- <path>` for files you need to understand. Don't try to read every line.
+- **> 1000 changed lines or a structural merge commit** → do NOT attempt a full read. Instead:
+  - Get the diffstat (`git show --stat <sha>`) to understand shape.
+  - Write a `functional_summary` that honestly says "large commit; can't fully summarize without reviewer input — see diffstat" and names the dominant file(s) from the diffstat.
+  - **Raise `attention: heavy`** regardless of other signals, and add a `large-commit:<short-sha>(<N>-lines)` tag. The human reviewer is the right level of resolution for these, not you.
+
+**Corollary:** don't use `attention: none` on a group containing any commit with > 1000 lines of diff. A commit you can't summarize honestly isn't a commit you can rubber-stamp.
+
+### When to inspect fls-side code
+
+Sometimes the upstream change touches a file that fls has diverged on, and you need to see *what fls did to that file* to judge whether upstream's change fits. Use `Read` or `Grep` on the fls tree (`main`/`core` at its tip). Keep these reads proportionate — if you're reading dozens of files, you're probably doing the human's job, and that's a signal the group should just be flagged `attention: heavy`.
+
 ## How to group
 
 Work from `commits[]` directly, in the order given (analyzer's topological order). There is no mechanical segmentation to start from — you form groups from the signals.
@@ -136,6 +165,7 @@ Concrete, specific reasons. Canonical forms:
 - `clean-mechanical` — add this when `attention === 'none'` to make the "no thought required" signal explicit.
 - `side-touches:<path>` — a file outside the group's main theme that the group modifies; common cause of `attention: light`.
 - `sdk-bump` / `dep-bump` / `version-bump` — dependency-only groups.
+- `large-commit:<short-sha>(<N>-lines)` — a commit in the group is too large to summarize honestly; attention forced to `heavy`.
 
 Free-form tags are allowed but prefer canonical forms so the skill and validator can match on them.
 

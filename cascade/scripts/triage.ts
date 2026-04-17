@@ -1,44 +1,42 @@
-// Schema-enforced triage via Anthropic SDK tool use.
-// Replaces in-session Task/Agent invocation of `cascade-triage-intake`.
-// The plan shape is enforced at decode time by tool_choice + JSON Schema,
-// so the model physically cannot emit anything that doesn't match.
+// Schema-enforced triage via @anthropic-ai/claude-agent-sdk `query()`.
+// Runs the cascade-triage-intake subagent as a one-shot with an in-process
+// MCP server exposing a single tool, `emit_plan`, whose input is zod-
+// validated. The agent is steered to call that tool; the tool's input IS
+// the plan. Schema enforcement is native to the SDK's MCP integration.
 //
-// Prompt source of truth: .claude/agents/cascade-triage-intake.md. This
-// script reads the markdown at run time, strips frontmatter, and uses the
-// body as the system prompt. No prompt duplication.
+// Prompt source of truth: .claude/agents/cascade-triage-intake.md. Read at
+// runtime, frontmatter stripped, body used as system prompt — no prompt
+// duplication in code.
 
 import { readFileSync, existsSync } from 'node:fs';
 import * as path from 'node:path';
-import Anthropic from '@anthropic-ai/sdk';
-import { z } from 'zod';
+import {
+  query,
+  createSdkMcpServer,
+  tool,
+  type SDKMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import { PlanSchema, type Plan } from './intake-validate.js';
 
 export interface TriageInputs {
-  analyzerJson: string;      // stringified analyzer JSON
-  divergenceReport?: string; // plain-text divergence-report output
-  deletionVerdicts?: string; // stringified JSON array of inspector verdicts
-  previousPlan?: string;     // stringified prior plan (for retries)
-  validatorViolations?: string; // stringified violations JSON (for retries)
+  analyzerJson: string;
+  divergenceReport?: string;
+  deletionVerdicts?: string;
+  previousPlan?: string;
+  validatorViolations?: string;
 }
 
 export interface TriageOptions {
-  agentPromptPath: string;   // path to .claude/agents/cascade-triage-intake.md
+  agentPromptPath: string;
   inputs: TriageInputs;
-  // Optional model override; defaults to the frontmatter value in the md.
   model?: string;
-  // Defensive caps; real runs should fit easily.
-  maxTokens?: number;
 }
 
 export interface TriageResult {
   plan: Plan;
-  rawToolInput: unknown;
-  stopReason: string;
-  usage?: Anthropic.Usage;
 }
 
-// Parse the markdown frontmatter; return { model, body }. Tolerates CRLF
-// and missing frontmatter (returns body=full content, model=undefined).
+// Parse the markdown frontmatter; return { model, body }.
 export function loadAgentPrompt(mdPath: string): { model?: string; body: string } {
   const raw = readFileSync(mdPath, 'utf8');
   const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
@@ -49,31 +47,19 @@ export function loadAgentPrompt(mdPath: string): { model?: string; body: string 
   return { model, body: body.trimStart() };
 }
 
-// Resolve the `model:` frontmatter value. `opus` / `sonnet` / `haiku` map to
-// the latest stable IDs; bare IDs pass through unchanged.
-function resolveModel(input: string | undefined): string {
-  const fallback = 'claude-opus-4-7';
-  if (!input) return fallback;
+// Resolve the `model:` frontmatter value. Aliases → latest stable IDs.
+function resolveModel(input: string | undefined): string | undefined {
+  if (!input) return undefined;
   const v = input.trim().toLowerCase();
-  if (v === 'opus') return fallback;
+  if (v === 'opus') return 'claude-opus-4-7';
   if (v === 'sonnet') return 'claude-sonnet-4-6';
   if (v === 'haiku') return 'claude-haiku-4-5';
   return input.trim();
 }
 
-// Derive the JSON Schema the SDK passes to tool_use. Uses zod v4's native
-// `z.toJSONSchema`. Target is the full Plan; model is constrained to this
-// shape at decode time.
-function planJsonSchema(): Record<string, unknown> {
-  const raw = z.toJSONSchema(PlanSchema) as Record<string, unknown>;
-  // Drop meta fields the Anthropic API doesn't need (and may reject).
-  const { $schema: _s, ...rest } = raw;
-  return rest;
-}
-
-// Build the user-turn message. The agent prompt (system) is static; the
-// analyzer + optional retry context is dynamic input.
-function buildUserContent(inputs: TriageInputs): string {
+// Build the user prompt. The system prompt (from the md) carries the
+// authoritative grouping rules; the user prompt carries the dynamic inputs.
+function buildPrompt(inputs: TriageInputs): string {
   const parts: string[] = [];
   parts.push('## Analyzer JSON\n\n```json\n' + inputs.analyzerJson + '\n```');
   if (inputs.divergenceReport) {
@@ -95,7 +81,7 @@ function buildUserContent(inputs: TriageInputs): string {
     );
   }
   parts.push(
-    'Emit the plan by calling the `emit_plan` tool. Do not respond with text; call the tool directly.',
+    'Emit the plan by calling the `emit_plan` tool. Do not respond with prose; call the tool directly with the full plan as its argument.',
   );
   return parts.join('\n\n');
 }
@@ -104,58 +90,86 @@ export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
   if (!existsSync(opts.agentPromptPath)) {
     throw new Error(`triage: agent prompt not found at ${opts.agentPromptPath}`);
   }
-  const { model: fmModel, body: system } = loadAgentPrompt(opts.agentPromptPath);
-  const model = resolveModel(opts.model ?? fmModel);
-  const client = new Anthropic(); // picks up ANTHROPIC_API_KEY from env
+  const { model: fmModel, body: systemPrompt } = loadAgentPrompt(opts.agentPromptPath);
+  const model = opts.model ? resolveModel(opts.model) : resolveModel(fmModel);
 
-  const toolSchema = planJsonSchema();
-  const response = await client.messages.create({
-    model,
-    max_tokens: opts.maxTokens ?? 16000,
-    system,
-    tools: [
-      {
-        name: 'emit_plan',
-        description:
-          'Emit the P1 intake decomposition plan. The input must satisfy the plan schema exactly.',
-        input_schema: toolSchema as Anthropic.Tool['input_schema'],
-      },
-    ],
-    tool_choice: { type: 'tool', name: 'emit_plan' },
-    messages: [
-      {
-        role: 'user',
-        content: buildUserContent(opts.inputs),
-      },
-    ],
+  // Schema-enforced handoff. The tool receives a zod-validated Plan; the
+  // handler captures it for us. We return a terminal string so the agent
+  // knows the turn is done and doesn't keep calling tools.
+  let capturedPlan: Plan | null = null;
+  const emitPlan = tool(
+    'emit_plan',
+    'Emit the P1 intake decomposition plan. The input IS the plan; it is validated against the Plan schema.',
+    PlanSchema.shape,
+    async (input) => {
+      // `input` is already zod-parsed by the SDK against PlanSchema.shape.
+      // We additionally re-parse the full PlanSchema to capture refinements
+      // on nested objects (e.g. groups array items).
+      const parsed = PlanSchema.safeParse(input);
+      if (!parsed.success) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'emit_plan: input failed validation: ' +
+                JSON.stringify(parsed.error.issues),
+            },
+          ],
+          isError: true,
+        };
+      }
+      capturedPlan = parsed.data;
+      return {
+        content: [{ type: 'text', text: 'ok — plan captured' }],
+      };
+    },
+  );
+
+  const mcpServer = createSdkMcpServer({
+    name: 'cascade-triage',
+    version: '0.0.0',
+    tools: [emitPlan],
   });
 
-  const toolBlock = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit_plan',
-  );
-  if (!toolBlock) {
-    throw new Error(
-      `triage: model did not call emit_plan (stop_reason=${response.stop_reason})`,
-    );
+  const prompt = buildPrompt(opts.inputs);
+  const stream = query({
+    prompt,
+    options: {
+      systemPrompt,
+      model,
+      mcpServers: { cascade: mcpServer },
+      // Tool surface: read-only access to repo contents for inspecting
+      // actual code changes + emit_plan as the single mutating action.
+      // The agent prompt instructs when to inspect (small/medium diffs) and
+      // when to skip (huge diffs → raise attention instead of reading).
+      // Bash is included for `git show` / `git log` / `git diff`; the
+      // prompt forbids mutating git commands.
+      allowedTools: [
+        'mcp__cascade__emit_plan',
+        'Read',
+        'Glob',
+        'Grep',
+        'Bash',
+      ],
+      permissionMode: 'bypassPermissions',
+    },
+  });
+
+  // Drain the stream. The handler captures the plan when the tool fires.
+  for await (const _msg of stream as AsyncIterable<SDKMessage>) {
+    // no-op — the side effect is `capturedPlan` being set.
   }
 
-  // tool_use.input is already schema-checked by the API decoder, but parse
-  // through zod too — belt and suspenders, and yields typed Plan.
-  const parsed = PlanSchema.safeParse(toolBlock.input);
-  if (!parsed.success) {
+  if (!capturedPlan) {
     throw new Error(
-      `triage: emit_plan input failed zod re-check (unexpected): ${parsed.error.message}`,
+      'triage: agent finished without calling emit_plan — check the prompt or retry',
     );
   }
-  return {
-    plan: parsed.data,
-    rawToolInput: toolBlock.input,
-    stopReason: response.stop_reason ?? 'unknown',
-    usage: response.usage,
-  };
+  return { plan: capturedPlan };
 }
 
-// ---------------- CLI plumbing (for `cascade triage ...`) ----------------
+// ---------------- CLI plumbing ----------------
 
 export interface CliArgs {
   analyzerPath: string;
@@ -168,8 +182,7 @@ export interface CliArgs {
 }
 
 export async function runTriageCli(args: CliArgs): Promise<Plan> {
-  const agentPromptPath =
-    args.agentPromptPath ?? defaultAgentPromptPath();
+  const agentPromptPath = args.agentPromptPath ?? defaultAgentPromptPath();
   const inputs: TriageInputs = {
     analyzerJson: readFileSync(args.analyzerPath, 'utf8'),
     divergenceReport: args.divergencePath
@@ -185,17 +198,11 @@ export async function runTriageCli(args: CliArgs): Promise<Plan> {
       ? readFileSync(args.violationsPath, 'utf8')
       : undefined,
   };
-  const result = await runTriage({
-    agentPromptPath,
-    inputs,
-    model: args.model,
-  });
+  const result = await runTriage({ agentPromptPath, inputs, model: args.model });
   return result.plan;
 }
 
-// Find .claude/agents/cascade-triage-intake.md relative to the repo root.
 function defaultAgentPromptPath(): string {
-  // cascade/scripts/ is two levels below repo root.
   const here = new URL('.', import.meta.url).pathname;
   return path.resolve(here, '../../.claude/agents/cascade-triage-intake.md');
 }
