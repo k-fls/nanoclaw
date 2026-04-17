@@ -24,11 +24,19 @@ The analyzer has strictly split the range into contiguous segments by kind (`cle
 
 Allowed adjustments:
 
-- **Coalesce adjacent same-kind segments** when they share a theme (both touch the same subsystem, both are dependency bumps, etc.). Explain the theme.
-- **Split a `divergence` or `conflict` segment further** when distinct risk sub-groups exist within it — for example, one sub-group touches the router and another touches auth, and the reviewer should approve those independently.
+- **Coalesce adjacent same-kind segments only when they share a single, nameable theme.** A theme is something you can write in one sentence without the word "and" joining distinct subsystems. Examples of valid themes:
+  - "these commits all bump the Agent SDK version"
+  - "these commits all refactor the wiki skill docs"
+  - "these commits all maintain CHANGELOG / release-notes for the upcoming version"
+
+  **Anti-example — must be split, not coalesced:** three adjacent divergence commits that (1) rename a skill folder, (2) bump the Agent SDK, (3) touch `src/db.ts` formatting. These share the mechanical kind (`divergence`) but not a theme. Coalescing them produces a group whose `grouping_rationale` has to say "rename AND SDK bump AND db.ts touch" — that "AND" is the signal the group is wrong.
+
+- **Split a `divergence` or `conflict` segment further** when it contains multiple themes OR distinct risk sub-groups. Same theme test: if you cannot name a single shared theme for the whole segment, split it.
 - **Never merge segments of different kinds.** A `clean` + `divergence` merge hides that the group touches diverged surface.
 - **Never reorder commits.** Groups must be contiguous ranges in the analyzer's original commit order.
 - **Never skip commits.** Every commit in the range appears in exactly one group.
+
+**Grouping gate:** before finalizing each group, write its `grouping_rationale` out loud first. If it contains `and` joining distinct subsystems (routing vs. deps vs. docs vs. db), the group is invalid — split it along those boundaries. Singleton groups (one commit) are always acceptable when the commit stands alone thematically.
 
 ## Plan format
 

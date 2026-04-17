@@ -20,11 +20,29 @@ Before starting, verify in this order. Halt on the first failure with a concrete
 
 ## Flow
 
+### Working state location
+
+All working artifacts for this intake run live under `.cascade/.intake/<cacheKey>/` at the repo root, where `<cacheKey>` is the `cacheKey` field from the analyzer output. This path is gitignored. Required files:
+
+- `.cascade/.intake/<cacheKey>/analyzer.json` — raw analyzer output
+- `.cascade/.intake/<cacheKey>/divergence.txt` — divergence-report output
+- `.cascade/.intake/<cacheKey>/deletion-verdicts.json` — concatenated verdicts from `cascade-inspect-fls-deletion` (one entry per group, if any)
+- `.cascade/.intake/<cacheKey>/plan.json` — approved decomposition plan
+- `.cascade/.intake/<cacheKey>/progress.json` — groups completed / in-progress / pending
+
+**Never use `/tmp` or any path outside the repo.** Writing to `/tmp` loses intake state across worktrees, collides between parallel intakes, and hides the working set from the user.
+
+**On successful completion of all groups**: remove `.cascade/.intake/<cacheKey>/` entirely. On abort or error: leave it — it's the resume signal.
+
 ### 1. Analyze
+
+`mkdir -p .cascade/.intake/` (the `<cacheKey>` subdir is created after the analyzer reports one).
 
 Run `npm run cascade -- intake-analyze --json`. Capture both the JSON and a pretty print (`npm run cascade -- intake-analyze`). Show the pretty print to the user. If `rangeCount === 0`, there's nothing to intake — stop.
 
-Also run `npm run cascade -- divergence-report` — the triage agent benefits from seeing where fls has diverged. Save the plain-text output as context for step 2.
+Create `.cascade/.intake/<cacheKey>/` using the `cacheKey` from the JSON. Write the JSON to `.cascade/.intake/<cacheKey>/analyzer.json`.
+
+Also run `npm run cascade -- divergence-report` and save to `.cascade/.intake/<cacheKey>/divergence.txt` — the triage agent benefits from seeing where fls has diverged.
 
 ### 2a. Inspect fls deletions (parallel to triage)
 
@@ -40,7 +58,7 @@ For each group, assemble the subagent input:
   - `upstream_touching_commits` — `[{ sha, subject }]` from the analyzer's `upstreamTouchingCommits`, resolved with `git show -s --format=%s <sha>`
   - `port_hints` (optional) — if the deleted file exported named symbols, run a quick `rg -n 'exportedSymbol' src/` for each and pass the results. Cheap and high-signal. Skip if the file is not TypeScript/JavaScript or has no obvious exports.
 
-Collect each subagent's JSON verdict. These feed both the triage agent (as additional context) and the final plan presentation.
+Collect each subagent's JSON verdict into an array and write it to `.cascade/.intake/<cacheKey>/deletion-verdicts.json`. These feed both the triage agent (as additional context) and the final plan presentation.
 
 ### 2b. Triage
 
@@ -50,7 +68,7 @@ Invoke the `cascade-triage-intake` agent with:
 - The divergence-report plain-text output
 - **The fls-deletion verdicts from step 2a**, if any, so triage can raise risk on groups that touch files flagged `port-candidate` / `reintroduce-candidate` / `escalate` or appear in a `rationale-reopened` / `inconclusive` deletion group.
 
-The agent returns a decomposition plan as JSON plus a prose summary. Show the prose summary to the user verbatim. Show the JSON plan collapsed / summarized (groups with kind, risk, count).
+The agent returns a decomposition plan as JSON plus a prose summary. Write the JSON to `.cascade/.intake/<cacheKey>/plan.json`. Show the prose summary to the user verbatim. Show the JSON plan collapsed / summarized (groups with kind, attention, outcome, commitCount).
 
 **If any deletion group's header is `rationale-reopened` or `inconclusive`**, surface it prominently to the user before asking for plan approval — this is the signal they are most likely to miss on a skim.
 
@@ -73,6 +91,7 @@ For each group in `mergeOrder`, confirm with the user before merging. The confir
 group #N <name>  (<kind>, attention=<level>, outcome=<expected>)
 <functional_summary — 2–4 sentences from the plan>
 
+grouped because: <grouping_rationale — one sentence on the shared theme>
 tags: <comma-separated tags, up to 5; hide the rest unless --verbose>
 commits: <commitCount> (<firstSha..lastSha>)
 
@@ -80,6 +99,8 @@ Proceed?
 ```
 
 **Never include the raw file list in the confirmation prompt.** File paths belong in `--verbose` output. The reviewer is deciding based on *what changes behaviorally*, not *which files are touched*.
+
+**The "grouped because" line is mandatory.** It tells the reviewer why these commits were merged into a single decision unit. If the `grouping_rationale` strains to explain the shared theme (contains "and" joining unrelated subsystems, e.g. "rename docs AND bump SDK AND tweak db formatting"), that's a signal the triage agent under-split. Stop, report this to the user, and ask whether to request re-triage with the grouping split.
 
 **Auto-proceed policy by attention level:**
 
@@ -120,6 +141,8 @@ When all groups have merged (or the user aborts):
 - Run `npm run cascade -- check` one last time.
 - Run `npm run cascade -- version core` (or `main`) and report the new version.
 - Report which groups merged, which were aborted, and any follow-up items the resolve-conflict agent flagged in its rationales.
+- **On full success only**: remove `.cascade/.intake/<cacheKey>/`. The working state is no longer useful and leaving it around risks confusing the next intake.
+- **On abort or error**: leave the working state in place. Update `progress.json` to record where the flow stopped; the next invocation can resume from there.
 - Do not push. The user decides when to push.
 
 ## Error handling
