@@ -26,6 +26,14 @@ export interface FileChange {
   path: string;
   oldPath?: string; // R/C source
   score?: number;   // R/C similarity percent
+  // This (commit, path)'s diff vs parent is non-empty but empty under
+  // --ignore-all-space. Not set on R/C (rename) or merge-commit entries.
+  whitespaceOnly?: boolean;
+  // SHA of a later commit D in the range where blobAt(D, path) equals the
+  // path's state at some sequence-position strictly before this commit —
+  // i.e. this commit lies inside a rollback window on this path. Not set on
+  // R/C (rename) or merge-commit entries.
+  revertedAt?: string;
 }
 
 export interface CommitInfo {
@@ -130,6 +138,14 @@ export function analyzeIntake(opts: AnalyzeOptions): IntakeReport {
     .filter(Boolean);
 
   const commits: CommitInfo[] = shas.map((sha) => loadCommit(sha, repoRoot));
+
+  // Annotate per-(commit, path) signals used by the validator's attention-
+  // floor exemption: whitespace-only touches and rollback-window membership.
+  // Both mutate entries in CommitInfo.files in place. The whitespace signal
+  // is gated on config.intake_whitespace_only (default true; disable for
+  // projects where whitespace is semantic — Python, YAML, Make, etc.).
+  if (config.intake_whitespace_only) annotateWhitespaceOnly(commits, repoRoot);
+  annotateRevertedAt(commits, base, repoRoot);
 
   const aggregateFiles = collectAggregateFiles(commits);
   const intersection = aggregateFiles.filter((f) => divergenceSet.has(f));
@@ -466,6 +482,109 @@ function predictConflicts(
   }
 }
 
+// ---------------- per-file signals ----------------
+
+// Mark FileChange.whitespaceOnly on (commit, path) pairs whose diff vs the
+// first parent is non-empty but disappears under --ignore-all-space. Skipped
+// for merge commits (no single baseline) and for rename/copy entries (the
+// signal is about content, not name moves).
+function annotateWhitespaceOnly(commits: CommitInfo[], repoRoot: string): void {
+  for (const c of commits) {
+    if (c.isMerge) continue;
+    const parent = c.parents[0];
+    if (!parent) continue;
+    for (const f of c.files) {
+      if (f.status === 'R' || f.status === 'C') continue;
+      // No-diff: shouldn't normally happen (the file is listed as changed)
+      // but treat as "not whitespace-only" defensively.
+      const hasDiff = !gitOk(['diff', '--quiet', parent, c.sha, '--', f.path], repoRoot);
+      if (!hasDiff) continue;
+      const hasNonWs = !gitOk(
+        ['diff', '--quiet', '--ignore-all-space', parent, c.sha, '--', f.path],
+        repoRoot,
+      );
+      if (!hasNonWs) f.whitespaceOnly = true;
+    }
+  }
+}
+
+// Mark FileChange.revertedAt on (commit, path) pairs whose commit sits
+// inside a rollback window on that path. See cascade/docs/processes.md §
+// attention-floor exemption. For each path P touched in the range, build the
+// state sequence state[0..n] (state[0] = blobAt(base, P); state[k] = blobAt
+// (k-th toucher, P)). For each toucher at sequence position k, set
+// revertedAt = sha of commit at smallest j > k such that state[j] appears
+// in state[0..k-1]. Undefined otherwise.
+function annotateRevertedAt(
+  commits: CommitInfo[],
+  base: string,
+  repoRoot: string,
+): void {
+  // Gather touchers per path in range order. Skip merges (no meaningful
+  // single baseline) and rename/copy entries.
+  interface Toucher {
+    commitIndex: number;
+    file: FileChange;
+  }
+  const byPath = new Map<string, Toucher[]>();
+  for (let i = 0; i < commits.length; i++) {
+    const c = commits[i];
+    if (c.isMerge) continue;
+    for (const f of c.files) {
+      if (f.status === 'R' || f.status === 'C') continue;
+      const list = byPath.get(f.path) ?? [];
+      list.push({ commitIndex: i, file: f });
+      byPath.set(f.path, list);
+    }
+  }
+
+  for (const [path, touchers] of byPath) {
+    if (touchers.length === 0) continue;
+    // state[0] = base blob; state[k] = blob after k-th toucher.
+    const states: string[] = [blobOid(base, path, repoRoot)];
+    for (const t of touchers) {
+      states.push(blobOid(commits[t.commitIndex].sha, path, repoRoot));
+    }
+    // Pre-compute the set of states appearing at each prefix length k.
+    // priorStates[k] = set(state[0..k-1]) for k = 1..n+1. We build iteratively.
+    const n = touchers.length;
+    let priorSet = new Set<string>([states[0]]);
+    // For each toucher at sequence-position k (k = 1..n), find smallest j > k
+    // where state[j] ∈ priorStates-at-k (== state[0..k-1]).
+    for (let k = 1; k <= n; k++) {
+      // priorSet currently = state[0..k-1].
+      let foundJ = -1;
+      for (let j = k + 1; j <= n; j++) {
+        if (priorSet.has(states[j])) {
+          foundJ = j;
+          break;
+        }
+      }
+      if (foundJ > 0) {
+        const reverter = commits[touchers[foundJ - 1].commitIndex].sha;
+        touchers[k - 1].file.revertedAt = reverter;
+      }
+      // Advance priorSet for the next iteration: now include state[k].
+      priorSet.add(states[k]);
+    }
+  }
+}
+
+// Blob oid for <sha>:<path>. Returns '' (empty) when the path does not exist
+// at that commit — empty serves as a distinct sentinel in state sequences.
+function blobOid(sha: string, path: string, repoRoot: string): string {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--verify', `${sha}:${path}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.trim();
+  } catch {
+    return '';
+  }
+}
+
 // ---------------- classification ----------------
 
 function classifyCommit(
@@ -572,6 +691,16 @@ export function formatReport(r: IntakeReport): string {
   lines.push(
     `  fls-deleted+upstream-modified: ${flsDelFiles} file(s) in ${r.flsDeletionGroups.length} deletion-commit group(s)`,
   );
+  let wsOnly = 0;
+  let reverted = 0;
+  for (const c of r.commits) {
+    for (const f of c.files) {
+      if (f.whitespaceOnly) wsOnly++;
+      if (f.revertedAt) reverted++;
+    }
+  }
+  lines.push(`  whitespace-only touches: ${wsOnly}`);
+  lines.push(`  reverted-within-range:   ${reverted}`);
   lines.push('');
   lines.push(`commits (${r.commits.length}) by primary kind:`);
   const byKind: Record<string, number> = {};

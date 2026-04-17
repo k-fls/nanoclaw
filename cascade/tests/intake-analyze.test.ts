@@ -257,6 +257,143 @@ describe('analyzeIntake — fls deletion inspection', () => {
   });
 });
 
+describe('analyzeIntake — whitespace-only per-file signal', () => {
+  it('is suppressed when config.intake_whitespace_only is false', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    repo.write('src/a.ts', 'x = 1;\n');
+    repo.commit('set a');
+    repo.write('src/a.ts', '  x = 1;\n');
+    repo.commit('reformat a');
+    repo.checkout('main');
+    // Override config: whitespace signal off (e.g. Python project).
+    const r = analyzeIntake({
+      repoRoot: repo.root,
+      target: 'main',
+      source: 'upstream/main',
+      config: {
+        version_depth: 3,
+        upstream_remote: 'upstream',
+        upstream_main_branch: 'main',
+        fls_deletion_min_lines: 10,
+        intake_whitespace_only: false,
+      },
+    });
+    for (const c of r.commits) {
+      for (const f of c.files) {
+        expect(f.whitespaceOnly).toBeUndefined();
+      }
+    }
+  });
+
+  it('flags a commit whose diff is pure whitespace', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    // Two content lines on upstream as a baseline the formatter can churn.
+    repo.write('src/a.ts', 'x = 1;\ny = 2;\n');
+    repo.commit('upstream set a');
+    // Pure whitespace touch: reformat to spaces only, no token changes.
+    repo.write('src/a.ts', '  x = 1;\n  y = 2;\n');
+    repo.commit('reformat a');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    const reformat = r.commits.find((c) => c.subject === 'reformat a');
+    expect(reformat).toBeDefined();
+    const f = reformat!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(f?.whitespaceOnly).toBe(true);
+    // The content-bearing commit is not whitespace-only.
+    const content = r.commits.find((c) => c.subject === 'upstream set a');
+    const cf = content!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(cf?.whitespaceOnly).toBeUndefined();
+  });
+});
+
+describe('analyzeIntake — revertedAt per-file signal', () => {
+  it('flags a simple A→B→A revert pair', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    // src/a.ts starts at 'a0\n' from base.
+    repo.write('src/a.ts', 'a1\n');
+    const c1 = repo.commit('move a to a1');
+    repo.write('src/a.ts', 'a0\n'); // back to base content
+    const c2 = repo.commit('revert a to a0');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    const first = r.commits.find((c) => c.sha === c1);
+    const reverter = r.commits.find((c) => c.sha === c2);
+    const f = first!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(f?.revertedAt).toBe(c2);
+    // The reverter itself sits at the last position — no later match.
+    const rf = reverter!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(rf?.revertedAt).toBeUndefined();
+  });
+
+  it('catches cumulative rollback: base → X → Y → base flags both X and Y touches', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    repo.write('src/a.ts', 'X\n');
+    repo.commit('c1 to X');
+    repo.write('src/a.ts', 'Y\n');
+    repo.commit('c2 to Y');
+    repo.write('src/a.ts', 'a0\n'); // back to base
+    const c3 = repo.commit('c3 back to base');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    const byName = new Map(r.commits.map((c) => [c.subject, c]));
+    // c1's pre-state is 'a0\n' (base). Later state matches at c3.
+    const f1 = byName.get('c1 to X')!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(f1?.revertedAt).toBe(c3);
+    // c2's pre-state is 'X\n'. Never recurs strictly after c2 — but the
+    // sequence has a duplicate pair (base at state[0] and state[3]) that
+    // covers c2's sequence position. Implementation finds the earliest j > k
+    // where state[j] is any earlier state, which matches at j=3 → c3.
+    const f2 = byName.get('c2 to Y')!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(f2?.revertedAt).toBe(c3);
+  });
+
+  it('catches mid-range rollback not anchored to base (A, B, C, B, D)', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    // Seed upstream to state B (distinct from base 'a0\n') via c1.
+    repo.write('src/a.ts', 'B\n');
+    repo.commit('c1 to B');
+    repo.write('src/a.ts', 'C\n');
+    repo.commit('c2 to C');
+    repo.write('src/a.ts', 'B\n'); // back to B
+    const c3 = repo.commit('c3 back to B');
+    repo.write('src/a.ts', 'D\n');
+    repo.commit('c4 to D');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    const byName = new Map(r.commits.map((c) => [c.subject, c]));
+    // c1 pre-state = base 'a0\n'; never recurs → undefined.
+    const f1 = byName.get('c1 to B')!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(f1?.revertedAt).toBeUndefined();
+    // c2 pre-state = B; recurs at c3.
+    const f2 = byName.get('c2 to C')!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(f2?.revertedAt).toBe(c3);
+    // c4 is the last toucher — nothing later.
+    const f4 = byName.get('c4 to D')!.files.find((ff) => ff.path === 'src/a.ts');
+    expect(f4?.revertedAt).toBeUndefined();
+  });
+
+  it('does not flag when the path never returns to any prior state', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    repo.write('src/a.ts', 'v1\n');
+    repo.commit('to v1');
+    repo.write('src/a.ts', 'v2\n');
+    repo.commit('to v2');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    for (const c of r.commits) {
+      for (const f of c.files) {
+        expect(f.revertedAt).toBeUndefined();
+      }
+    }
+  });
+});
+
 describe('analyzeIntake — error cases', () => {
   it('throws when source does not exist', () => {
     seedBase();

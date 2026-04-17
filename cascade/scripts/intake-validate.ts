@@ -274,10 +274,24 @@ export function validatePlan(opts: ValidateOptions): ValidateResult {
     const commitToGroup = new Map<string, PlanGroup>();
     for (const g of plan.groups) for (const sha of g.commits) commitToGroup.set(sha, g);
     for (const path of analyzer.intersection) {
-      // Which commits in range touch this path?
-      const touchers = analyzer.commits
-        .filter((c) => c.files.some((f) => f.path === path || f.oldPath === path))
-        .map((c) => c.sha);
+      // Non-exempt touchers only. A (commit, path) toucher is exempt when
+      // its FileChange has whitespaceOnly=true or revertedAt set: in neither
+      // case does the commit leave diverged-surface content behind, so the
+      // attention floor has nothing to protect. Rename matches (oldPath ===
+      // path) are always counted as non-exempt — a rename on a diverged
+      // file genuinely needs eyes.
+      const touchers: string[] = [];
+      for (const c of analyzer.commits) {
+        for (const f of c.files) {
+          const hitsNewPath = f.path === path;
+          const hitsOldPath = f.oldPath === path;
+          if (!hitsNewPath && !hitsOldPath) continue;
+          if (hitsNewPath && !hitsOldPath && (f.whitespaceOnly || f.revertedAt)) continue;
+          touchers.push(c.sha);
+          break; // one entry per commit is enough
+        }
+      }
+      if (touchers.length === 0) continue; // every toucher was exempt
       const coveringGroups = new Set<PlanGroup>();
       for (const sha of touchers) {
         const g = commitToGroup.get(sha);

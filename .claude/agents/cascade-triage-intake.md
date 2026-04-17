@@ -16,7 +16,9 @@ You are given:
 
 1. The JSON output of `cascade intake-analyze`:
    - `target`, `source`, `base`, `cacheKey`
-   - `commits[]` — each with `sha`, `subject`, `author`, `authorDate`, `parents`, `isMerge`, `files[]`, `kinds[]`, `primaryKind`, `tags[]` (upstream refs at that commit). This is your primary grouping input.
+   - `commits[]` — each with `sha`, `subject`, `author`, `authorDate`, `parents`, `isMerge`, `files[]`, `kinds[]`, `primaryKind`, `tags[]` (upstream refs at that commit). This is your primary grouping input. Each `files[]` entry may carry two optional per-(commit, path) signals:
+     - `whitespaceOnly: true` — this commit's diff on this path is non-empty but empty under `--ignore-all-space` (formatting / import order). Suppressed when the repo's `.cascade/config.yaml` sets `intake_whitespace_only: false` (projects where whitespace is semantic — Python, YAML, Makefiles); in that case the field is never present and formatting-only commits are treated like any other divergence touch.
+     - `revertedAt: "<sha>"` — this commit lies inside a rollback window on this path: some later commit in the range returns the path to a state it held at or before this commit's pre-state. The `<sha>` is the reverter.
    - `aggregateFiles`, `divergenceFiles`, `intersection`, `predictedConflicts`, `breakPoints`, `renames`, `flsDeletionGroups`.
 2. Optional: the human-readable output of `cascade divergence-report` for context on where fls has diverged.
 3. Optional: `flsDeletionVerdicts` — an array of verdicts produced by `cascade-inspect-fls-deletion`, one per non-empty `flsDeletionGroups` entry. Each verdict has `group_header`, `group_rationale`, and per-file breakdown.
@@ -65,7 +67,7 @@ Think of it as: "these analyzer positions 0–2 are one group, positions 3–3 a
 - Groups don't reorder or skip commits. Groups don't overlap.
 - Every analyzer `breakPoints[i].sha` must be in a **singleton group** with `kind: "break_point"`.
 - Every `predictedConflicts[i]` path must be touched only by group(s) with `requiresAgentResolution: true`.
-- Every `intersection[i]` path must be touched only by group(s) with `attention` ≥ `light`.
+- Every `intersection[i]` path must be touched only by group(s) with `attention` ≥ `light`. Exemption: a (commit, path) touch whose `FileChange` carries `whitespaceOnly: true` or `revertedAt: "<sha>"` is not counted — such touches leave no diverged-surface content behind. If every toucher of a given intersection path is exempt, the path no longer forces `attention ≥ light`. Use tags `whitespace-only` / `net-zero-in-range` so reviewers can see why a diverged-surface path lands in a low-attention group.
 - Group `kind` must reflect the maximum primaryKind severity of its commits: `conflict` > `divergence` > `structural` > `clean`. Use `kind: "mixed"` when the group contains commits of multiple severities and you don't want to pin one.
 - `cacheKey` must match the analyzer's.
 
@@ -83,6 +85,36 @@ Anti-example (must be **split**, not coalesced):
 **Grouping gate** — before finalizing each group, write its `grouping_rationale` first. If it requires `and` joining distinct subsystems, split along those boundaries. Singleton groups (one commit) are always acceptable when the commit stands alone thematically.
 
 **You MAY form groups that cross analyzer-reported kinds** (e.g. one clean commit + one divergence commit, if they're adjacent and share a theme like "SDK bump + its config touchup"). Group `kind` is computed automatically from the commits you include.
+
+### Using the whitespace-only / revertedAt signals
+
+The analyzer reports two per-`FileChange` signals that tell you when a touch on a diverged-surface path contributes no net content to the final state. Treat them as first-class grouping and attention inputs, not footnotes.
+
+**What they mean mechanically.** The validator's attention floor (`intersection-file-unattended`) ignores touchers flagged with `whitespaceOnly: true` or `revertedAt: "<sha>"`. If every toucher of a given `intersection[i]` path is exempt, that path no longer forces the group to `attention ≥ light`. The exemption is path-local and grouping-agnostic — it doesn't matter whether the commit and its reverter end up in the same group.
+
+**What they mean for your plan.** Two distinct effects.
+
+1. **Grouping pairs honestly.** When a commit and its reverter are thematically one story ("bump SDK, then back it out after the beta failed"), keep them in the same group. The pair's `functional_summary` can honestly say "net-zero on <path>"; attention reflects that. Do not split a revert pair solely to move the reverter into a "cleanup" group — you'd be hiding the story.
+
+2. **Coalescing with simple commits.** A revert pair whose net effect on an intersection file is zero behaves, for the attention floor, like any clean commit. You MAY group it with adjacent thematically-related clean commits (e.g. "SDK bump + the revert that undid a ripple + the follow-up docs touchup"), and the result can sit at `attention: none` if nothing else forces it higher. Tag the group with `net-zero-in-range` so the reviewer sees why a divergent-looking group carries low attention.
+
+**Important caveats.**
+
+- The exemption applies to the **attention floor on intersection paths**, nothing else. A predicted conflict (path in `predictedConflicts`) still requires `requiresAgentResolution: true` regardless of `revertedAt` — the intermediate state during the sub-merge can still conflict, and the conflict-resolution agent must still run.
+- A large commit (> 1000 changed lines) still requires `attention: heavy` per the [When to inspect actual code] rules, even if its entire diff is whitespace-only or fully reverted. Volume is its own risk.
+- `revertedAt` is per-(commit, path), not per-commit. A commit that touches three paths may have `revertedAt` set on one and not on the other two — the non-reverted touches still count toward the attention floor on their paths.
+
+**Worked illustrations.**
+
+*Illustration 1 — pair a revert with simple neighbors.* Four adjacent commits: (a) a typo fix in `docs/`, (b) a divergence-set touch to `src/db.ts` that changes connection-pool defaults, (c) a divergence-set revert of (b) after upstream decided the old defaults were fine, (d) a release-notes line. Analyzer flags `src/db.ts` in `intersection`; (b)'s `FileChange` for `src/db.ts` has `revertedAt: <sha of c>`; (c)'s `FileChange` has no exemption (it's the reverter). Valid grouping: one group containing all four commits. Rationale: "cleanup touches around a reverted defaults change." `attention: none` is legal — the only intersection touch in the group is exempt via (b)'s `revertedAt`, and (c)'s touch doesn't match the intersection path differently from (b)'s. Tag: `net-zero-in-range`. If you instead split (b) and (c) into separate groups, both groups still clear the attention floor on `src/db.ts`, but the `functional_summary` becomes harder to write honestly — so prefer pairing.
+
+*Illustration 2 — cumulative rollback spanning multiple commits.* Three adjacent commits on a divergence-set file `src/config.ts`: (a) base → X, (b) X → Y, (c) Y → base. Analyzer flags `src/config.ts` in `intersection`; (a)'s and (b)'s `FileChange` both carry `revertedAt: <sha of c>` (the sequence state at c matches state[0], and both earlier commits lie inside the rollback window). Grouping: one group with all three, `attention: none`, tag `net-zero-in-range`, rationale "three-step no-op: X then Y then back to base." Do not promote to `attention: light` purely because `primaryKind=divergence` — the signals tell the truth.
+
+*Illustration 3 — partial rollback, mixed group.* Four commits touching `src/config.ts` (intersection): (a) base → B, (b) B → C, (c) C → B, (d) B → D. Signals: (b) has `revertedAt: <sha of c>` (B recurs); (a), (c), (d) have no exemption. Valid grouping and attention depend on theme:
+  - If (a)–(d) tell one story ("config migration"), group them together at `attention: light` — `src/config.ts` has non-exempt touchers (a), (c), (d), so the floor applies.
+  - If (b)/(c) are a thematic pair distinct from (a)/(d), split into two groups. The (b)/(c) group can be `attention: none` (only touch is (b)'s, which is exempt; (c) is the reverter and has no `revertedAt`, but its net effect on the path is to return to B — still non-exempt under current rules, so attention floor fires unless (c) also has a later `revertedAt`). In practice, the reverter itself usually cannot be exempted and forces `attention: light`; that is acceptable and honest.
+
+*Illustration 4 — formatting-only churn.* A commit running `prettier --write` across the repo touches twenty files including three in `intersection`. Each of the twenty `FileChange` entries carries `whitespaceOnly: true`. The commit can sit in a `attention: none` group with tag `whitespace-only`. You do NOT need to pair it with anything — `whitespaceOnly` is standalone per-path, unlike `revertedAt`.
 
 ## Plan format
 

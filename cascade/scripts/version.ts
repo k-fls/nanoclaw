@@ -45,10 +45,16 @@ export interface RepoConfig {
   // upstream delta exceeds this many total lines (added + removed).
   // Default 10; override per repo if the signal is too noisy or too quiet.
   fls_deletion_min_lines: number;
+  // Whether the analyzer computes the whitespace-only per-file signal used
+  // by the attention-floor exemption. Default true. Set false for projects
+  // where whitespace is semantic (Python, YAML, Makefiles, shell heredocs):
+  // a reformat there can change behavior and must not be silently exempted.
+  intake_whitespace_only: boolean;
 }
 
 const DEFAULTS = {
   fls_deletion_min_lines: 10,
+  intake_whitespace_only: true,
 };
 
 export function loadConfig(repoRoot: string): RepoConfig {
@@ -63,6 +69,8 @@ export function loadConfig(repoRoot: string): RepoConfig {
     upstream_main_branch: parsed.upstream_main_branch,
     fls_deletion_min_lines:
       parsed.fls_deletion_min_lines ?? DEFAULTS.fls_deletion_min_lines,
+    intake_whitespace_only:
+      parsed.intake_whitespace_only ?? DEFAULTS.intake_whitespace_only,
   };
 }
 

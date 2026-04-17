@@ -213,6 +213,45 @@ describe('validatePlan — intersection coverage', () => {
     expect(r.violations.map((v) => v.rule)).toContain('intersection-file-unattended');
   });
 
+  it('exempts a path whose only toucher has whitespaceOnly=true', () => {
+    const a = makeAnalyzer();
+    // Replace bbb's touch on src/div.ts with a whitespace-only touch.
+    a.commits[1].files = [{ status: 'M', path: 'src/div.ts', whitespaceOnly: true }];
+    const p = plan([
+      { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
+      { index: 1, name: 'y', kind: 'divergence', commits: ['bbb'], attention: 'none' },
+      { index: 2, name: 'z', kind: 'clean', commits: ['ccc'], attention: 'none' },
+    ]);
+    const r = validatePlan({ plan: p, analyzer: a });
+    expect(r.violations.filter((v) => v.rule === 'intersection-file-unattended')).toHaveLength(0);
+  });
+
+  it('exempts a path whose only toucher has revertedAt set', () => {
+    const a = makeAnalyzer();
+    a.commits[1].files = [{ status: 'M', path: 'src/div.ts', revertedAt: 'ccc' }];
+    const p = plan([
+      { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
+      { index: 1, name: 'y', kind: 'divergence', commits: ['bbb'], attention: 'none' },
+      { index: 2, name: 'z', kind: 'clean', commits: ['ccc'], attention: 'none' },
+    ]);
+    const r = validatePlan({ plan: p, analyzer: a });
+    expect(r.violations.filter((v) => v.rule === 'intersection-file-unattended')).toHaveLength(0);
+  });
+
+  it('still fires when one toucher is exempt but another is not', () => {
+    // Extend fixture: add a second commit touching src/div.ts without signals.
+    const a = makeAnalyzer();
+    a.commits[1].files = [{ status: 'M', path: 'src/div.ts', whitespaceOnly: true }];
+    a.commits[2].files = [{ status: 'M', path: 'src/div.ts' }]; // non-exempt
+    a.intersection = ['src/div.ts'];
+    const p = plan([
+      { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
+      { index: 1, name: 'y', kind: 'divergence', commits: ['bbb', 'ccc'], attention: 'none' },
+    ]);
+    const r = validatePlan({ plan: p, analyzer: a });
+    expect(r.violations.map((v) => v.rule)).toContain('intersection-file-unattended');
+  });
+
   it('passes when the divergent file is in a light-or-heavier group', () => {
     const p = plan([
       { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
