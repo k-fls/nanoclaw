@@ -11,7 +11,12 @@
 //      introduced on upstream or on a since-deleted ephemeral) — first
 //      long-lived branch whose full ancestry contains it. That branch
 //      assimilated the change via merge.
-//   5. Otherwise → "default".
+//   5. Upstream-reachability — if the intro commit is reachable from any
+//      read-only (upstream) ref, owner = the core class's canonical branch.
+//      Covers in-progress intakes on scratch branches: the upstream commit
+//      is physically present in the working tree but main/core's ref
+//      hasn't FF'd yet. Definitional per §2 (upstream flows to core).
+//   6. Otherwise → "default".
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import * as path from 'node:path';
@@ -217,6 +222,14 @@ export function deriveOwnership(opts: DeriveOptions): OwnershipResult {
     ancestry.set(b, ancestrySet(b, repoRoot));
   }
 
+  // Upstream refs (read-only per registry) — used for Stage 3 fallback: an
+  // intro commit reachable from any upstream ref is definitionally core's,
+  // even if core's ref hasn't FF'd to absorb it yet (mid-intake case).
+  const upstreamRefs = readOnlyBranchesInOrder(registry, repoRoot);
+  const upstreamAncestry = new Map<string, Set<string>>();
+  for (const u of upstreamRefs) upstreamAncestry.set(u, ancestrySet(u, repoRoot));
+  const coreFallback = coreCanonicalBranch(registry, longLived);
+
   // Dead-rule + hygiene tracking.
   //   - deadRules: positive patterns (any section) that matched no file.
   //   - hygieneViolations: safety-net patterns that DID match a committed
@@ -292,6 +305,20 @@ export function deriveOwnership(opts: DeriveOptions): OwnershipResult {
         }
       }
     }
+    // Stage 3: upstream-reachability. A commit reachable from any upstream ref
+    // maps to the core class's canonical branch. This covers files present in
+    // the working tree via a mid-intake scratch branch before main has FF'd.
+    // Skipped if we can't identify a core branch (shouldn't happen in Phase 0;
+    // registry always declares `core`).
+    if (!owner && coreFallback) {
+      for (const u of upstreamRefs) {
+        const anc = upstreamAncestry.get(u)!;
+        if (commits.some((c) => anc.has(c))) {
+          owner = coreFallback;
+          break;
+        }
+      }
+    }
     if (!owner) {
       unowned.push(file);
       entries.push({ path: file, owner: 'default' });
@@ -345,6 +372,55 @@ function deriveOwnerViaHistory(
   for (const b of longLived) {
     const anc = ancestry.get(b);
     if (anc && commits.some((c) => anc.has(c))) return b;
+  }
+  return null;
+}
+
+// Read-only (upstream) refs, in the order their classes appear in the
+// registry. Used for Stage 3 upstream-reachability fallback.
+function readOnlyBranchesInOrder(
+  registry: BranchClass[],
+  repoRoot: string,
+): string[] {
+  const all = listAllBranches(repoRoot);
+  const classified = all
+    .map((name) => {
+      try {
+        return { name, info: classOf(name, registry) };
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is { name: string; info: ReturnType<typeof classOf> } => x !== null)
+    .filter((x) => x.info.class.read_only === true);
+  const classIndex = new Map<string, number>();
+  registry.forEach((c, i) => classIndex.set(c.name, i));
+  classified.sort((a, b) => {
+    const ia = classIndex.get(a.info.class.name) ?? 999;
+    const ib = classIndex.get(b.info.class.name) ?? 999;
+    if (ia !== ib) return ia - ib;
+    return a.name < b.name ? -1 : 1;
+  });
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const { name } of classified) {
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+// Resolve the core class's canonical branch — the first long-lived branch
+// whose class is `core` (per registry). Returns null if none exists.
+function coreCanonicalBranch(registry: BranchClass[], longLived: string[]): string | null {
+  for (const b of longLived) {
+    try {
+      if (classOf(b, registry).class.name === 'core') return b;
+    } catch {
+      /* unclassifiable */
+    }
   }
   return null;
 }

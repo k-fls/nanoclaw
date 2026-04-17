@@ -26,14 +26,33 @@ Run `npm run cascade -- intake-analyze --json`. Capture both the JSON and a pret
 
 Also run `npm run cascade -- divergence-report` — the triage agent benefits from seeing where fls has diverged. Save the plain-text output as context for step 2.
 
-### 2. Triage
+### 2a. Inspect fls deletions (parallel to triage)
+
+If the analyzer's `flsDeletionGroups` is non-empty, dispatch one `cascade-inspect-fls-deletion` subagent per group **in parallel**, before (or alongside) step 2b triage.
+
+For each group, assemble the subagent input:
+
+- `fls_deletion_commit`: `{ sha, subject, body, author_date }` — fetch via `git show -s --format='%H%n%s%n%aI%n%b' <deletionSha>`. For `deletionSha === 'unknown'`, pass subject/body as empty strings.
+- `files`: for each file in the group, pack:
+  - `path`
+  - `base_content` — `git show <base>:<path>`
+  - `upstream_tip_content` — `git show <source>:<path>`
+  - `upstream_touching_commits` — `[{ sha, subject }]` from the analyzer's `upstreamTouchingCommits`, resolved with `git show -s --format=%s <sha>`
+  - `port_hints` (optional) — if the deleted file exported named symbols, run a quick `rg -n 'exportedSymbol' src/` for each and pass the results. Cheap and high-signal. Skip if the file is not TypeScript/JavaScript or has no obvious exports.
+
+Collect each subagent's JSON verdict. These feed both the triage agent (as additional context) and the final plan presentation.
+
+### 2b. Triage
 
 Invoke the `cascade-triage-intake` agent with:
 
 - The analyzer JSON (full, not summarized)
 - The divergence-report plain-text output
+- **The fls-deletion verdicts from step 2a**, if any, so triage can raise risk on groups that touch files flagged `port-candidate` / `reintroduce-candidate` / `escalate` or appear in a `rationale-reopened` / `inconclusive` deletion group.
 
 The agent returns a decomposition plan as JSON plus a prose summary. Show the prose summary to the user verbatim. Show the JSON plan collapsed / summarized (groups with kind, risk, count).
+
+**If any deletion group's header is `rationale-reopened` or `inconclusive`**, surface it prominently to the user before asking for plan approval — this is the signal they are most likely to miss on a skim.
 
 ### 3. Approve
 

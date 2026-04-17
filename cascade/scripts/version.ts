@@ -41,7 +41,15 @@ export interface RepoConfig {
   version_depth: number;
   upstream_remote: string;
   upstream_main_branch: string;
+  // P1 deletion-inspection threshold: only flag fls-deleted files whose
+  // upstream delta exceeds this many total lines (added + removed).
+  // Default 10; override per repo if the signal is too noisy or too quiet.
+  fls_deletion_min_lines: number;
 }
+
+const DEFAULTS = {
+  fls_deletion_min_lines: 10,
+};
 
 export function loadConfig(repoRoot: string): RepoConfig {
   const file = path.join(repoRoot, '.cascade', 'config.yaml');
@@ -49,7 +57,13 @@ export function loadConfig(repoRoot: string): RepoConfig {
   if (!parsed?.version_depth || !parsed?.upstream_remote || !parsed?.upstream_main_branch) {
     throw new Error(`${file}: required keys missing`);
   }
-  return parsed as RepoConfig;
+  return {
+    version_depth: parsed.version_depth,
+    upstream_remote: parsed.upstream_remote,
+    upstream_main_branch: parsed.upstream_main_branch,
+    fls_deletion_min_lines:
+      parsed.fls_deletion_min_lines ?? DEFAULTS.fls_deletion_min_lines,
+  };
 }
 
 export function formatVersion(v: Version): string {

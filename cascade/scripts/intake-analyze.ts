@@ -53,6 +53,29 @@ export interface Segment {
   breakPointRef?: string;
 }
 
+// A file fls deleted on target that upstream has kept modifying, grouped by
+// the fls commit that performed the deletion. Candidate for human review:
+// mechanically the merge keeps the deletion silently, but upstream's ongoing
+// activity might contain work worth porting or reconsidering.
+export interface FlsDeletionGroup {
+  // fls commit that deleted the files. 'unknown' when the deletion commit
+  // cannot be identified (e.g. the file was renamed-then-deleted and we
+  // don't follow renames, consistent with ownership.md).
+  deletionSha: string | 'unknown';
+  deletionSubject: string;
+  deletionAuthorDate: string; // ISO 8601; empty for 'unknown'
+  files: FlsDeletedFile[];
+}
+
+export interface FlsDeletedFile {
+  path: string;
+  // Upstream delta on the deleted path since the merge-base, in lines.
+  upstreamAdded: number;
+  upstreamRemoved: number;
+  // SHAs of range commits that touched this path.
+  upstreamTouchingCommits: string[];
+}
+
 export interface IntakeReport {
   target: string;
   source: string;
@@ -65,6 +88,10 @@ export interface IntakeReport {
   predictedConflicts: string[];
   breakPoints: { sha: string; refs: string[] }[];
   renames: { from: string; to: string; sha: string }[];
+  // Files deleted on target that upstream kept modifying, grouped by fls
+  // deletion commit. Filtered to upstream deltas above the threshold set by
+  // config.yaml `fls_deletion_min_lines`.
+  flsDeletionGroups: FlsDeletionGroup[];
   segments: Segment[];
   cacheKey: string;
 }
@@ -139,6 +166,15 @@ export function analyzeIntake(opts: AnalyzeOptions): IntakeReport {
     .filter((c) => c.primaryKind === 'break_point')
     .map((c) => ({ sha: c.sha, refs: c.tags }));
 
+  const flsDeletionGroups = computeFlsDeletionGroups({
+    repoRoot,
+    base,
+    target,
+    source,
+    minLines: config.fls_deletion_min_lines,
+    commits,
+  });
+
   const cacheKey = computeCacheKey(target, source, base, shas);
 
   return {
@@ -153,9 +189,153 @@ export function analyzeIntake(opts: AnalyzeOptions): IntakeReport {
     predictedConflicts,
     breakPoints,
     renames,
+    flsDeletionGroups,
     segments,
     cacheKey,
   };
+}
+
+// ---------------- fls deletion inspection ----------------
+
+// Find files deleted on target since base that upstream kept modifying, then
+// group them by the fls deletion commit. See cascade/docs/processes.md § P1
+// deletion inspection for the contract consumed by cascade-inspect-fls-deletion.
+function computeFlsDeletionGroups(params: {
+  repoRoot: string;
+  base: string;
+  target: string;
+  source: string;
+  minLines: number;
+  commits: CommitInfo[];
+}): FlsDeletionGroup[] {
+  const { repoRoot, base, target, source, minLines, commits } = params;
+
+  // Files deleted on target since base.
+  const flsDeleted = new Set(
+    gitNames(['diff', '--diff-filter=D', '--name-only', `${base}..${target}`], repoRoot),
+  );
+  if (flsDeleted.size === 0) return [];
+
+  // Candidates: range files that upstream touched AND fls has since deleted.
+  const candidates: string[] = [];
+  const touchingByPath = new Map<string, string[]>();
+  for (const c of commits) {
+    for (const f of c.files) {
+      if (!flsDeleted.has(f.path)) continue;
+      const list = touchingByPath.get(f.path) ?? [];
+      list.push(c.sha);
+      touchingByPath.set(f.path, list);
+    }
+  }
+  for (const p of touchingByPath.keys()) candidates.push(p);
+  if (candidates.length === 0) return [];
+
+  // Upstream delta per candidate path; filter by threshold.
+  type Enriched = FlsDeletedFile & { deletionSha: string | 'unknown' };
+  const enriched: Enriched[] = [];
+  for (const path of candidates) {
+    const { added, removed } = upstreamNumstat(base, source, path, repoRoot);
+    if (added + removed < minLines) continue;
+    enriched.push({
+      path,
+      upstreamAdded: added,
+      upstreamRemoved: removed,
+      upstreamTouchingCommits: (touchingByPath.get(path) ?? []).sort(),
+      deletionSha: firstDeletionCommit(base, target, path, repoRoot),
+    });
+  }
+  if (enriched.length === 0) return [];
+
+  // Group by deletion sha. 'unknown' becomes its own group.
+  const byDeletion = new Map<string, Enriched[]>();
+  for (const e of enriched) {
+    const key = e.deletionSha;
+    const list = byDeletion.get(key) ?? [];
+    list.push(e);
+    byDeletion.set(key, list);
+  }
+
+  const groups: FlsDeletionGroup[] = [];
+  for (const [deletionSha, files] of byDeletion) {
+    const { subject, authorDate } =
+      deletionSha === 'unknown'
+        ? { subject: '', authorDate: '' }
+        : loadCommitHeader(deletionSha, repoRoot);
+    groups.push({
+      deletionSha,
+      deletionSubject: subject,
+      deletionAuthorDate: authorDate,
+      files: files
+        .map(({ deletionSha: _d, ...rest }) => rest)
+        .sort((a, b) => a.path.localeCompare(b.path)),
+    });
+  }
+  // Deterministic order: 'unknown' last, others by deletion date ascending
+  // (older deletions first → stable and intuitive for reviewers).
+  groups.sort((a, b) => {
+    if (a.deletionSha === 'unknown') return 1;
+    if (b.deletionSha === 'unknown') return -1;
+    return a.deletionAuthorDate.localeCompare(b.deletionAuthorDate);
+  });
+  return groups;
+}
+
+function upstreamNumstat(
+  base: string,
+  source: string,
+  path: string,
+  repoRoot: string,
+): { added: number; removed: number } {
+  const out = git(
+    ['diff', '--numstat', `${base}..${source}`, '--', path],
+    repoRoot,
+  );
+  if (!out) return { added: 0, removed: 0 };
+  // `added\tremoved\tpath` — "-" for binary files. Treat binary as 0/0.
+  const [a, r] = out.split('\t');
+  const added = Number(a);
+  const removed = Number(r);
+  return {
+    added: Number.isFinite(added) ? added : 0,
+    removed: Number.isFinite(removed) ? removed : 0,
+  };
+}
+
+function firstDeletionCommit(
+  base: string,
+  target: string,
+  path: string,
+  repoRoot: string,
+): string | 'unknown' {
+  // Most recent deletion of this exact path on target since base. No rename
+  // following — consistent with cascade/docs/ownership.md. A file that was
+  // renamed-then-deleted won't resolve; returns 'unknown'.
+  const out = git(
+    [
+      'log',
+      '--diff-filter=D',
+      '--format=%H',
+      `${base}..${target}`,
+      '--',
+      path,
+    ],
+    repoRoot,
+  );
+  const first = out.split('\n').find(Boolean);
+  return first || 'unknown';
+}
+
+function loadCommitHeader(
+  sha: string,
+  repoRoot: string,
+): { subject: string; authorDate: string } {
+  const out = execFileSync(
+    'git',
+    ['show', '-s', '--format=%s%x00%aI', sha],
+    { cwd: repoRoot, encoding: 'utf8' },
+  );
+  const [subject, authorDate] = out.split('\0');
+  return { subject: subject ?? '', authorDate: (authorDate ?? '').trim() };
 }
 
 // ---------------- per-commit loading ----------------
@@ -441,6 +621,10 @@ export function formatReport(r: IntakeReport): string {
   lines.push(`  predicted conflicts: ${r.predictedConflicts.length}`);
   lines.push(`  break points:     ${r.breakPoints.length}`);
   lines.push(`  renames:          ${r.renames.length}`);
+  const flsDelFiles = r.flsDeletionGroups.reduce((n, g) => n + g.files.length, 0);
+  lines.push(
+    `  fls-deleted+upstream-modified: ${flsDelFiles} file(s) in ${r.flsDeletionGroups.length} deletion-commit group(s)`,
+  );
   lines.push('');
   lines.push(`segments (${r.segments.length}):`);
   for (const s of r.segments) {
@@ -459,6 +643,18 @@ export function formatReport(r: IntakeReport): string {
     lines.push('');
     lines.push('predicted conflicts:');
     for (const f of r.predictedConflicts) lines.push(`  ${f}`);
+  }
+  if (r.flsDeletionGroups.length > 0) {
+    lines.push('');
+    lines.push('fls-deleted + upstream-modified:');
+    for (const g of r.flsDeletionGroups) {
+      const sha = g.deletionSha === 'unknown' ? 'unknown' : g.deletionSha.slice(0, 7);
+      const label = g.deletionSubject || '(no subject)';
+      lines.push(`  [${sha}] ${label}`);
+      for (const f of g.files) {
+        lines.push(`    ${f.path}   +${f.upstreamAdded}/-${f.upstreamRemoved}`);
+      }
+    }
   }
   lines.push('');
   lines.push(`cacheKey: ${r.cacheKey}`);

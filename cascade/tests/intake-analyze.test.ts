@@ -173,6 +173,96 @@ describe('analyzeIntake — renames tracked', () => {
   });
 });
 
+describe('analyzeIntake — fls deletion inspection', () => {
+  it('detects a file fls deleted that upstream kept modifying', () => {
+    seedBase();
+    // fls deletes src/a.ts
+    repo.run('rm', 'src/a.ts');
+    repo.commit('fls: remove legacy a');
+    // upstream keeps modifying src/a.ts (enough lines to clear the 10-line
+    // threshold from seedCascadeRegistry's config).
+    repo.checkout('upstream/main');
+    const body = Array.from({ length: 15 }, (_, i) => `line ${i}`).join('\n') + '\n';
+    repo.write('src/a.ts', body);
+    repo.commit('upstream: extend a');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.flsDeletionGroups.length).toBe(1);
+    const g = r.flsDeletionGroups[0];
+    expect(g.deletionSha).not.toBe('unknown');
+    expect(g.deletionSubject).toBe('fls: remove legacy a');
+    expect(g.files).toHaveLength(1);
+    expect(g.files[0].path).toBe('src/a.ts');
+    expect(g.files[0].upstreamAdded + g.files[0].upstreamRemoved).toBeGreaterThanOrEqual(10);
+    expect(g.files[0].upstreamTouchingCommits.length).toBeGreaterThan(0);
+  });
+
+  it('groups multiple files deleted in the same fls commit together', () => {
+    seedBase();
+    // fls deletes two files in one commit.
+    repo.run('rm', 'src/a.ts');
+    repo.run('rm', 'src/b.ts');
+    repo.commit('fls: remove legacy a and b');
+    // upstream modifies both with enough lines.
+    repo.checkout('upstream/main');
+    const body = Array.from({ length: 15 }, (_, i) => `L${i}`).join('\n') + '\n';
+    repo.write('src/a.ts', body);
+    repo.commit('upstream: extend a');
+    repo.write('src/b.ts', body);
+    repo.commit('upstream: extend b');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.flsDeletionGroups.length).toBe(1);
+    const g = r.flsDeletionGroups[0];
+    expect(g.files.map((f) => f.path).sort()).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('splits into separate groups when deletions happen in separate fls commits', () => {
+    seedBase();
+    repo.run('rm', 'src/a.ts');
+    repo.commit('fls: remove a');
+    repo.run('rm', 'src/b.ts');
+    repo.commit('fls: remove b');
+    repo.checkout('upstream/main');
+    const body = Array.from({ length: 15 }, (_, i) => `L${i}`).join('\n') + '\n';
+    repo.write('src/a.ts', body);
+    repo.commit('upstream: edit a');
+    repo.write('src/b.ts', body);
+    repo.commit('upstream: edit b');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.flsDeletionGroups.length).toBe(2);
+    expect(r.flsDeletionGroups[0].files).toHaveLength(1);
+    expect(r.flsDeletionGroups[1].files).toHaveLength(1);
+  });
+
+  it('filters out upstream deltas below the threshold', () => {
+    seedBase();
+    repo.run('rm', 'src/a.ts');
+    repo.commit('fls: remove a');
+    repo.checkout('upstream/main');
+    // Only 1 line of change — below the 10-line threshold.
+    repo.write('src/a.ts', 'a0\nadded\n');
+    repo.commit('upstream: tiny edit');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.flsDeletionGroups).toHaveLength(0);
+  });
+
+  it('emits no groups when nothing fls deleted is modified upstream', () => {
+    seedBase();
+    repo.run('rm', 'src/a.ts');
+    repo.commit('fls: remove a');
+    repo.checkout('upstream/main');
+    // Upstream edits a different file.
+    repo.write('src/b.ts', 'b-changed\nmore\nlines\nand\nmore\nand\nmore\nand\nmore\nand\nmore\nand\n');
+    repo.commit('upstream: edit b');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.flsDeletionGroups).toHaveLength(0);
+  });
+});
+
 describe('analyzeIntake — error cases', () => {
   it('throws when source does not exist', () => {
     seedBase();

@@ -7,3 +7,10 @@ version_depth: 3
 # Upstream remote and branch that `core` mirrors.
 upstream_remote: upstream
 upstream_main_branch: main
+
+# P1 deletion-inspection threshold: flag files fls deleted that upstream
+# still modifies, but only when upstream's delta on the deleted path
+# exceeds this many total lines (added + removed). Raises or lowers the
+# subagent workload; raise if signal is noisy, lower if it's missing
+# things. See cascade-inspect-fls-deletion agent.
+fls_deletion_min_lines: 10

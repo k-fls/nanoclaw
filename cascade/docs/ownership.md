@@ -99,6 +99,17 @@ for each file F in current tree (sorted):
     owner = first long-lived branch, in registry order, whose full
             ancestry contains any of introducing_commits
 
+  # Stage 3 (only if Stages 1 and 2 did not match): upstream-reachability.
+  # A commit reachable from any read-only (upstream) ref maps to the core
+  # class's canonical branch. Covers the mid-intake case: a scratch branch
+  # has merged upstream, bringing upstream-introduced files into the tree,
+  # but main/core's ref hasn't FF'd yet. The file is definitionally core's
+  # per §2 (upstream flows to core); Stage 3 makes ownership reflect that
+  # regardless of whether the FF has happened.
+  if not matched:
+    if introducing_commits are reachable from any upstream/* ref:
+      owner = the core class's canonical branch
+
   if still no match:
     owner = "default"
 ```

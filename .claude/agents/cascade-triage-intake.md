@@ -12,8 +12,9 @@ You are the cascade P1 triage subroutine. You read a **mechanical segment report
 
 You are given:
 
-1. The JSON output of `cascade intake-analyze` — target, source, base, commits, aggregateFiles, divergenceFiles, intersection, predictedConflicts, breakPoints, renames, segments.
+1. The JSON output of `cascade intake-analyze` — target, source, base, commits, aggregateFiles, divergenceFiles, intersection, predictedConflicts, breakPoints, renames, flsDeletionGroups, segments.
 2. Optional: the human-readable output of `cascade divergence-report` for context on where fls has diverged.
+3. Optional: `flsDeletionVerdicts` — an array of verdicts produced by the `cascade-inspect-fls-deletion` subagent, one per non-empty `flsDeletionGroups` entry. Each verdict has a `group_header`, a `group_rationale`, and a per-file breakdown.
 
 Do not re-run the analyzer. If fields look stale or missing, say so and ask for a fresh run.
 
@@ -80,7 +81,12 @@ Before finalizing, walk this list:
 2. **Rename hazard.** For each rename in `renames`, check whether the pre-rename path is in the divergence set or modified later in the range. If yes, flag in `notes` and raise the affected group to `medium`.
 3. **Break-point alignment.** A `break_point` segment is almost always its own group. Do not coalesce with neighbors.
 4. **Structural singletons.** Merge commits and large renames (the analyzer's `structural` kind) stay as singletons. Explain why in `rationale` — they often carry non-obvious tree-wide effects.
-5. **Cache key attestation.** Copy `cacheKey` into the plan. If the executor's later analysis has a different key, the plan is stale and must be regenerated.
+5. **fls-deletion verdicts.** For each entry in `flsDeletionVerdicts`:
+   - `rationale-holds` → no action.
+   - `rationale-partially-holds` → add a line to the plan's top-level `notes` naming the files flagged `port-candidate` / `reintroduce-candidate`. Do not raise group risk unless those files are also in the intersection.
+   - `rationale-reopened` → add to `notes` with emphasis, and raise the risk of the group containing the upstream commits that did the reopening to `high`. Cross-reference `upstreamTouchingCommits` on each flagged file to find which group(s) are affected.
+   - `inconclusive` → add to `notes` with the escalation reason verbatim; set risk on affected groups to at least `medium`.
+6. **Cache key attestation.** Copy `cacheKey` into the plan. If the executor's later analysis has a different key, the plan is stale and must be regenerated.
 
 ## What to output for the human
 

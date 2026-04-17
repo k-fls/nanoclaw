@@ -27,6 +27,45 @@ describe('loadOwnershipRules', () => {
   });
 });
 
+describe('deriveOwnership — Stage 3 upstream-reachability', () => {
+  it('attributes a file to core when the intro commit lives only on upstream (mid-intake scratch branch)', () => {
+    // Baseline commit shared between main and upstream/main.
+    repo.write('README.md', '# r\n');
+    repo.commit('base');
+    repo.run('branch', 'upstream/main');
+    // Upstream introduces a file; fls has NOT intaken yet.
+    repo.checkout('upstream/main');
+    repo.write('src/upstream-only.ts', 'u\n');
+    repo.commit('upstream: add file');
+    // Scratch-branch intake pattern: we check out a non-main branch and merge
+    // upstream into it. main's ref hasn't moved.
+    repo.run('checkout', '-q', 'main');
+    repo.run('checkout', '-q', '-b', 'intake-scratch');
+    repo.merge('upstream/main', 'intake upstream on scratch');
+    // The file is now in the working tree. main/core's ref is still at
+    // "base". Stage 1 and Stage 2 don't match (scratch is ephemeral,
+    // filtered out). Stage 3 kicks in: the intro commit is reachable from
+    // upstream/main → owner = main (core's canonical branch).
+    const r = deriveOwnership({ repoRoot: repo.root });
+    const e = r.entries.find((x) => x.path === 'src/upstream-only.ts');
+    expect(e?.owner).toBe('main');
+    expect(r.unowned).not.toContain('src/upstream-only.ts');
+  });
+
+  it('still prefers direct first-parent attribution over the upstream fallback', () => {
+    repo.write('README.md', '# r\n');
+    repo.commit('base');
+    repo.run('branch', 'upstream/main');
+    // Normal case: file is introduced on main directly. Stage 1 wins; Stage 3
+    // is not even consulted.
+    repo.write('src/fls-local.ts', 'f\n');
+    repo.commit('fls: add file');
+    const r = deriveOwnership({ repoRoot: repo.root });
+    const e = r.entries.find((x) => x.path === 'src/fls-local.ts');
+    expect(e?.owner).toBe('main');
+  });
+});
+
 describe('deriveOwnership — attribution', () => {
   it('attributes a file introduced on main to core', () => {
     repo.write('src/a.ts', 'export const A = 1;\n');
