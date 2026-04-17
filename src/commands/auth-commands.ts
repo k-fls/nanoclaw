@@ -54,17 +54,20 @@ registerCommand('auth', {
     const firstLine = args.split('\n')[0];
     const parts = firstLine.trim().split(/\s+/);
     const providerId = parts[0];
+    const subcommand = parts[1]?.toLowerCase();
 
-    // Validate provider exists in discovery registry
-    if (!getDiscoveryProvider(providerId)) {
+    // `*` is a bulk-import marker; all other values must be real providers
+    if (providerId === '*') {
+      if (subcommand !== 'import') {
+        return reply('`/auth *` only supports the `import` subcommand.');
+      }
+    } else if (!getDiscoveryProvider(providerId)) {
       const known = getAllDiscoveryProviderIds();
       return reply(
         `Unknown provider: ${providerId}\n` +
           `Known providers: ${known.join(', ')}`,
       );
     }
-
-    const subcommand = parts[1]?.toLowerCase();
 
     // (d) /auth <provider> delete
     if (subcommand === 'delete') {
@@ -81,14 +84,15 @@ registerCommand('auth', {
       };
     }
 
-    // (e) /auth <provider> import <pgp block>
+    // (e) /auth <provider|*> import <pgp block>
     if (subcommand === 'import') {
       const rest = args.slice(args.indexOf('import') + 6).trim();
+      const defaultProviderId = providerId === '*' ? null : providerId;
       return {
         asyncAction: async (io) => {
           const chat = brandChat(io, AUTH_PREFIX);
           const msg = await handleImport(
-            providerId,
+            defaultProviderId,
             rest,
             scopeOf(ctx.group),
             tokenEngine,
