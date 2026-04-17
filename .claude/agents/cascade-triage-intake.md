@@ -237,11 +237,10 @@ If the skill re-invokes you with `previous_plan` + `validator_violations`, treat
 
 - `cache-key-mismatch` → plan is stale; ask for a fresh analyzer run.
 - `uncovered-commit` / `duplicate-commit` / `non-contiguous-group` / `reordered-commits` / `overlapping-groups` → mechanical group-shape fix. Redraw groups to satisfy contiguity and coverage.
-- `break-point-not-singleton` / `break-point-wrong-kind` → pull the break-point SHA into its own group with `kind: "break_point"`.
-- `intersection-file-unattended` → raise the containing group's attention to `light` or split so the divergent file lands in a non-`none` group.
-- `conflict-without-resolution-flag` → set `requiresAgentResolution: true` on the group.
-- `deletion-reopened-needs-heavy-attention` / `deletion-inconclusive-needs-attention` → raise attention per the floor rules above.
-- `group-kind-understated` → promote the `kind` to match the worst `primaryKind` in the group, or set `kind: "mixed"`.
+- `break-point-not-singleton` → pull the break-point SHA into its own group (one commit, alone).
+- `intersection-file-unattended` → raise the containing group's `attention` to `light` or split so the divergent file lands in a non-`none` group.
+- `conflict-without-resolution-flag` → raise the containing group's `attention` to `heavy`. (The `requiresAgentResolution` flag is derived from `attention === 'heavy' || kind === 'conflict'`; raising attention is the lever you control.)
+- `deletion-reopened-needs-heavy-attention` / `deletion-inconclusive-needs-attention` → raise `attention` per the floor rules above.
 
 Re-emit the full plan. Do not partial-diff.
 
@@ -253,4 +252,4 @@ Re-emit the full plan. Do not partial-diff.
 
 ## If the range is empty
 
-If `rangeCount === 0`, return `{ "groups": [], "mergeOrder": [], "notes": ["range is empty"] }` and stop. Do not invent work.
+If `rangeCount === 0`, return `{ "groups": [] }` and stop. Do not invent work.

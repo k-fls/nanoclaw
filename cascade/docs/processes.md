@@ -6,7 +6,7 @@ Implements [§11 of the requirements](../../docs/FLSCLAW-BRANCHING-REQUIREMENTS.
 
 - **Scripts** (`cascade/scripts/*.ts`) — deterministic mechanics. No LLM. Always safe to re-run.
 - **Agent subroutines** — LLM calls bounded to three places:
-  - `cascade-triage-intake` — read a segmented P1 analysis report; propose a decomposition plan (grouping-plan overlay, risk ratings, merge order).
+  - `cascade-triage-intake` — read the P1 analyzer JSON; partition the ordered commit list into thematic groups; assign attention / expected-outcome / functional-summary per group. Runs via schema-enforced tool use; derived fields computed post-hoc.
   - `cascade-resolve-conflict` — draft a resolution for a P1 merge conflict given the three-way diff and surrounding code.
   - `cascade-classify-ambiguous` — draft a classification recommendation for a P3 hunk where signals disagree.
   All propose only. None writes to disk.
@@ -21,23 +21,23 @@ Slash commands (`.claude/commands/cascade-*.md`) orchestrate each process: run t
 
 ### Pre-merge analysis and decomposition
 
-1. **`intake-analyze.ts`** fetches upstream, computes the merge range, and emits a structured report: commit list, aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points (tags / upstream merge commits), and rename tracking on divergence-set files. Read-only; deterministic; cacheable by `(from_sha, to_sha, merge_base)`.
-
-2. The analyzer additionally emits **mechanical segments** — contiguous commit ranges grouped by kind. Pure graph + merge-tree output, no judgment:
+1. **`intake-analyze.ts`** fetches upstream, computes the merge range, and emits a structured report: per-commit signals (primaryKind + files + tags + parents + author/date), aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points (tags / upstream merge commits), rename tracking, and fls-deletion groups (files fls deleted that upstream kept modifying, grouped by the fls deletion commit). Per-commit `primaryKind` is drawn from `{clean, divergence, conflict, structural, break_point}`:
 
    | Kind | Rule |
    |---|---|
    | `clean` | no predicted conflicts, no intersection with the divergence set |
    | `divergence` | touches a file in the fls divergence set |
    | `conflict` | predicted conflict, no divergence-set intersection |
-   | `structural` | singleton — merge commit (>1 parents), large rename, or apparent revert |
+   | `structural` | merge commit (>1 parents), large rename, or apparent revert |
    | `break_point` | marker at an upstream tag or upstream merge commit |
 
-   **Splitting is strict.** Any change of kind starts a new segment; any break point ends the current segment. Over-splitting is recoverable by the agent merging adjacent segments in its proposal; under-splitting would hide risk signal.
+   Read-only; deterministic; cacheable by `(from_sha, to_sha, merge_base)`. The analyzer does not group commits — it emits signals the triage agent partitions.
 
-3. **`cascade-triage-intake`** agent reads the segmented report and proposes a **decomposition plan**: grouping-plan overlay (merge adjacent clean segments that share a theme; split a divergence segment further if risks differ within it), risk ratings per group, and recommended merge order. Agent proposes only; never mutates.
+2. **`cascade triage`** runs the `cascade-triage-intake` agent via the Claude Agent SDK with decode-time schema enforcement (one tool, `emit_plan`, whose input schema is the plan draft). The agent partitions the ordered commit list into thematic groups, assigning only subjective fields (name, attention, expected_outcome, mechanical_complexity, tags, functional_summary, grouping_rationale). Derived fields (kind, files, firstSha/lastSha, commitCount, requiresAgentResolution, index) are computed by `enrichPlan` after the tool call. The agent has read-only repo access (`Read`, `Glob`, `Grep`, `Bash` limited to `git show`/`log`/`diff`/`blame`) for inspecting actual code changes, with a size heuristic: inspect small/medium diffs; raise huge commits to `attention: heavy` rather than attempting to summarize them.
 
-4. **Human reviews the plan.** Accepts as-is, edits grouping, overrides back to a single merge, or aborts.
+3. **Validator** (`intake-validate`) runs on the enriched plan inside `cascade triage` and enforces plan invariants: cache-key match, contiguity + coverage + non-overlap of commits across groups, break-point singletons, intersection-coverage attention floor, predicted-conflicts-require-resolution-flag, deletion-rationale attention floors. On violations, triage re-invokes the agent with the failed plan and violations as input; up to `--max-retries` (default 3) before surfacing an error.
+
+4. **Human reviews the validated plan.** Accepts as-is, edits grouping, or aborts. Triage only returns plans that pass validation.
 
 ### Per-group merge loop
 
@@ -53,7 +53,7 @@ Default resolution rule (§7): prefer fls behavior where fls has diverged. Revie
 
 ### Decomposition safety
 
-Sub-merge groups are contiguous ranges in upstream's history, never shuffled cherry-picks. Within a group, commit order is preserved. Each sub-merge leaves the tree buildable before the next one starts. The triage agent may propose merging adjacent segments or splitting one further, but may not reorder commits or skip over them.
+Groups are contiguous ranges in upstream's history — the agent partitions an ordered list, it doesn't reorder or skip. Each group's commits stay in analyzer order. Group boundaries are the agent's only freedom; the validator enforces contiguity, coverage, and non-overlap. Each sub-merge leaves the tree buildable before the next one starts.
 
 ## P2 — Downstream propagation
 

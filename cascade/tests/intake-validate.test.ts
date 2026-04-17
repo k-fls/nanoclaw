@@ -62,13 +62,45 @@ function makeAnalyzer(overrides: Partial<IntakeReport> = {}): IntakeReport {
   };
 }
 
-function plan(groups: Plan['groups'], overrides: Partial<Plan> = {}): Plan {
+// Test-helper shape: subjective fields + commits, like the agent's draft.
+// The helper synthesizes the derived fields (firstSha/lastSha/commitCount/
+// files/requiresAgentResolution) so tests don't have to repeat them. Tests
+// that want to exercise derived-field validation should build plans directly.
+interface PartialGroup {
+  index: number;
+  name: string;
+  kind: Plan['groups'][number]['kind'];
+  commits: string[];
+  attention: Plan['groups'][number]['attention'];
+  expected_outcome?: Plan['groups'][number]['expected_outcome'];
+  mechanical_complexity?: Plan['groups'][number]['mechanical_complexity'];
+  tags?: string[];
+  functional_summary?: string;
+  grouping_rationale?: string;
+  firstSha?: string;
+  lastSha?: string;
+  commitCount?: number;
+  files?: string[];
+  requiresAgentResolution?: boolean;
+}
+
+function plan(groups: PartialGroup[], overrides: Partial<Plan> = {}): Plan {
+  const enrichedGroups = groups.map((g) => ({
+    ...g,
+    firstSha: g.firstSha ?? g.commits[0],
+    lastSha: g.lastSha ?? g.commits[g.commits.length - 1],
+    commitCount: g.commitCount ?? g.commits.length,
+    files: g.files ?? [],
+    requiresAgentResolution:
+      g.requiresAgentResolution ??
+      (g.kind === 'conflict' || g.attention === 'heavy'),
+  })) as Plan['groups'];
   return {
     target: 'main',
     source: 'upstream/main',
     base: 'basesha',
     cacheKey: 'cacheX',
-    groups,
+    groups: enrichedGroups,
     ...overrides,
   };
 }
@@ -193,29 +225,28 @@ describe('validatePlan — intersection coverage', () => {
 });
 
 describe('validatePlan — predicted conflicts require resolution flag', () => {
-  it('errors when a conflicted file lands in a group without requiresAgentResolution', () => {
+  // `requiresAgentResolution` is derived (kind==='conflict' || attention==='heavy').
+  // The rule fires when a predictedConflicts file lands in a group with
+  // neither — e.g. a divergence commit touching a file that merge-tree
+  // predicted conflicts on. The agent's fix is to raise attention.
+
+  it('errors when a conflicted file lands in a divergence+light group', () => {
     const a = makeAnalyzer({ predictedConflicts: ['src/div.ts'] });
     const p = plan([
       { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
-      { index: 1, name: 'y', kind: 'conflict', commits: ['bbb'], attention: 'heavy' },
+      // Divergence + light → derived requiresAgentResolution=false.
+      { index: 1, name: 'y', kind: 'divergence', commits: ['bbb'], attention: 'light' },
       { index: 2, name: 'z', kind: 'clean', commits: ['ccc'], attention: 'none' },
     ]);
     const r = validatePlan({ plan: p, analyzer: a });
     expect(r.violations.map((v) => v.rule)).toContain('conflict-without-resolution-flag');
   });
 
-  it('passes when requiresAgentResolution is set on the conflict group', () => {
+  it('passes when attention is heavy (derived flag becomes true)', () => {
     const a = makeAnalyzer({ predictedConflicts: ['src/div.ts'] });
     const p = plan([
       { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
-      {
-        index: 1,
-        name: 'y',
-        kind: 'conflict',
-        commits: ['bbb'],
-        attention: 'heavy',
-        requiresAgentResolution: true,
-      },
+      { index: 1, name: 'y', kind: 'divergence', commits: ['bbb'], attention: 'heavy' },
       { index: 2, name: 'z', kind: 'clean', commits: ['ccc'], attention: 'none' },
     ]);
     const r = validatePlan({ plan: p, analyzer: a });

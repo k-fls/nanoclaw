@@ -93,7 +93,7 @@ Require an explicit yes. Silence / ambiguity → ask again.
 
 ### 4. Execute per group
 
-For each group in `mergeOrder`, confirm with the user before merging. The confirmation format depends on the group's `attention` field from the plan.
+For each group in `groups` order (they're already sorted by first-commit analyzer position), confirm with the user before merging. The confirmation format depends on the group's `attention` field from the plan.
 
 **Confirmation format — always include:**
 

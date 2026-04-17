@@ -29,24 +29,23 @@ Full scope: [phase-0.md](phase-0.md).
 Handle ongoing upstream merges with agent-drafted triage and conflict resolutions. Splits the merge into reviewable sub-merges before touching the worktree.
 
 **Deliverables**
-- `intake-analyze.ts` — read-only analysis: commit list, aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points, rename tracking. Produces structured JSON + human-readable pretty-print.
-- Mechanical segmentation in `intake-analyze.ts` — splits the range into `clean` / `divergence` / `conflict` / `structural` / `break_point` segments. Strict splitting (any kind change starts a new segment). Pure graph + merge-tree output, no judgment.
-- `intake-upstream.ts` — per-group merge executor (runs once per approved group from the decomposition plan). Fetch, merge, conflict loop.
-- `/cascade-intake` slash command — orchestrate: analyze → triage → human-approve plan → per-group merge loop.
-- `cascade-triage-intake` agent subroutine — read the segmented report, propose decomposition plan (grouping overlay + risk ratings + merge order). Never mutates.
-- `cascade-resolve-conflict` agent subroutine — draft resolutions for non-trivial conflicts (three-way diff + surrounding code + nearby comments as input). Never mutates.
-- Divergence surfacing: `cascade divergence-report` rendered from `git diff core..upstream/main` (no registry file).
-- Decision: whether to recommend an inline-comment grammar for non-obvious divergences, or skip and rely on the diff + P4.
+- `intake-analyze.ts` — read-only analysis: per-commit signals (primaryKind, files, tags, parents), aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points, rename tracking, fls-deletion groups. Produces structured JSON + human-readable pretty-print. Deterministic; cacheable by `(from_sha, to_sha, merge_base)`.
+- `cascade divergence-report` — `git diff core..upstream/main` rendered as per-file/per-hunk JSON + text (no registry file).
+- `intake-upstream.ts` — per-group merge executor (runs once per approved group). Fetch, `--no-ff` merge, conflict loop.
+- `cascade-intake` skill + `cascade-triage-intake` / `cascade-inspect-fls-deletion` / `cascade-resolve-conflict` agent prompts — orchestrate: analyze → inspect deletions → triage → human-approve plan → per-group merge loop.
+- `triage.ts` — runs the triage agent via Claude Agent SDK `query()` with an in-process MCP server exposing `emit_plan` (decode-time schema-enforced via zod). Enriches draft → full plan → validates → retries on violations internally.
+- `intake-validate.ts` — deterministic post-enrichment validator: contiguity, coverage, break-point singletons, intersection-coverage attention floor, conflict-resolution flag gating, deletion-verdict attention floors. Debug-accessible as `cascade intake-validate`; normally runs inside `cascade triage`.
 
 **Done when**
-- `intake-analyze.ts` runs against a real upstream range and emits both JSON and human-readable reports with segments.
-- A real upstream pull runs end-to-end through `/cascade-intake`: triage, approved plan, per-group merges with drafted resolutions.
-- Segment determinism: same range produces the same segments on reruns.
+- `intake-analyze.ts` runs against a real upstream range and emits both JSON and human-readable reports.
+- `cascade triage` produces a validator-clean plan end-to-end on a real upstream range.
+- A real upstream pull runs end-to-end through the `cascade-intake` skill: analyze → triage → plan approval → per-group merges with drafted resolutions.
+- Analyzer determinism: same range produces the same output (same cacheKey + same commit order + same signals).
 - `merge-preserve.ts` lands each sub-merge's resolved content with correct history.
 
 **Risks**
-- Agent silently flipping behavior during resolution (red-team finding). Mitigation: human review is mandatory; divergence-report before and after the intake shows any behavioral shifts in diverged areas.
-- Triage agent proposing a decomposition that under-covers risk (groups a divergence-touching commit into a "clean" batch). Mitigation: mechanical segmentation is strict, so this can only happen if the agent overrides a segment boundary during plan review; the override is explicit and human-visible.
+- Agent silently flipping behavior during resolution (red-team finding). Mitigation: human review is mandatory; divergence-report before and after intake shows any behavioral shifts in diverged areas.
+- Triage agent producing a plan that hides risk (a divergence-touching commit in an `attention: none` group). Mitigation: the validator's intersection-coverage rule catches this by construction — triage cannot ship a plan that lands an intersection file in an unattended group.
 
 ## Phase 2 — P2 downstream propagation + auto-versioning
 
