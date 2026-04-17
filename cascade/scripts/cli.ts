@@ -20,6 +20,13 @@ import {
 import { computeVersion, formatVersion } from './version.js';
 import { appendBypass } from './bypass.js';
 import { mergePreserve } from './merge-preserve.js';
+import { analyzeIntake, formatReport as formatIntakeReport } from './intake-analyze.js';
+import { divergenceReport, formatDivergenceReport } from './divergence-report.js';
+import {
+  abortIntakeMerge,
+  continueIntakeMerge,
+  runIntakeMerge,
+} from './intake-upstream.js';
 
 function repoRoot(): string {
   const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
@@ -183,6 +190,85 @@ function cmdMerge(args: string[]): number {
   return res.code;
 }
 
+function cmdIntakeAnalyze(args: string[]): number {
+  const json = removeFlag(args, '--json');
+  const target = takeOption(args, '--target') ?? undefined;
+  const source = takeOption(args, '--source') ?? undefined;
+  const root = repoRoot();
+  const report = analyzeIntake({ repoRoot: root, target, source });
+  if (json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  } else {
+    process.stdout.write(formatIntakeReport(report) + '\n');
+  }
+  return 0;
+}
+
+function cmdDivergenceReport(args: string[]): number {
+  const json = removeFlag(args, '--json');
+  const verbose = removeFlag(args, '--verbose') || removeFlag(args, '-v');
+  const target = takeOption(args, '--target') ?? undefined;
+  const source = takeOption(args, '--source') ?? undefined;
+  const root = repoRoot();
+  const report = divergenceReport({ repoRoot: root, target, source });
+  if (json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  } else {
+    process.stdout.write(formatDivergenceReport(report, { verbose }) + '\n');
+  }
+  return 0;
+}
+
+function cmdIntakeUpstream(args: string[]): number {
+  const json = removeFlag(args, '--json');
+  const dryRun = removeFlag(args, '--dry-run');
+  const abort = removeFlag(args, '--abort');
+  const continueFlag = removeFlag(args, '--continue');
+  const source = takeOption(args, '--source') ?? 'upstream';
+  const message = takeOption(args, '-m') ?? takeOption(args, '--message');
+  const upto = args[0];
+  const root = repoRoot();
+
+  if (abort) {
+    abortIntakeMerge(root);
+    if (!json) process.stdout.write('intake-upstream: aborted\n');
+    return 0;
+  }
+  if (continueFlag) {
+    const r = continueIntakeMerge(root, message ?? undefined);
+    if (json) process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+    else process.stdout.write(formatMergeResult(r));
+    return r.status === 'conflicted' ? 1 : 0;
+  }
+  if (!upto) die('usage: cascade intake-upstream <upto-sha> [--source <name>] [-m <msg>] [--dry-run]');
+  if (!message) die('intake-upstream: -m <message> is required');
+  const r = runIntakeMerge({
+    repoRoot: root,
+    upto,
+    source,
+    message: message!,
+    dryRun,
+  });
+  if (json) process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+  else process.stdout.write(formatMergeResult(r));
+  return r.status === 'conflicted' ? 1 : 0;
+}
+
+function formatMergeResult(
+  r: import('./intake-upstream.js').IntakeMergeResult,
+): string {
+  const lines: string[] = [];
+  lines.push(`intake-upstream: ${r.status} (${r.target} ← ${r.source} @ ${r.upto.slice(0, 7)})`);
+  if (r.mergeSha) lines.push(`  merge commit: ${r.mergeSha.slice(0, 12)}`);
+  if (r.conflicts.length > 0) {
+    lines.push(`  conflicts (${r.conflicts.length}):`);
+    for (const c of r.conflicts) lines.push(`    ${c.kind.padEnd(16)} ${c.path}`);
+    lines.push('  resolve, git add, then rerun with --continue');
+  }
+  if (r.stderr) lines.push(r.stderr.trimEnd());
+  return lines.join('\n') + '\n';
+}
+
 function cmdSelfTest(): number {
   const st = runSelfTest();
   process.stdout.write(`self-test: ${st.passed} passed, ${st.failed.length} failed\n`);
@@ -200,6 +286,11 @@ function usage(): string {
     '  version <branch> [--json]',
     '  bypass <commit> <rule> <reason...>',
     '  merge <source> [--squash] [-m <msg>]',
+    '  intake-analyze [--target <ref>] [--source <ref>] [--json]',
+    '  divergence-report [--target <ref>] [--source <ref>] [--verbose] [--json]',
+    '  intake-upstream <upto-sha> -m <msg> [--source <name>] [--dry-run] [--json]',
+    '  intake-upstream --continue [-m <msg>] [--json]',
+    '  intake-upstream --abort',
     '  self-test',
     '  help',
   ].join('\n');
@@ -219,6 +310,12 @@ function main(): number {
         return cmdBypass(rest);
       case 'merge':
         return cmdMerge(rest);
+      case 'intake-analyze':
+        return cmdIntakeAnalyze(rest);
+      case 'divergence-report':
+        return cmdDivergenceReport(rest);
+      case 'intake-upstream':
+        return cmdIntakeUpstream(rest);
       case 'self-test':
         return cmdSelfTest();
       case 'help':
