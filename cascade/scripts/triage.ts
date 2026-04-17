@@ -18,10 +18,12 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import {
   PlanDraftSchema,
-  PlanGroupDraftSchema,
   enrichPlan,
+  validatePlan,
+  formatValidateReport,
   type Plan,
   type PlanDraft,
+  type Violation,
 } from './intake-validate.js';
 import type { IntakeReport } from './intake-analyze.js';
 
@@ -29,18 +31,21 @@ export interface TriageInputs {
   analyzerJson: string;
   divergenceReport?: string;
   deletionVerdicts?: string;
-  previousPlan?: string;
-  validatorViolations?: string;
 }
 
 export interface TriageOptions {
   agentPromptPath: string;
   inputs: TriageInputs;
   model?: string;
+  // Max retries if the agent's plan fails validation. Default 3; the agent
+  // gets 4 total attempts (initial + 3 retries). Each retry passes the
+  // previous plan + violations back into the user prompt.
+  maxRetries?: number;
 }
 
 export interface TriageResult {
   plan: Plan;
+  attempts: number;
 }
 
 // Parse the markdown frontmatter; return { model, body }.
@@ -65,8 +70,12 @@ function resolveModel(input: string | undefined): string | undefined {
 }
 
 // Build the user prompt. The system prompt (from the md) carries the
-// authoritative grouping rules; the user prompt carries the dynamic inputs.
-function buildPrompt(inputs: TriageInputs): string {
+// authoritative grouping rules; the user prompt carries the dynamic inputs
+// plus, on retry, the previous plan and the validator's violations.
+function buildPrompt(
+  inputs: TriageInputs,
+  retry?: { previousPlan: Plan; violations: Violation[] },
+): string {
   const parts: string[] = [];
   parts.push('## Analyzer JSON\n\n```json\n' + inputs.analyzerJson + '\n```');
   if (inputs.divergenceReport) {
@@ -75,15 +84,15 @@ function buildPrompt(inputs: TriageInputs): string {
   if (inputs.deletionVerdicts) {
     parts.push('## fls-deletion verdicts\n\n```json\n' + inputs.deletionVerdicts + '\n```');
   }
-  if (inputs.previousPlan && inputs.validatorViolations) {
+  if (retry) {
     parts.push(
       '## Previous plan (failed validation)\n\n```json\n' +
-        inputs.previousPlan +
+        JSON.stringify(retry.previousPlan, null, 2) +
         '\n```',
     );
     parts.push(
       '## Validator violations — address each one and re-emit the full plan\n\n```json\n' +
-        inputs.validatorViolations +
+        JSON.stringify(retry.violations, null, 2) +
         '\n```',
     );
   }
@@ -93,21 +102,18 @@ function buildPrompt(inputs: TriageInputs): string {
   return parts.join('\n\n');
 }
 
-export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
-  if (!existsSync(opts.agentPromptPath)) {
-    throw new Error(`triage: agent prompt not found at ${opts.agentPromptPath}`);
-  }
-  const { model: fmModel, body: systemPrompt } = loadAgentPrompt(opts.agentPromptPath);
-  const model = opts.model ? resolveModel(opts.model) : resolveModel(fmModel);
-
-  // Schema-enforced handoff. The tool takes the DRAFT schema — subjective
-  // fields only. Derived fields (kind, files, requiresAgentResolution, etc.)
-  // are computed post-hoc by enrichPlan, so the model can't get them wrong
-  // and doesn't spend tokens reasoning about them.
-  let capturedDraft: PlanDraft | null = null;
+// One round-trip with the agent: send the prompt, wait for emit_plan to
+// fire, return the validated draft.
+async function captureDraft(
+  opts: TriageOptions,
+  systemPrompt: string,
+  model: string | undefined,
+  prompt: string,
+): Promise<PlanDraft> {
+  let captured: PlanDraft | null = null;
   const emitPlan = tool(
     'emit_plan',
-    'Emit the P1 intake decomposition plan. Provide ONLY subjective fields per group (name, commits[], attention, expected_outcome, mechanical_complexity, tags, functional_summary, grouping_rationale). Derived fields (kind, files, firstSha, lastSha, requiresAgentResolution, index) are computed automatically — do not emit them.',
+    'Emit the P1 intake decomposition plan. Provide ONLY subjective fields per group (name, commits[], attention, expected_outcome, mechanical_complexity, tags, functional_summary, grouping_rationale). Derived fields (kind, files, requiresAgentResolution, index) are computed automatically — do not emit them.',
     PlanDraftSchema.shape,
     async (input) => {
       const parsed = PlanDraftSchema.safeParse(input);
@@ -124,7 +130,7 @@ export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
           isError: true,
         };
       }
-      capturedDraft = parsed.data;
+      captured = parsed.data;
       return {
         content: [{ type: 'text', text: 'ok — plan captured' }],
       };
@@ -137,7 +143,6 @@ export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
     tools: [emitPlan],
   });
 
-  const prompt = buildPrompt(opts.inputs);
   const stream = query({
     prompt,
     options: {
@@ -146,10 +151,6 @@ export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
       mcpServers: { cascade: mcpServer },
       // Tool surface: read-only access to repo contents for inspecting
       // actual code changes + emit_plan as the single mutating action.
-      // The agent prompt instructs when to inspect (small/medium diffs) and
-      // when to skip (huge diffs → raise attention instead of reading).
-      // Bash is included for `git show` / `git log` / `git diff`; the
-      // prompt forbids mutating git commands.
       allowedTools: [
         'mcp__cascade__emit_plan',
         'Read',
@@ -161,22 +162,50 @@ export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
     },
   });
 
-  // Drain the stream. The handler captures the draft when the tool fires.
   for await (const _msg of stream as AsyncIterable<SDKMessage>) {
-    // no-op — the side effect is `capturedDraft` being set.
+    // side effect: `captured` set when emit_plan fires
   }
 
-  if (!capturedDraft) {
+  if (!captured) {
     throw new Error(
       'triage: agent finished without calling emit_plan — check the prompt or retry',
     );
   }
+  return captured;
+}
 
-  // Enrich the draft into a full Plan. The analyzer is loaded from the JSON
-  // the caller already has on disk (same input the agent saw).
+export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
+  if (!existsSync(opts.agentPromptPath)) {
+    throw new Error(`triage: agent prompt not found at ${opts.agentPromptPath}`);
+  }
+  const { model: fmModel, body: systemPrompt } = loadAgentPrompt(opts.agentPromptPath);
+  const model = opts.model ? resolveModel(opts.model) : resolveModel(fmModel);
   const analyzer = parseAnalyzer(opts.inputs.analyzerJson);
-  const plan = enrichPlan(capturedDraft, analyzer);
-  return { plan };
+  const maxRetries = opts.maxRetries ?? 3;
+
+  let retry: { previousPlan: Plan; violations: Violation[] } | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const prompt = buildPrompt(opts.inputs, retry);
+    const draft = await captureDraft(opts, systemPrompt, model, prompt);
+    const plan = enrichPlan(draft, analyzer);
+    const result = validatePlan({ plan, analyzer });
+    if (result.errors === 0) {
+      return { plan, attempts: attempt + 1 };
+    }
+    retry = { previousPlan: plan, violations: result.violations };
+    // On last iteration, this retry context is built but we won't loop again.
+  }
+
+  // Exhausted retries. Surface the final violations verbatim so the caller
+  // can decide what to do (the skill escalates to the human).
+  const finalReport = formatValidateReport({
+    violations: retry!.violations,
+    errors: retry!.violations.filter((v) => v.severity === 'error').length,
+    warnings: retry!.violations.filter((v) => v.severity === 'warning').length,
+  });
+  throw new Error(
+    `triage: could not produce a valid plan after ${maxRetries + 1} attempts\n\n${finalReport}`,
+  );
 }
 
 function parseAnalyzer(json: string): IntakeReport {
@@ -193,13 +222,12 @@ export interface CliArgs {
   analyzerPath: string;
   divergencePath?: string;
   verdictsPath?: string;
-  previousPlanPath?: string;
-  violationsPath?: string;
   agentPromptPath?: string;
   model?: string;
+  maxRetries?: number;
 }
 
-export async function runTriageCli(args: CliArgs): Promise<Plan> {
+export async function runTriageCli(args: CliArgs): Promise<TriageResult> {
   const agentPromptPath = args.agentPromptPath ?? defaultAgentPromptPath();
   const inputs: TriageInputs = {
     analyzerJson: readFileSync(args.analyzerPath, 'utf8'),
@@ -209,15 +237,13 @@ export async function runTriageCli(args: CliArgs): Promise<Plan> {
     deletionVerdicts: args.verdictsPath
       ? readFileSync(args.verdictsPath, 'utf8')
       : undefined,
-    previousPlan: args.previousPlanPath
-      ? readFileSync(args.previousPlanPath, 'utf8')
-      : undefined,
-    validatorViolations: args.violationsPath
-      ? readFileSync(args.violationsPath, 'utf8')
-      : undefined,
   };
-  const result = await runTriage({ agentPromptPath, inputs, model: args.model });
-  return result.plan;
+  return runTriage({
+    agentPromptPath,
+    inputs,
+    model: args.model,
+    maxRetries: args.maxRetries,
+  });
 }
 
 function defaultAgentPromptPath(): string {

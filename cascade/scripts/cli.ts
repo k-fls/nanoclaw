@@ -290,28 +290,27 @@ async function cmdTriage(args: string[]): Promise<number> {
   const analyzerPath = takeOption(args, '--analyzer');
   const divergencePath = takeOption(args, '--divergence') ?? undefined;
   const verdictsPath = takeOption(args, '--verdicts') ?? undefined;
-  const previousPlanPath = takeOption(args, '--previous-plan') ?? undefined;
-  const violationsPath = takeOption(args, '--violations') ?? undefined;
   const outPath = takeOption(args, '--out') ?? undefined;
   const model = takeOption(args, '--model') ?? undefined;
+  const maxRetriesStr = takeOption(args, '--max-retries');
+  const maxRetries = maxRetriesStr ? Number(maxRetriesStr) : undefined;
   if (!analyzerPath) {
     die(
-      'usage: cascade triage --analyzer <path> [--divergence <path>] [--verdicts <path>] [--previous-plan <path>] [--violations <path>] [--out <path>] [--model <id>]',
+      'usage: cascade triage --analyzer <path> [--divergence <path>] [--verdicts <path>] [--out <path>] [--model <id>] [--max-retries <n>]',
     );
   }
-  const plan = await runTriageCli({
+  const { plan, attempts } = await runTriageCli({
     analyzerPath: analyzerPath!,
     divergencePath,
     verdictsPath,
-    previousPlanPath,
-    violationsPath,
     model,
+    maxRetries,
   });
   const out = JSON.stringify(plan, null, 2) + '\n';
   if (outPath) {
     const fs = await import('node:fs');
     fs.writeFileSync(outPath, out, 'utf8');
-    process.stdout.write(`triage: wrote plan to ${outPath}\n`);
+    process.stdout.write(`triage: wrote valid plan to ${outPath} (attempts=${attempts})\n`);
   } else {
     process.stdout.write(out);
   }
@@ -341,7 +340,7 @@ function usage(): string {
     '  intake-upstream --continue [-m <msg>] [--json]',
     '  intake-upstream --abort',
     '  intake-validate <analyzer.json> <plan.json> [--json]',
-    '  triage --analyzer <path> [--divergence <p>] [--verdicts <p>] [--previous-plan <p>] [--violations <p>] [--out <p>] [--model <id>]',
+    '  triage --analyzer <path> [--divergence <p>] [--verdicts <p>] [--out <p>] [--model <id>] [--max-retries <n>]',
     '  self-test',
     '  help',
   ].join('\n');

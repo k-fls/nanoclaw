@@ -62,7 +62,7 @@ Collect each subagent's JSON verdict into an array and write it to `.cascade/.in
 
 ### 2b. Triage
 
-Run `cascade triage` — a schema-enforced subagent call that reads the same prompt file (`.claude/agents/cascade-triage-intake.md`) but uses Anthropic tool-use with a JSON Schema derived from the validator's zod definition. The model is constrained at decode time; the returned plan is guaranteed shape-valid.
+Run `cascade triage` — it reads the agent prompt at `.claude/agents/cascade-triage-intake.md`, emits a plan with decode-time schema enforcement, enriches derived fields, validates, and retries on violations internally. The output is always a valid plan or an error.
 
 ```
 npm run cascade -- triage \
@@ -72,32 +72,11 @@ npm run cascade -- triage \
   --out .cascade/.intake/<cacheKey>/plan.json
 ```
 
-Omit `--verdicts` if step 2a produced no inspector output. Omit `--divergence` only when the divergence report was skipped (shouldn't happen in a normal flow).
+Omit `--verdicts` if step 2a produced no inspector output. Omit `--divergence` only when the divergence report was skipped.
 
-### 2c. Validate the plan (before showing the human)
+**Exit 0**: a valid plan is at `plan.json`; proceed to step 3.
 
-Run `npm run cascade -- intake-validate .cascade/.intake/<cacheKey>/analyzer.json .cascade/.intake/<cacheKey>/plan.json --json`.
-
-- If exit 0 and no errors: plan is valid; proceed to step 3 (human approval).
-- If exit 1 (errors): **do not show the plan to the user yet.** Save the validator's JSON output to `.cascade/.intake/<cacheKey>/violations.json`, rename the failed plan to `.cascade/.intake/<cacheKey>/plan.prev.json`, and re-run `cascade triage` with the previous plan and violations passed as inputs:
-
-  ```
-  npm run cascade -- triage \
-    --analyzer    .cascade/.intake/<cacheKey>/analyzer.json \
-    --divergence  .cascade/.intake/<cacheKey>/divergence.txt \
-    --verdicts    .cascade/.intake/<cacheKey>/deletion-verdicts.json \
-    --previous-plan .cascade/.intake/<cacheKey>/plan.prev.json \
-    --violations    .cascade/.intake/<cacheKey>/violations.json \
-    --out         .cascade/.intake/<cacheKey>/plan.json
-  ```
-
-  **Both `--previous-plan` and `--violations` are mandatory on retry.** Without them the triage script has no reason to produce a different plan — it would just re-roll the same decomposition. The previous plan + violations together give the agent the exact feedback it needs: "here's what you emitted; here's every rule that failed; fix each one and re-emit the full plan."
-
-  Re-run the validator on the new plan. Accept up to **3 retries** before escalating to the user with the final violations and asking for manual intervention.
-
-- Warnings-only (exit 0 with `warnings > 0`): proceed to step 3, but include the warnings in the summary shown to the user so they can judge whether to accept.
-
-Never show an error-state plan to the user. The validator is the gate.
+**Non-zero exit**: the agent couldn't produce a valid plan after retries. Surface the stderr output (which contains the final validator violations) to the user and ask how to proceed — manual editing, re-running with `--max-retries <higher>`, or aborting. Never show a failed plan to the user as if it were valid.
 
 ### 3. Approve
 
