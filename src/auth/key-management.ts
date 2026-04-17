@@ -314,6 +314,27 @@ export type ApplyResult = {
 };
 
 /**
+ * Build a reverse index mapping envVarName → list of providers that declare it.
+ * Used in bulk import to auto-resolve the provider for un-prefixed ALL_CAPS lines.
+ */
+export function buildEnvVarProviderIndex(): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  for (const id of getAllDiscoveryProviderIds()) {
+    const provider = getDiscoveryProvider(id);
+    if (!provider?.envVars) continue;
+    for (const envName of Object.keys(provider.envVars)) {
+      let list = index.get(envName);
+      if (!list) {
+        list = [];
+        index.set(envName, list);
+      }
+      list.push(id);
+    }
+  }
+  return index;
+}
+
+/**
  * Tokenize `[provider:]key=value` lines and group entries by provider prefix.
  * Pure syntactic split — no validation. Lines without a prefix land under the
  * `null` key; lines with no `=` are stored with a null value.
@@ -481,6 +502,10 @@ export async function handleImport(
   const byProvider: ProviderEntries = new Map();
   const lineWarnings: string[] = [];
 
+  // Only build the reverse index when we may need it (bulk mode).
+  const envVarIndex =
+    defaultProviderId === null ? buildEnvVarProviderIndex() : null;
+
   for (const [prefix, entries] of tokenized) {
     // Single-provider mode: ignore lines that target a different provider.
     if (defaultProviderId !== null && prefix !== null && prefix !== defaultProviderId) {
@@ -491,9 +516,26 @@ export async function handleImport(
       continue;
     }
 
-    const providerId = prefix ?? defaultProviderId;
     for (const [key, value] of entries) {
       const label = value === null ? key : `${key}=${value}`;
+
+      // Resolve provider for this line:
+      //   1. explicit prefix wins
+      //   2. else single-provider default
+      //   3. else (bulk mode) try env-var auto-resolution on ALL_CAPS keys
+      let providerId = prefix ?? defaultProviderId;
+      if (!providerId && envVarIndex && ENV_NAME_RE.test(key)) {
+        const candidates = envVarIndex.get(key);
+        if (candidates && candidates.length === 1) {
+          providerId = candidates[0];
+        } else if (candidates && candidates.length > 1) {
+          lineWarnings.push(
+            `ambiguous env var ${key}: matches [${candidates.join(', ')}] — prefix with 'provider:'`,
+          );
+          continue;
+        }
+      }
+
       if (!providerId) {
         lineWarnings.push(`no provider: ${label}`);
         continue;
