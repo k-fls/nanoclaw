@@ -10,38 +10,49 @@
 // quietly bury risk. Runs between triage and human approval.
 
 import { readFileSync } from 'node:fs';
+import { z, ZodIssue } from 'zod';
 import {
   IntakeReport,
   FlsDeletionGroup,
 } from './intake-analyze.js';
 
 // Plan JSON shape — matches .claude/agents/cascade-triage-intake.md output.
-// Validator treats unknown fields as passthrough so schema additions don't
-// force version bumps.
-export interface PlanGroup {
-  index: number;
-  name: string;
-  kind: 'clean' | 'divergence' | 'conflict' | 'structural' | 'break_point' | 'mixed';
-  commits: string[];                 // SHAs in the group, in order
-  files?: string[];
-  mechanical_complexity?: 'low' | 'medium' | 'high';
-  attention: 'none' | 'light' | 'heavy';
-  expected_outcome?: 'accept' | 'reject' | 'synthesize' | 'unclear';
-  tags?: string[];
-  functional_summary?: string;
-  grouping_rationale?: string;
-  requiresAgentResolution?: boolean;
-}
+// Declared once as a zod schema so runtime validation and TypeScript types
+// stay in lock-step. Unknown fields pass through (`.passthrough()`) so
+// schema additions don't force a version bump, but unknown fields are still
+// inspected for legacy-schema hints (see `LEGACY_FIELD_HINTS`).
+const PlanGroupSchema = z
+  .object({
+    index: z.number().int().nonnegative(),
+    name: z.string().min(1),
+    kind: z.enum(['clean', 'divergence', 'conflict', 'structural', 'break_point', 'mixed']),
+    commits: z.array(z.string().min(1)),
+    files: z.array(z.string()).optional(),
+    mechanical_complexity: z.enum(['low', 'medium', 'high']).optional(),
+    attention: z.enum(['none', 'light', 'heavy']),
+    expected_outcome: z.enum(['accept', 'reject', 'synthesize', 'unclear']).optional(),
+    tags: z.array(z.string()).optional(),
+    functional_summary: z.string().optional(),
+    grouping_rationale: z.string().optional(),
+    requiresAgentResolution: z.boolean().optional(),
+  })
+  .passthrough();
 
-export interface Plan {
-  target: string;
-  source: string;
-  base: string;
-  cacheKey: string;
-  groups: PlanGroup[];
-  mergeOrder?: number[];
-  notes?: string[];
-}
+const PlanSchema = z
+  .object({
+    target: z.string().min(1),
+    source: z.string().min(1),
+    base: z.string().min(1),
+    cacheKey: z.string().min(1),
+    groups: z.array(PlanGroupSchema),
+    mergeOrder: z.array(z.number().int().nonnegative()).optional(),
+    notes: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
+export type PlanGroup = z.infer<typeof PlanGroupSchema>;
+export type Plan = z.infer<typeof PlanSchema>;
+export { PlanGroupSchema, PlanSchema };
 
 export type ViolationSeverity = 'error' | 'warning';
 
@@ -69,11 +80,26 @@ export interface ValidateOptions {
 }
 
 export function validatePlan(opts: ValidateOptions): ValidateResult {
-  const plan = opts.plan ?? loadJson<Plan>(opts.planPath!);
+  const rawPlan = opts.plan ?? loadJson<unknown>(opts.planPath!);
   const analyzer = opts.analyzer ?? loadJson<IntakeReport>(opts.analyzerPath!);
+
+  // Shape validation first. Zod gives precise per-field errors with paths,
+  // so the triage retry loop gets actionable feedback without us hand-rolling
+  // per-field checks. Unknown fields pass through (`.passthrough()`) so
+  // prompt additions don't force a schema bump.
+  const parsed = PlanSchema.safeParse(rawPlan);
+  if (!parsed.success) {
+    const vs = zodIssuesToViolations(parsed.error.issues, rawPlan);
+    return {
+      violations: vs,
+      errors: vs.filter((v) => v.severity === 'error').length,
+      warnings: vs.filter((v) => v.severity === 'warning').length,
+    };
+  }
+  const plan = parsed.data;
   const violations: Violation[] = [];
 
-  // 0. Cache-key attestation. A plan whose cacheKey doesn't match the
+  // Cache-key attestation. A plan whose cacheKey doesn't match the
   // analyzer's is stale and must not be used.
   if (plan.cacheKey !== analyzer.cacheKey) {
     violations.push({
@@ -382,6 +408,30 @@ export function validatePlan(opts: ValidateOptions): ValidateResult {
 }
 
 // ---------------- helpers ----------------
+
+// Map zod issues into our Violation shape. Attaches the group's index field
+// when the issue's path targets a specific group.
+function zodIssuesToViolations(issues: ZodIssue[], rawPlan: unknown): Violation[] {
+  const out: Violation[] = [];
+  for (const iss of issues) {
+    const group = extractGroupIndex(iss.path, rawPlan);
+    const field = iss.path.join('.');
+    const message = `${field || 'plan'}: ${iss.message}`;
+    out.push({ rule: 'malformed-plan', severity: 'error', message, group });
+  }
+  return out;
+}
+
+// Returns the group's `index` field if this issue is inside `groups[N]`.
+function extractGroupIndex(path: PropertyKey[], rawPlan: unknown): number | undefined {
+  if (path.length < 2 || path[0] !== 'groups') return undefined;
+  const i = path[1];
+  if (typeof i !== 'number') return undefined;
+  const groups = (rawPlan as { groups?: unknown[] })?.groups;
+  if (!Array.isArray(groups)) return undefined;
+  const g = groups[i] as { index?: unknown } | undefined;
+  return typeof g?.index === 'number' ? g.index : i;
+}
 
 function attentionRank(a: PlanGroup['attention']): number {
   return a === 'heavy' ? 2 : a === 'light' ? 1 : 0;

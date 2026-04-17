@@ -62,29 +62,38 @@ Collect each subagent's JSON verdict into an array and write it to `.cascade/.in
 
 ### 2b. Triage
 
-Invoke the `cascade-triage-intake` agent with:
+Run `cascade triage` — a schema-enforced subagent call that reads the same prompt file (`.claude/agents/cascade-triage-intake.md`) but uses Anthropic tool-use with a JSON Schema derived from the validator's zod definition. The model is constrained at decode time; the returned plan is guaranteed shape-valid.
 
-- The analyzer JSON (full, not summarized)
-- The divergence-report plain-text output
-- **The fls-deletion verdicts from step 2a**, if any, so triage can raise risk on groups that touch files flagged `port-candidate` / `reintroduce-candidate` / `escalate` or appear in a `rationale-reopened` / `inconclusive` deletion group.
+```
+npm run cascade -- triage \
+  --analyzer .cascade/.intake/<cacheKey>/analyzer.json \
+  --divergence .cascade/.intake/<cacheKey>/divergence.txt \
+  --verdicts .cascade/.intake/<cacheKey>/deletion-verdicts.json \
+  --out .cascade/.intake/<cacheKey>/plan.json
+```
 
-The agent returns a decomposition plan as JSON plus a prose summary. Write the JSON to `.cascade/.intake/<cacheKey>/plan.json`.
+Omit `--verdicts` if step 2a produced no inspector output. Omit `--divergence` only when the divergence report was skipped (shouldn't happen in a normal flow).
 
 ### 2c. Validate the plan (before showing the human)
 
 Run `npm run cascade -- intake-validate .cascade/.intake/<cacheKey>/analyzer.json .cascade/.intake/<cacheKey>/plan.json --json`.
 
 - If exit 0 and no errors: plan is valid; proceed to step 3 (human approval).
-- If exit 1 (errors): **do not show the plan to the user yet.** Re-invoke `cascade-triage-intake` with:
-  - The original analyzer JSON
-  - The original divergence-report
-  - The original deletion-verdicts
-  - The **previous plan** (verbatim)
-  - The **validator violations** (verbatim — the full JSON from the validator)
+- If exit 1 (errors): **do not show the plan to the user yet.** Save the validator's JSON output to `.cascade/.intake/<cacheKey>/violations.json`, rename the failed plan to `.cascade/.intake/<cacheKey>/plan.prev.json`, and re-run `cascade triage` with the previous plan and violations passed as inputs:
 
-  Instruction to the agent: "Previous plan failed validation. Violations follow. Produce a revised plan addressing every error. Re-emit the full plan."
+  ```
+  npm run cascade -- triage \
+    --analyzer    .cascade/.intake/<cacheKey>/analyzer.json \
+    --divergence  .cascade/.intake/<cacheKey>/divergence.txt \
+    --verdicts    .cascade/.intake/<cacheKey>/deletion-verdicts.json \
+    --previous-plan .cascade/.intake/<cacheKey>/plan.prev.json \
+    --violations    .cascade/.intake/<cacheKey>/violations.json \
+    --out         .cascade/.intake/<cacheKey>/plan.json
+  ```
 
-  Capture the revised plan, overwrite `plan.json`, re-run the validator. Accept up to **3 retries** before escalating to the user with the final violations and asking for manual intervention.
+  **Both `--previous-plan` and `--violations` are mandatory on retry.** Without them the triage script has no reason to produce a different plan — it would just re-roll the same decomposition. The previous plan + violations together give the agent the exact feedback it needs: "here's what you emitted; here's every rule that failed; fix each one and re-emit the full plan."
+
+  Re-run the validator on the new plan. Accept up to **3 retries** before escalating to the user with the final violations and asking for manual intervention.
 
 - Warnings-only (exit 0 with `warnings > 0`): proceed to step 3, but include the warnings in the summary shown to the user so they can judge whether to accept.
 

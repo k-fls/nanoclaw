@@ -23,6 +23,7 @@ import { mergePreserve } from './merge-preserve.js';
 import { analyzeIntake, formatReport as formatIntakeReport } from './intake-analyze.js';
 import { divergenceReport, formatDivergenceReport } from './divergence-report.js';
 import { validatePlan, formatValidateReport } from './intake-validate.js';
+import { runTriageCli } from './triage.js';
 import {
   abortIntakeMerge,
   continueIntakeMerge,
@@ -285,6 +286,38 @@ function cmdIntakeValidate(args: string[]): number {
   return res.errors === 0 ? 0 : 1;
 }
 
+async function cmdTriage(args: string[]): Promise<number> {
+  const analyzerPath = takeOption(args, '--analyzer');
+  const divergencePath = takeOption(args, '--divergence') ?? undefined;
+  const verdictsPath = takeOption(args, '--verdicts') ?? undefined;
+  const previousPlanPath = takeOption(args, '--previous-plan') ?? undefined;
+  const violationsPath = takeOption(args, '--violations') ?? undefined;
+  const outPath = takeOption(args, '--out') ?? undefined;
+  const model = takeOption(args, '--model') ?? undefined;
+  if (!analyzerPath) {
+    die(
+      'usage: cascade triage --analyzer <path> [--divergence <path>] [--verdicts <path>] [--previous-plan <path>] [--violations <path>] [--out <path>] [--model <id>]',
+    );
+  }
+  const plan = await runTriageCli({
+    analyzerPath: analyzerPath!,
+    divergencePath,
+    verdictsPath,
+    previousPlanPath,
+    violationsPath,
+    model,
+  });
+  const out = JSON.stringify(plan, null, 2) + '\n';
+  if (outPath) {
+    const fs = await import('node:fs');
+    fs.writeFileSync(outPath, out, 'utf8');
+    process.stdout.write(`triage: wrote plan to ${outPath}\n`);
+  } else {
+    process.stdout.write(out);
+  }
+  return 0;
+}
+
 function cmdSelfTest(): number {
   const st = runSelfTest();
   process.stdout.write(`self-test: ${st.passed} passed, ${st.failed.length} failed\n`);
@@ -308,12 +341,13 @@ function usage(): string {
     '  intake-upstream --continue [-m <msg>] [--json]',
     '  intake-upstream --abort',
     '  intake-validate <analyzer.json> <plan.json> [--json]',
+    '  triage --analyzer <path> [--divergence <p>] [--verdicts <p>] [--previous-plan <p>] [--violations <p>] [--out <p>] [--model <id>]',
     '  self-test',
     '  help',
   ].join('\n');
 }
 
-function main(): number {
+async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
   try {
     switch (cmd) {
@@ -335,6 +369,8 @@ function main(): number {
         return cmdIntakeUpstream(rest);
       case 'intake-validate':
         return cmdIntakeValidate(rest);
+      case 'triage':
+        return await cmdTriage(rest);
       case 'self-test':
         return cmdSelfTest();
       case 'help':
@@ -349,6 +385,7 @@ function main(): number {
   } catch (e) {
     die((e as Error).message, 1);
   }
+  return 0;
 }
 
-process.exit(main());
+main().then((code) => process.exit(code));
