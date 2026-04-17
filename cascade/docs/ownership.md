@@ -21,32 +21,45 @@ Hunk ownership is **not stored**. If a tool needs line-level attribution it cons
 Gitignore-syntax patterns for project-owned paths.
 
 ```
-# Vendored / installed — never owned by any branch
-node_modules/
-vendor/
-
-# Lockfiles — touched by every branch
+# Lockfiles — legitimately committed
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# Build artifacts (should not be committed; safety net)
-dist/
-build/
-*.generated.ts
-*.generated.js
-container/*.tgz
+# Safety-net: shouldn't be committed
+?node_modules/
+?vendor/
+?dist/
+?build/
+?*.generated.ts
+?*.generated.js
+?container/*.tgz
 
 # Escape hatch: force a matched path back into branch derivation
 !src/version.generated.ts
 ```
 
-Semantics:
-- Bare pattern → project-owned.
-- `!pattern` → force back into branch-introduction derivation.
+Prefix semantics:
+- Bare pattern → project-owned. Dead-rule reports at info severity.
+- `?pattern` → safety-net: should NOT be committed. Dead-rule is info; a committed match triggers a `hygiene` warning. The prefix is local and self-describing — no section markers to scan up for.
+- `!pattern` → negation: force back into branch-introduction derivation.
 - Matches standard `.gitignore` evaluation order (later entries override earlier).
 
-`check.ts` warns if a pattern under "should not be committed" actually matches a committed file — surfaces hygiene gaps without blocking.
+## `.cascade/ownership_overrides`
+
+Explicit `path  owner-branch` mapping for files whose history is genuinely ambiguous — pre-cascade squash/cherry-pick duplication, cross-branch re-authoring, or anything else that leaves derivation without a single correct answer. Consulted *before* mechanical derivation.
+
+```
+src/dir-fingerprint.test.ts    main
+src/interaction/session.ts     main
+```
+
+Effects on a matched path:
+- Ownership returns the declared owner directly.
+- Double-introduction warning is suppressed (the human has acknowledged the history).
+- `check.ts` flags overrides naming non-long-lived owners (`override-invalid`, error) and redundant overrides whose owner matches derivation (`override-redundant`, info).
+
+This is the escape hatch for ambiguity, not a central ownership registry. If the list grows beyond a handful of entries, the signal is that derivation or the branch model needs attention — not that more overrides should be added.
 
 ## Derivation algorithm
 
@@ -54,21 +67,39 @@ Single pass over all introduction commits across reachable history:
 
 ```
 # one git call collects every file introduction across every branch
-git log --all --diff-filter=A --name-only --format='COMMIT %H'
+git log --all --diff-filter=A --name-only --format='COMMIT %H %P'
   → file_to_introducing_commits
+# merge-commit false positives filtered: if an "added" file on a merge
+# commit existed on any non-first parent, it is not a real introduction.
 
 for each file F in current tree (sorted):
-  if F matches ownership_rules (after !overrides):
+  if F has an ownership_overrides entry:
+    owner = declared_owner; continue   # escape hatch (consulted first)
+
+  if F matches ownership_rules (after !negations):
     owner = "project"; continue
 
   introducing_commits = file_to_introducing_commits[F]
   if empty:
     owner = "default"; continue
 
-  owner = first long-lived (non-ephemeral) branch, in topological order
-          per branch-classes.yaml, whose ancestry contains any of
-          introducing_commits
-  if no such branch:
+  # Both stages iterate long-lived branches in branch-classes.yaml order
+  # (core, modules, channels, skills, adapters, editions, deploys;
+  # ephemerals are never candidates). First match wins within each stage.
+
+  # Stage 1: the branch where the commit was authored — its --first-parent
+  # chain contains the intro commit directly.
+  owner = first long-lived branch, in registry order, whose first-parent
+          chain contains any of introducing_commits
+
+  # Stage 2 (only if Stage 1 did not match): the branch that absorbed the
+  # commit via merge (upstream imports, ephemeral merges). Its full
+  # ancestry contains the intro. Same iteration order.
+  if not matched:
+    owner = first long-lived branch, in registry order, whose full
+            ancestry contains any of introducing_commits
+
+  if still no match:
     owner = "default"
 ```
 
@@ -99,6 +130,7 @@ Grep-friendly, diff-friendly, human-inspectable without tooling. Never a source 
 ## `check.ts` guarantees for ownership
 
 - **Determinism**: two consecutive derivations produce the same map. Achieved by treating renames as introductions (no `--follow`, no rename-heuristic dependency).
-- **No double introduction**: no file introduced on two branches in independent history. This is a detectable error (§9).
-- **Dead rules**: every `ownership_rules` pattern matches at least one current file, else warning.
+- **No double introduction**: no file introduced on two branches in independent history. Warning when the introducing commits are on ephemerals / unclassifiable refs (benign legacy noise); error when two long-lived branches' first-parent chains each contain a distinct introducing commit. Overrides in `.cascade/ownership_overrides` suppress the warning for the overridden path.
+- **Dead rules**: every `ownership_rules` pattern matches at least one current file, else info. Dead safety-net rules are expected and informational; a safety-net pattern that *does* match a committed file is a warning (`hygiene`).
 - **Unowned new files**: a newly-added file whose first-introduction commit isn't reachable from any long-lived branch requires an explicit ownership decision before `check.ts` passes.
+- **Override hygiene**: overrides naming a non-long-lived owner are errors (`override-invalid`); overrides whose declared owner already matches derivation are info (`override-redundant`). Because info severity is hidden by default, `cascade check` also prints a single-line notice (`notice: N override(s) appear redundant ...`) whenever any are present, so the rot signal stays visible without noise.

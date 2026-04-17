@@ -33,4 +33,36 @@ Development happens on `module/cascade` from Phase 0 onward — not on an epheme
 
 ## Status
 
-Phase 0 (foundations) — in planning, to be developed on `module/cascade`. No scripts implemented yet.
+Phase 0 (foundations) — initial pass landed on `module/cascade`.
+
+Registry surface under `.cascade/` (see [docs/artifacts.md](docs/artifacts.md)):
+
+| File | Purpose |
+|------|---------|
+| `branch-classes.yaml` | Regex → branch-class metadata |
+| `config.yaml` | Repo-wide knobs (version_depth, upstream remote) |
+| `ownership_rules` | gitignore-style `project` / `?safety-net` / `!negate` patterns |
+| `ownership_overrides` | Explicit `path  owner-branch` escape hatch for ambiguous history |
+| `bypass-log` | Append-only record of acknowledged CI bypasses (supports `upstream/*` policy entries) |
+
+## Running
+
+All commands run from `cascade/` (or invoke `tsx` from elsewhere):
+
+```
+cd cascade
+npm install              # one-time: pulls `yaml`, `ignore`, `tsx`, `typescript`
+npm run cascade -- help
+npm run cascade -- check [--strict] [--self-test]
+npm run cascade -- ownership [--verify]
+npm run cascade -- version <branch>
+npm run cascade -- bypass <commit> <rule> <reason...>
+npm run cascade -- merge <source> [--squash] [-m <msg>]
+```
+
+Local pre-flight: install the pre-push hook sample so `cascade check` runs before every push:
+
+```
+ln -s ../../cascade/hooks/pre-push.sample .git/hooks/pre-push
+chmod +x .git/hooks/pre-push
+```

@@ -1,0 +1,9 @@
+# Append-only log of acknowledged CI bypasses.
+# Columns (whitespace-separated): commit_sha  date(YYYY-MM-DD)  branch  rule  reason
+# Written by `cascade bypass`; read by `cascade check`.
+#
+# The `upstream/*` pattern is a standing policy entry: it matches any commit
+# reachable from the upstream ref declared in .cascade/config.yaml. The date
+# is when the policy was recorded; it is not a cutoff.
+upstream/*  2026-04-17  main  double-introduction  upstream doesn't follow cascade rules; their introductions are their concern
+upstream/*  2026-04-17  main  merge-preserve       upstream uses its own merge policy; squash markers on upstream commits are out of scope

@@ -1,0 +1,9 @@
+# Repo-wide cascade knobs. See cascade/docs/artifacts.md.
+
+# How many parts of the parent/upstream version form the prefix.
+# Fixed for the lifetime of the repo.
+version_depth: 3
+
+# Upstream remote and branch that `core` mirrors.
+upstream_remote: upstream
+upstream_main_branch: main

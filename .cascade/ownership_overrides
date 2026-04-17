@@ -1,0 +1,22 @@
+# Explicit path → owner mapping for files whose history does not yield a
+# single, correct owner via mechanical derivation. This is the escape hatch
+# for genuine ambiguity — not a general-purpose ownership registry.
+#
+# Format: `path  owner-branch` (whitespace-separated). Comments begin with `#`.
+#
+# Each override silences the double-introduction warning for the named path
+# and causes ownership derivation to return the declared owner instead of
+# the mechanically-derived one. `cascade check` flags overrides whose owner
+# branch is invalid (error) or whose declared owner matches what derivation
+# would produce anyway (info — safe to remove).
+#
+# See cascade/docs/ownership.md.
+
+# Pre-cascade double introductions: the same test files landed on several
+# ephemeral/feature branches before the branching model was established.
+# They are legitimately core files; derivation currently picks an arbitrary
+# first-parent match.
+src/dir-fingerprint.test.ts    main
+src/interaction/session.ts     main
+src/mount-security.test.ts     main
+src/test-helpers.ts            main

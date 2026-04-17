@@ -24,9 +24,10 @@ Implementation spec for the branch model, ownership, versioning, and processes d
 Committed:
 - `.cascade/branch-classes.yaml` — branch class patterns
 - `.cascade/config.yaml` — repo-wide knobs
-- `.cascade/ownership_rules` — gitignore-style patterns for project-owned paths
+- `.cascade/ownership_rules` — gitignore-style patterns; `?` prefix marks safety-net
+- `.cascade/ownership_overrides` — explicit `path  owner` for ambiguous history
 - `.cascade/parent_branch` — per-branch, only on editions that need it
-- `.cascade/bypass-log` — append-only log of acknowledged CI bypasses
+- `.cascade/bypass-log` — append-only log of acknowledged CI bypasses; supports `upstream/*` policy entries
 
 Derived (gitignored or build-time):
 - `/.ownership_map.txt` — path → owner, regenerated

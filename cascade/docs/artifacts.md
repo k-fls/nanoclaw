@@ -8,9 +8,10 @@ Everything not listed here is derived from git at runtime.
 |---|---|---|---|
 | `.cascade/branch-classes.yaml` | Branch class patterns and metadata | humans (rare) | all scripts |
 | `.cascade/config.yaml` | Repo-wide knobs (version_depth, upstream remote) | humans (once) | all scripts |
-| `.cascade/ownership_rules` | gitignore-style patterns for project-owned paths | humans (rare) | `check.ts`, ownership derivation |
+| `.cascade/ownership_rules` | gitignore-style patterns; `?` prefix marks safety-net | humans (rare) | `check.ts`, ownership derivation |
+| `.cascade/ownership_overrides` | Explicit `path  owner` escape hatch for ambiguous history | humans (rare) | ownership derivation, `check.ts` |
 | `.cascade/parent_branch` | Version source for an edition; only on branches that need it | humans (per edition) | `version.ts`, `check.ts` |
-| `.cascade/bypass-log` | Append-only record of acknowledged CI bypasses | `cascade bypass` (humans invoke) | `check.ts` |
+| `.cascade/bypass-log` | Append-only record of acknowledged CI bypasses; supports `upstream/*` policy entries | `cascade bypass` (humans invoke) | `check.ts` |
 
 ## Derived artifacts
 
@@ -79,7 +80,7 @@ classes:
 
 Topological order for ownership derivation follows the list order (first match wins).
 
-**Ephemerals need special handling — tbd on actual use.** `parentOf` and `versionSourceOf` on an ephemeral branch have no mechanical answer (ephemerals can branch from anywhere; not versioned). The exact contract — return `null`, derive from `git merge-base`, throw — is deferred until a concrete consumer needs it. Noted here so it isn't forgotten during `branch-graph.ts` implementation.
+**Ephemeral contract (partially resolved in Phase 0).** For ownership derivation, ephemerals are *never candidate owners* (see [ownership.md](ownership.md)) — a file whose introducing commit lives on a merged-and-deleted ephemeral is owned by the first long-lived branch in whose ancestry the commit lives. `versionSourceOf` on an ephemeral remains undefined (ephemerals are `not_versioned: true`); the exact contract — return `null`, throw, derive from `git merge-base` — is deferred until a concrete consumer (Phase 2 `version.ts` mutating) needs it.
 
 ### `.cascade/config.yaml`
 
@@ -101,16 +102,44 @@ Present only on `edition/<name>` branches (or on any other branch that needs to 
 
 ### `.cascade/bypass-log`
 
-Append-only. Columns: commit SHA, date, branch, bypassed rule, reason.
+Append-only. Columns: commit (SHA or policy pattern), date, branch, bypassed rule, reason.
+
+**Rule column is closed-set.** Valid values are the rule names `check.ts` actually emits; arbitrary strings aren't accepted (a typo that matches nothing would silently fail to suppress anything). Currently emitted (Phase 0): `double-introduction`, `merge-preserve`, `base-validity`, `prefix-mismatch`, `override-invalid`, `override-redundant`, `dead-rule`, `hygiene`, `unowned-new-file`. Later phases add their own; `check.ts` validates the column against its own rule registry at run time.
 
 ```
-abc1234  2026-04-13  deploy/prod-acme  merge-preserve    hotfix during P1 outage; followup core-hotfix-2026-04-13
-def5678  2026-04-20  edition/starter   prefix-mismatch   intentional cross-version test edition
+abc1234     2026-04-13  deploy/prod-acme  merge-preserve       hotfix during P1 outage; followup core-hotfix-2026-04-13
+def5678     2026-04-20  edition/starter   prefix-mismatch      intentional cross-version test edition
+upstream/*  2026-04-17  main              double-introduction  upstream doesn't follow cascade rules
+upstream/*  2026-04-17  main              merge-preserve       upstream uses its own merge policy
 ```
 
 `check.ts` consults this to suppress warnings on listed commits. New violations not in the log still fail.
 
+**Policy patterns.** Entries whose commit field is `upstream/*` are standing policies: they match any violation whose attached commit is reachable from the upstream ref declared in `config.yaml`. The upstream-reachable commit set is recomputed on every run, so policy entries cover future upstream commits automatically — the date is the acknowledgement timestamp, not a cutoff. A violation with multiple commits (e.g. double-introduction) is suppressed if *any* of its commits is upstream-reachable, so intake artifacts (fls "merged upstream" commits paired with upstream ones) are covered alongside pure-upstream violations.
+
 **Accepted risk: bypass-log is trust-based.** Any committer can append an entry and suppress the corresponding warning. This is intentional — fls-claw's threat model is accidental-mistake, not adversarial-dev. Forge-level gates on bypass-log changes are disproportionate to the risk given how many other things a committer can break.
+
+### `.cascade/ownership_overrides`
+
+Explicit path → owner mapping. The escape hatch for files whose history is genuinely ambiguous (pre-cascade squash/cherry-pick duplication, intentional cross-branch re-authoring, etc.). Overrides are consulted *before* mechanical derivation.
+
+Format: one entry per line, `path  owner-branch`, whitespace-separated. Lines beginning with `#` are comments.
+
+```
+# Pre-cascade double introductions: legitimately core files even though
+# derivation finds matches on a descendant branch first.
+src/dir-fingerprint.test.ts    main
+src/interaction/session.ts     main
+src/mount-security.test.ts     main
+src/test-helpers.ts            main
+```
+
+Effects:
+- Derivation returns the declared owner instead of the first-parent/ancestry match.
+- Double-introduction warning is suppressed for the overridden path (the human has explicitly acknowledged the history).
+- `check.ts` flags overrides whose owner isn't a long-lived branch (`override-invalid`, error) and overrides that duplicate what derivation would produce anyway (`override-redundant`, info) — so the file doesn't rot.
+
+**Not a central ownership registry.** Files in the repo are still owned via the derivation algorithm (§9); overrides address the narrow cases where derivation has no mechanically correct answer. If the list grows beyond a handful of entries, it's a signal that the derivation algorithm or the branch model needs attention, not that more overrides should be added.
 
 ### `/.ownership_map.txt` (derived)
 

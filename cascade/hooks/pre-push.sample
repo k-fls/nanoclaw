@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Cascade pre-push hook. Copy or symlink into .git/hooks/pre-push:
+#   ln -s ../../cascade/hooks/pre-push.sample .git/hooks/pre-push
+#   chmod +x .git/hooks/pre-push
+#
+# Runs `cascade check` before every push and blocks on errors.
+# Warnings are shown but do not block. Use --strict to block on warnings too.
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/cascade"
+
+if ! npx --no-install tsx scripts/cli.ts check; then
+  echo "cascade: check failed — push aborted." >&2
+  echo "  Fix the reported violations, or append to .cascade/bypass-log via \`cascade bypass\`." >&2
+  exit 1
+fi

@@ -1,0 +1,61 @@
+# Branch class registry for cascade.
+# Patterns are ordered; first match wins (also determines topological order
+# for ownership derivation: earlier entries win over later ones, so a commit
+# present in both a parent and a descendant long-lived branch is attributed
+# to the parent).
+# See cascade/docs/artifacts.md and cascade/docs/branch-model.md.
+
+classes:
+  - name: upstream
+    pattern: '^upstream/.+$'
+    read_only: true
+
+  # Transitional: repo default is still `main`. §2 forbids a separate main,
+  # so the pattern accepts both until a real rename lands in a later phase.
+  # See cascade/docs/phase-0.md § Transition.
+  - name: core
+    pattern: '^(core|main)$'
+    base: upstream/main
+    version_source: upstream/main
+
+  - name: module
+    pattern: '^module/[^/]+$'
+    base: core
+    version_source: core
+
+  - name: channel
+    pattern: '^channel/[^/]+$'
+    base: core
+    version_source: core
+    co_merges: ['upstream/skill/*']
+
+  - name: skill
+    pattern: '^skill/[^/]+$'
+    base: core
+    version_source: core
+
+  - name: skill-adapter
+    pattern: '^skill/([^/]+)/[^/]+$'
+    base_from_match: 'skill/$1'
+    version_source_from_match: 'skill/$1'
+
+  - name: module-adapter
+    pattern: '^module/([^/]+)/[^/]+$'
+    base_from_match: 'module/$1'
+    version_source_from_match: 'module/$1'
+
+  - name: edition
+    pattern: '^edition/[^/]+$'
+    base: core
+    version_source: declared  # via .cascade/parent_branch on the branch
+
+  - name: deploy
+    pattern: '^deploy/[^/]+$'
+    base: 'edition/*'
+    version_source_from_ancestry: 'edition/*'
+
+  # Fallback — anything not matched above is ephemeral.
+  - name: ephemeral
+    pattern: '.*'
+    fallback: true
+    not_versioned: true

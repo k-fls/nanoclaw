@@ -1,0 +1,24 @@
+# Gitignore-syntax patterns for project-owned paths.
+#
+# Prefix conventions:
+#   pattern      → project-owned (P3 never proposes relocation).
+#   ?pattern     → safety-net: should NOT be committed. A committed match is
+#                  a hygiene warning; an unmatched rule is informational only.
+#   !pattern     → negation: force back into branch-introduction derivation.
+#
+# Later entries override earlier ones, per gitignore semantics.
+# See cascade/docs/ownership.md.
+
+# Lockfiles — legitimately committed
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Safety-net: shouldn't be committed
+?node_modules/
+?vendor/
+?dist/
+?build/
+?*.generated.ts
+?*.generated.js
+?container/*.tgz
