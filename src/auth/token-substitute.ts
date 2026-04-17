@@ -35,6 +35,8 @@ import type {
 import {
   MIN_RANDOM_CHARS,
   CRED_OAUTH,
+  DEFAULT_SUBSTITUTE_CONFIG,
+  DEFAULT_ALNUM_SUBSTITUTE_CONFIG,
   asGroupScope,
   asCredentialScope,
 } from './oauth-types.js';
@@ -67,6 +69,19 @@ function randomCharSameClass(ch: string, delimiters: string): string {
   if (UPPER.includes(ch)) return UPPER[randomInt(UPPER.length)];
   if (DIGIT.includes(ch)) return DIGIT[randomInt(DIGIT.length)];
   return ALNUM[randomInt(ALNUM.length)];
+}
+
+const ALNUM_ONLY_RE = /^[A-Za-z0-9]+$/;
+
+/**
+ * Pick a shape-aware default substitute config for a given real token.
+ * Pure alphanumeric tokens use a looser config (shorter prefix, lower
+ * random-char floor) so typical short API keys provision correctly.
+ */
+export function pickSubstituteConfigForToken(token: string): SubstituteConfig {
+  return ALNUM_ONLY_RE.test(token)
+    ? DEFAULT_ALNUM_SUBSTITUTE_CONFIG
+    : DEFAULT_SUBSTITUTE_CONFIG;
 }
 
 // ---------------------------------------------------------------------------
@@ -832,12 +847,20 @@ export class TokenSubstituteEngine {
     );
     if (!realToken) return null;
 
+    // Shape-aware fallback: if the caller passed the generic default, derive
+    // a config that fits the token's actual character set. Explicit configs
+    // (e.g. CLAUDE_SUBSTITUTE_CONFIG or discovery _token_format) pass through.
+    const effectiveConfig =
+      config === DEFAULT_SUBSTITUTE_CONFIG
+        ? pickSubstituteConfigForToken(realToken)
+        : config;
+
     return this.generateSubstitute(
       realToken,
       providerId,
       scopeAttrs,
       groupScope,
-      config,
+      effectiveConfig,
       credentialPath,
       sourceScope,
       envNames,
@@ -865,8 +888,13 @@ export class TokenSubstituteEngine {
     envNames?: string[],
   ): string | null {
     const { prefixLen, suffixLen, delimiters } = config;
+    const minRandom = config.minRandomChars ?? MIN_RANDOM_CHARS;
 
     if (realToken.length <= prefixLen + suffixLen) {
+      logger.warn(
+        { providerId, credentialPath, tokenLen: realToken.length, prefixLen, suffixLen },
+        'Token too short for substitute config (prefix+suffix >= length); no substitute created',
+      );
       return null;
     }
 
@@ -882,7 +910,19 @@ export class TokenSubstituteEngine {
       if (!delimiters.includes(ch)) randomizable++;
     }
 
-    if (randomizable < MIN_RANDOM_CHARS) {
+    if (randomizable < minRandom) {
+      logger.warn(
+        {
+          providerId,
+          credentialPath,
+          tokenLen: realToken.length,
+          prefixLen,
+          suffixLen,
+          randomizable,
+          minRandom,
+        },
+        'Token has too few randomizable chars for substitute config; no substitute created. Set _token_format in discovery JSON to customize.',
+      );
       return null;
     }
 

@@ -1057,6 +1057,25 @@ describe('applyProviderEntries', () => {
     );
     expect(r.needsRestart).toBe(true);
   });
+
+  it('warns and does not register env var when substitute creation fails (null)', () => {
+    const { engine } = mockTokenEngine();
+    (engine.getOrCreateSubstitute as any).mockReturnValue(null);
+    const r = applyProviderEntries(
+      'github',
+      new Map([['GH_TOKEN', 'short']]),
+      TEST_GROUP_SCOPE,
+      engine,
+    );
+    // Credential was stored (import always persists the file).
+    expect(engine.storeGroupCredential).toHaveBeenCalledTimes(1);
+    // But no env var registered — access is blocked until config is fixed.
+    expect(r.envVars).toEqual([]);
+    expect(r.warnings.length).toBe(1);
+    expect(r.warnings[0]).toMatch(/GH_TOKEN/);
+    expect(r.warnings[0]).toMatch(/too short/);
+    expect(r.warnings[0]).toMatch(/_token_format/);
+  });
 });
 
 // ---------------------------------------------------------------------------

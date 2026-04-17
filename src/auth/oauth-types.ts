@@ -99,12 +99,25 @@ export interface SubstituteConfig {
   suffixLen: number;
   /** Delimiter chars to preserve in-place (e.g. "-._"). */
   delimiters: string;
+  /** Minimum randomized chars required in the middle. Defaults to MIN_RANDOM_CHARS. */
+  minRandomChars?: number;
 }
 
 export const DEFAULT_SUBSTITUTE_CONFIG: SubstituteConfig = {
   prefixLen: 10,
   suffixLen: 4,
   delimiters: '-._~',
+};
+
+/**
+ * Config used when a token is pure alphanumeric (no `-._~`). Shorter prefix
+ * and lower random-char floor so typical API keys (24+ chars) fit.
+ */
+export const DEFAULT_ALNUM_SUBSTITUTE_CONFIG: SubstituteConfig = {
+  prefixLen: 4,
+  suffixLen: 4,
+  delimiters: '',
+  minRandomChars: 8,
 };
 
 /** Minimum randomized characters in the middle section (safety floor). */

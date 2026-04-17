@@ -6,11 +6,13 @@ import { muteLogger, restoreLogger } from '../test-helpers.js';
 import {
   TokenSubstituteEngine,
   PersistentCredentialResolver,
+  pickSubstituteConfigForToken,
 } from './token-substitute.js';
 import { initCredentialStore } from './store.js';
 import type { SubstituteConfig, Credential } from './oauth-types.js';
 import {
   DEFAULT_SUBSTITUTE_CONFIG,
+  DEFAULT_ALNUM_SUBSTITUTE_CONFIG,
   MIN_RANDOM_CHARS,
   CRED_OAUTH,
   CRED_OAUTH_REFRESH,
@@ -227,6 +229,117 @@ describe('TokenSubstituteEngine', () => {
       expect(resolved!.mapping.scopeAttrs).toEqual({ tenant: 'acme' });
       expect(resolved!.mapping.credentialScope).toBe(scope);
       expect(resolver.size).toBe(1);
+    });
+
+    it('honors config.minRandomChars override (below MIN_RANDOM_CHARS)', () => {
+      // 16-char pure alnum: default (prefix 10 + suffix 4) → middle 2 chars → would fail
+      // with 4/4 and minRandom 8 → middle 8 chars → passes.
+      const real = 'ABCDEFGHIJKL1234';
+      const sub = engine.generateSubstitute(
+        real, 'test', defaultAttrs, scope, DEFAULT_ALNUM_SUBSTITUTE_CONFIG,
+      );
+      expect(sub).not.toBeNull();
+      expect(sub!.length).toBe(real.length);
+      expect(sub!.slice(0, 4)).toBe('ABCD');
+      expect(sub!.slice(-4)).toBe('1234');
+    });
+
+    it('still returns null when below config.minRandomChars floor', () => {
+      // 10-char alnum: 4 prefix + 4 suffix → 2 middle → less than minRandom 8 → null.
+      const real = 'ABCDEF1234';
+      expect(
+        engine.generateSubstitute(
+          real, 'test', defaultAttrs, scope, DEFAULT_ALNUM_SUBSTITUTE_CONFIG,
+        ),
+      ).toBeNull();
+    });
+  });
+
+  // ── pickSubstituteConfigForToken ───────────────────────────────────
+
+  describe('pickSubstituteConfigForToken', () => {
+    it('returns alnum config for pure alphanumeric tokens', () => {
+      expect(pickSubstituteConfigForToken('abc123DEF456ghiJKL')).toBe(
+        DEFAULT_ALNUM_SUBSTITUTE_CONFIG,
+      );
+    });
+
+    it('returns default config for tokens with delimiters', () => {
+      expect(pickSubstituteConfigForToken('abc-123.def_456')).toBe(
+        DEFAULT_SUBSTITUTE_CONFIG,
+      );
+      expect(pickSubstituteConfigForToken('sk-ant-api03-abc')).toBe(
+        DEFAULT_SUBSTITUTE_CONFIG,
+      );
+    });
+
+    it('returns default config for tokens with non-alnum non-delimiter chars', () => {
+      // Anything that isn't [A-Za-z0-9] falls back to DEFAULT.
+      expect(pickSubstituteConfigForToken('has whitespace xyz')).toBe(
+        DEFAULT_SUBSTITUTE_CONFIG,
+      );
+    });
+  });
+
+  // ── getOrCreateSubstitute shape-aware fallback ─────────────────────
+
+  describe('getOrCreateSubstitute shape-aware default', () => {
+    it('uses alnum config when caller passes DEFAULT and token is pure alnum', () => {
+      // 24-char alnum fails DEFAULT (needs ≥30) but passes ALNUM default.
+      const real = 'ABCDEFGH12345678ijklmnop';
+      resolver.store('searchapi', credScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+
+      const sub = engine.getOrCreateSubstitute(
+        'searchapi', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, CRED_OAUTH,
+      );
+
+      expect(sub).not.toBeNull();
+      expect(sub!.length).toBe(real.length);
+      // Alnum config has prefixLen 4
+      expect(sub!.slice(0, 4)).toBe('ABCD');
+      expect(sub!.slice(-4)).toBe('mnop');
+    });
+
+    it('respects explicit config — does not swap away from caller-provided config', () => {
+      // Provider passes a narrow config with minRandomChars 4 — must be honored,
+      // not overridden by the generic ALNUM default (which would have prefixLen 4).
+      const real = 'XYZ12345ABCDE';
+      resolver.store('narrow', credScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+      const explicitConfig: SubstituteConfig = {
+        prefixLen: 3,
+        suffixLen: 3,
+        delimiters: '',
+        minRandomChars: 4,
+      };
+      const sub = engine.getOrCreateSubstitute(
+        'narrow', {}, scope, explicitConfig, CRED_OAUTH,
+      );
+
+      expect(sub).not.toBeNull();
+      expect(sub!.slice(0, 3)).toBe('XYZ');
+      expect(sub!.slice(-3)).toBe('CDE');
+    });
+
+    it('returns null when token is too short even for alnum default', () => {
+      // 10-char alnum: 4 + 4 + 2 middle < 8 → null even with shape-aware swap.
+      const real = 'ABCDEF1234';
+      resolver.store('tiny', credScope, CRED_OAUTH, {
+        value: real,
+        expires_ts: 0,
+        updated_ts: Date.now(),
+      });
+      const sub = engine.getOrCreateSubstitute(
+        'tiny', {}, scope, DEFAULT_SUBSTITUTE_CONFIG, CRED_OAUTH,
+      );
+      expect(sub).toBeNull();
     });
   });
 

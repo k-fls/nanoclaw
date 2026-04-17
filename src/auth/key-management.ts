@@ -381,9 +381,16 @@ export function applyProviderEntries(
       warnings.push(`${key}: ${envErr}`);
       continue;
     }
-    tokenEngine.getOrCreateSubstitute(
+    const sub = tokenEngine.getOrCreateSubstitute(
       providerId, {}, groupScope, provider.substituteConfig, credentialPath, [key],
     );
+    if (sub === null) {
+      warnings.push(
+        `${key}: token too short to substitute safely (len=${value.length}); ` +
+          `credential stored but not available to containers. Set _token_format in discovery JSON.`,
+      );
+      continue;
+    }
     envVars.push(key);
   }
 
