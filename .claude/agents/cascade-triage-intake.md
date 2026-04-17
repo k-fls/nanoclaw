@@ -54,7 +54,9 @@ Sometimes the upstream change touches a file that fls has diverged on, and you n
 
 ## How to group
 
-Work from `commits[]` directly, in the order given (analyzer's topological order). There is no mechanical segmentation to start from — you form groups from the signals.
+You are **partitioning an ordered list.** The analyzer's `commits[]` has a fixed order (upstream's topological order). Your only freedom is where to place the partition boundaries — every commit appears in exactly one group, commits inside a group stay in the original order, no commit is moved between non-adjacent positions.
+
+Think of it as: "these analyzer positions 0–2 are one group, positions 3–3 are one group, positions 4–8 are one group." You don't reorder, skip, or rewrite anything.
 
 **Mandatory invariants** (the validator enforces these):
 
@@ -80,11 +82,11 @@ Anti-example (must be **split**, not coalesced):
 
 **Grouping gate** — before finalizing each group, write its `grouping_rationale` first. If it requires `and` joining distinct subsystems, split along those boundaries. Singleton groups (one commit) are always acceptable when the commit stands alone thematically.
 
-**You MAY form groups that cross analyzer-reported kinds** (e.g. one clean commit + one divergence commit, if they're adjacent and share a theme like "SDK bump + its config touchup"). The group's `kind` must then promote to the max severity (`divergence`) or be `mixed`. The validator catches understated kinds.
+**You MAY form groups that cross analyzer-reported kinds** (e.g. one clean commit + one divergence commit, if they're adjacent and share a theme like "SDK bump + its config touchup"). Group `kind` is computed automatically from the commits you include.
 
 ## Plan format
 
-Return a single JSON object (wrapped in a fenced ```json block) plus a short human-readable summary. Shape:
+Call `emit_plan` with this shape. Provide ONLY the fields listed — the tool schema is strict and rejects anything else. Derived fields (`kind`, `files`, `firstSha`, `lastSha`, `commitCount`, `requiresAgentResolution`, `index`) are computed after you return; **do not emit them**.
 
 ```json
 {
@@ -94,34 +96,38 @@ Return a single JSON object (wrapped in a fenced ```json block) plus a short hum
   "cacheKey": "<from analyzer>",
   "groups": [
     {
-      "index": 0,
       "name": "short-kebab-case-label",
-      "kind": "clean | divergence | conflict | structural | break_point | mixed",
       "commits": ["<sha>", "<sha>", ...],
-      "files": ["src/...", "..."],
-
-      "mechanical_complexity": "low | medium | high",
       "attention": "none | light | heavy",
       "expected_outcome": "accept | reject | synthesize | unclear",
+      "mechanical_complexity": "low | medium | high",
       "tags": ["concrete-reason-1", "concrete-reason-2"],
-
       "functional_summary": "2–4 sentences describing what upstream's changes DO behaviorally — features added, APIs changed, bugs fixed. NOT a list of files. Include fls-side context when relevant.",
-      "grouping_rationale": "one sentence: the single shared theme these commits have",
-
-      "requiresAgentResolution": false
+      "grouping_rationale": "one sentence: the single shared theme these commits have"
     }
   ],
-  "mergeOrder": [0, 1, 2],
-  "notes": [
-    "any cross-group concern — e.g. 'group 2 renames a file that group 3 modifies; run them in this order'"
-  ]
+  "blockers": ["(omit unless you cannot form a valid plan — see below)"]
 }
 ```
 
 ### Field definitions
 
-- `commits` — SHAs in analyzer order. The validator checks contiguity against the analyzer's `commits[]`.
-- `mergeOrder` is usually `[0, 1, 2, ...]` (each group's `index`). Diverge from it only when there is a concrete dependency reason captured in `notes`.
+- `commits` — SHAs in analyzer order. The validator checks contiguity against the analyzer's `commits[]`. The order you place groups in the array doesn't matter — groups are re-sorted by their first-commit position after you return. Execution order is always the groups' natural (sorted) order; there's no separate merge order field because upstream commit order is fixed.
+
+### `blockers` — escape hatch, use sparingly
+
+`blockers` is a single-purpose field: a list of reasons why you **could not produce a valid plan** for this range. Non-empty means "halt, do not proceed to human approval — here's what's blocking." Empty or omitted means "plan is complete; proceed."
+
+Use it when an invariant above would be violated by any possible partition — for example, an analyzer output so malformed that contiguity is impossible, or a situation that genuinely requires skipping / reordering upstream commits (which you cannot do). Each entry is one concrete blocking reason, stated in one sentence.
+
+**Do NOT use `blockers` for:**
+
+- Observations about deletion verdicts (those go in the affected group's `tags` + `functional_summary`).
+- Cross-group commentary (put it in the relevant groups).
+- General notes to the reviewer (there is no "general notes" channel — if it matters, it belongs in a group field).
+- Warning the reviewer about a `heavy`-attention group (the group's `attention` and `tags` are the channel for that).
+
+If you're reaching for `blockers` to say "the reviewer should look at group 3 carefully," stop — that's what `attention: heavy` + group tags are for.
 
 ### `mechanical_complexity`
 
@@ -236,7 +242,6 @@ If the skill re-invokes you with `previous_plan` + `validator_violations`, treat
 - `conflict-without-resolution-flag` → set `requiresAgentResolution: true` on the group.
 - `deletion-reopened-needs-heavy-attention` / `deletion-inconclusive-needs-attention` → raise attention per the floor rules above.
 - `group-kind-understated` → promote the `kind` to match the worst `primaryKind` in the group, or set `kind: "mixed"`.
-- `merge-order-missing-group` / `merge-order-unknown-group` / `duplicate-in-merge-order` → fix the `mergeOrder` array.
 
 Re-emit the full plan. Do not partial-diff.
 
@@ -244,7 +249,7 @@ Re-emit the full plan. Do not partial-diff.
 
 - You do not decide whether fls or upstream wins on a conflict. That is `cascade-resolve-conflict`'s job at per-file granularity.
 - You do not write, merge, or tag. The executor (`cascade intake-upstream`) does mutations under human approval.
-- You do not propose skipping upstream commits, re-ordering within a group, or rewriting upstream history. If the plan would need any of those, flag it in `notes` and halt.
+- You do not propose skipping upstream commits, re-ordering within a group, or rewriting upstream history. If the plan would need any of those, populate `blockers` and halt.
 
 ## If the range is empty
 

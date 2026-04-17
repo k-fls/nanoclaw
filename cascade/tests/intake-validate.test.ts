@@ -235,36 +235,6 @@ describe('validatePlan — break-point singleton rule', () => {
     expect(r.violations.map((v) => v.rule)).toContain('break-point-not-singleton');
   });
 
-  it('errors when the break-point group has wrong kind', () => {
-    const a = makeAnalyzer({ breakPoints: [{ sha: 'bbb', refs: ['v1.0'] }] });
-    const p = plan([
-      { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
-      { index: 1, name: 'y', kind: 'divergence', commits: ['bbb'], attention: 'light' },
-      { index: 2, name: 'z', kind: 'clean', commits: ['ccc'], attention: 'none' },
-    ]);
-    const r = validatePlan({ plan: p, analyzer: a });
-    expect(r.violations.map((v) => v.rule)).toContain('break-point-wrong-kind');
-  });
-});
-
-describe('validatePlan — group kind promotion', () => {
-  it('errors when a group with a divergence commit claims kind=clean', () => {
-    const p = plan([
-      { index: 0, name: 'x', kind: 'clean', commits: ['aaa', 'bbb'], attention: 'light' },
-      { index: 1, name: 'y', kind: 'clean', commits: ['ccc'], attention: 'none' },
-    ]);
-    const r = validatePlan({ plan: p, analyzer: makeAnalyzer() });
-    expect(r.violations.map((v) => v.rule)).toContain('group-kind-understated');
-  });
-
-  it('accepts kind=mixed when the group spans multiple severities', () => {
-    const p = plan([
-      { index: 0, name: 'x', kind: 'mixed', commits: ['aaa', 'bbb'], attention: 'light' },
-      { index: 1, name: 'y', kind: 'clean', commits: ['ccc'], attention: 'none' },
-    ]);
-    const r = validatePlan({ plan: p, analyzer: makeAnalyzer() });
-    expect(r.violations.filter((v) => v.rule === 'group-kind-understated')).toHaveLength(0);
-  });
 });
 
 describe('validatePlan — deletion rationale attention floors', () => {
@@ -299,30 +269,3 @@ describe('validatePlan — deletion rationale attention floors', () => {
   });
 });
 
-describe('validatePlan — mergeOrder integrity', () => {
-  it('errors when mergeOrder misses a group', () => {
-    const p = plan(
-      [
-        { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
-        { index: 1, name: 'y', kind: 'divergence', commits: ['bbb'], attention: 'light' },
-        { index: 2, name: 'z', kind: 'clean', commits: ['ccc'], attention: 'none' },
-      ],
-      { mergeOrder: [0, 2] },
-    );
-    const r = validatePlan({ plan: p, analyzer: makeAnalyzer() });
-    expect(r.violations.map((v) => v.rule)).toContain('merge-order-missing-group');
-  });
-
-  it('errors when mergeOrder has a duplicate entry', () => {
-    const p = plan(
-      [
-        { index: 0, name: 'x', kind: 'clean', commits: ['aaa'], attention: 'none' },
-        { index: 1, name: 'y', kind: 'divergence', commits: ['bbb'], attention: 'light' },
-        { index: 2, name: 'z', kind: 'clean', commits: ['ccc'], attention: 'none' },
-      ],
-      { mergeOrder: [0, 1, 1, 2] },
-    );
-    const r = validatePlan({ plan: p, analyzer: makeAnalyzer() });
-    expect(r.violations.map((v) => v.rule)).toContain('duplicate-in-merge-order');
-  });
-});

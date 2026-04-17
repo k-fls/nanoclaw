@@ -16,11 +16,47 @@ import {
   FlsDeletionGroup,
 } from './intake-analyze.js';
 
-// Plan JSON shape — matches .claude/agents/cascade-triage-intake.md output.
-// Declared once as a zod schema so runtime validation and TypeScript types
-// stay in lock-step. Unknown fields pass through (`.passthrough()`) so
-// schema additions don't force a version bump, but unknown fields are still
-// inspected for legacy-schema hints (see `LEGACY_FIELD_HINTS`).
+// Plan schemas — two layers:
+//
+// 1. **Draft** (PlanGroupDraftSchema, PlanDraftSchema): what the triage
+//    agent emits. Subjective fields only — the human-judgment part. Any
+//    derivable field is OMITTED so the model can't get it wrong. `.strict()`
+//    on draft groups rejects attempts to smuggle in computed fields.
+//
+// 2. **Enriched** (PlanGroupSchema, PlanSchema): the full shape the
+//    validator checks. Derived fields (kind, files, requiresAgentResolution,
+//    index) are computed by `enrichPlan` from the draft + analyzer.
+//
+// The validator's rules target the agent's actual decisions: group
+// placement (contiguity, coverage, overlap, singletons), attention level
+// vs. risk signals, cache-key freshness, conflict-resolution flag.
+const PlanGroupDraftSchema = z
+  .object({
+    name: z.string().min(1),
+    commits: z.array(z.string().min(1)).min(1),
+    attention: z.enum(['none', 'light', 'heavy']),
+    expected_outcome: z.enum(['accept', 'reject', 'synthesize', 'unclear']).optional(),
+    mechanical_complexity: z.enum(['low', 'medium', 'high']).optional(),
+    tags: z.array(z.string()).optional(),
+    functional_summary: z.string().optional(),
+    grouping_rationale: z.string().optional(),
+  })
+  .strict();
+
+const PlanDraftSchema = z
+  .object({
+    target: z.string().min(1),
+    source: z.string().min(1),
+    base: z.string().min(1),
+    cacheKey: z.string().min(1),
+    groups: z.array(PlanGroupDraftSchema),
+    // Escape-hatch. Non-empty = the agent couldn't form a valid plan for
+    // this range; the skill halts and surfaces these reasons to the human
+    // for manual intervention. Empty / omitted = plan is complete.
+    blockers: z.array(z.string()).optional(),
+  })
+  .strict();
+
 const PlanGroupSchema = z
   .object({
     index: z.number().int().nonnegative(),
@@ -45,14 +81,15 @@ const PlanSchema = z
     base: z.string().min(1),
     cacheKey: z.string().min(1),
     groups: z.array(PlanGroupSchema),
-    mergeOrder: z.array(z.number().int().nonnegative()).optional(),
-    notes: z.array(z.string()).optional(),
+    blockers: z.array(z.string()).optional(),
   })
   .passthrough();
 
+export type PlanGroupDraft = z.infer<typeof PlanGroupDraftSchema>;
+export type PlanDraft = z.infer<typeof PlanDraftSchema>;
 export type PlanGroup = z.infer<typeof PlanGroupSchema>;
 export type Plan = z.infer<typeof PlanSchema>;
-export { PlanGroupSchema, PlanSchema };
+export { PlanGroupDraftSchema, PlanDraftSchema, PlanGroupSchema, PlanSchema };
 
 export type ViolationSeverity = 'error' | 'warning';
 
@@ -223,15 +260,6 @@ export function validatePlan(opts: ValidateOptions): ValidateResult {
         commit: bp.sha,
       });
     }
-    if (owner.kind !== 'break_point') {
-      violations.push({
-        rule: 'break-point-wrong-kind',
-        severity: 'error',
-        message: `break point ${bp.sha.slice(0, 7)} is in group #${owner.index} with kind="${owner.kind}"; must be kind="break_point"`,
-        group: owner.index,
-        commit: bp.sha,
-      });
-    }
   }
 
   // 4. Intersection coverage. Every file in analyzer.intersection must be
@@ -322,89 +350,116 @@ export function validatePlan(opts: ValidateOptions): ValidateResult {
     }
   }
 
-  // 7. Group kind must reflect constituent kinds. A group containing any
-  //    commit with primaryKind='conflict' must be kind='conflict' (or
-  //    'mixed' if it spans multiple severities). Same for 'divergence'
-  //    promoting above 'clean'. Prevents kind-washing.
-  //    Severity order: conflict > divergence > structural > clean.
-  const severityRank: Record<string, number> = {
-    clean: 0,
-    structural: 1,
-    divergence: 2,
-    conflict: 3,
-    break_point: 0,
-  };
-  for (const g of plan.groups) {
-    if (g.kind === 'break_point') continue;
-    const kindSet = new Set<string>();
-    for (const sha of g.commits) {
-      const c = analyzer.commits.find((x) => x.sha === sha);
-      if (c) kindSet.add(c.primaryKind);
-    }
-    const maxRank = [...kindSet].reduce(
-      (m, k) => Math.max(m, severityRank[k] ?? 0),
-      0,
-    );
-    const groupRank = severityRank[g.kind] ?? 0;
-    const multipleSeverities =
-      [...kindSet].filter((k) => (severityRank[k] ?? 0) > 0).length > 1;
-    if (g.kind === 'mixed' && !multipleSeverities) {
-      violations.push({
-        rule: 'spurious-mixed-kind',
-        severity: 'warning',
-        message: `group #${g.index} "${g.name}" declares kind=mixed but contains only kind=${[...kindSet].join(',')}`,
-        group: g.index,
-      });
-    }
-    if (g.kind !== 'mixed' && groupRank < maxRank) {
-      const worst = [...kindSet].reduce(
-        (w, k) => ((severityRank[k] ?? 0) > (severityRank[w] ?? 0) ? k : w),
-        'clean',
-      );
-      violations.push({
-        rule: 'group-kind-understated',
-        severity: 'error',
-        message: `group #${g.index} "${g.name}" kind=${g.kind} but contains commit with primaryKind=${worst}; use kind=${worst} or kind=mixed`,
-        group: g.index,
-      });
-    }
-  }
-
-  // 8. mergeOrder coverage. If present, must reference each group's index
-  //    exactly once. If absent, skill defaults to group index order.
-  if (plan.mergeOrder) {
-    const ids = new Set<number>(plan.mergeOrder);
-    if (ids.size !== plan.mergeOrder.length) {
-      violations.push({
-        rule: 'duplicate-in-merge-order',
-        severity: 'error',
-        message: `mergeOrder has duplicate entries`,
-      });
-    }
-    for (const g of plan.groups) {
-      if (!ids.has(g.index)) {
-        violations.push({
-          rule: 'merge-order-missing-group',
-          severity: 'error',
-          message: `mergeOrder does not include group #${g.index} "${g.name}"`,
-          group: g.index,
-        });
-      }
-    }
-    for (const idx of plan.mergeOrder) {
-      if (!plan.groups.find((g) => g.index === idx)) {
-        violations.push({
-          rule: 'merge-order-unknown-group',
-          severity: 'error',
-          message: `mergeOrder references unknown group index ${idx}`,
-        });
-      }
-    }
-  }
-
   const errors = violations.filter((v) => v.severity === 'error').length;
   const warnings = violations.filter((v) => v.severity === 'warning').length;
   return { violations, errors, warnings };
+}
+
+// ---------------- enrichment ----------------
+
+// Stamp the derived fields onto a draft plan. The agent emits only
+// subjective fields + the grouping decision (commits[]); this computes the
+// mechanical fields so the model can never get them wrong.
+//
+// Derived per group:
+//   - kind: worst primaryKind among its commits, `mixed` if ≥ 2 severities > 0
+//   - files: sorted union of each commit's file paths
+//   - firstSha / lastSha / commitCount: from commits[] in analyzer order
+//   - requiresAgentResolution: kind === 'conflict' || attention === 'heavy'
+//   - index: sort groups by first-commit analyzer position, then 0..N-1
+//
+// Execution order is the groups' natural order (sorted by first-commit
+// analyzer position) — upstream commit order is physics, not a choice.
+export function enrichPlan(draft: PlanDraft, analyzer: IntakeReport): Plan {
+  const posByCommit = new Map<string, number>();
+  analyzer.commits.forEach((c, i) => posByCommit.set(c.sha, i));
+  const commitBySha = new Map(analyzer.commits.map((c) => [c.sha, c]));
+
+  // Sort groups by first-commit analyzer position so `index` is deterministic
+  // and monotonic. Groups whose commits aren't all in the analyzer still get
+  // sorted — the validator catches unknown/uncovered commits downstream.
+  const sortKey = (g: PlanGroupDraft): number => {
+    const first = g.commits[0];
+    const pos = first ? posByCommit.get(first) : undefined;
+    return pos ?? Number.MAX_SAFE_INTEGER;
+  };
+  const sortedDrafts = [...draft.groups].sort((a, b) => sortKey(a) - sortKey(b));
+
+  const enrichedGroups: PlanGroup[] = sortedDrafts.map((g, idx) => {
+    const kind = computeGroupKind(g, commitBySha);
+    const files = unionFiles(g, commitBySha);
+    const requiresAgentResolution =
+      kind === 'conflict' || g.attention === 'heavy';
+    return {
+      index: idx,
+      name: g.name,
+      kind,
+      commits: [...g.commits],
+      files,
+      mechanical_complexity: g.mechanical_complexity,
+      attention: g.attention,
+      expected_outcome: g.expected_outcome,
+      tags: g.tags,
+      functional_summary: g.functional_summary,
+      grouping_rationale: g.grouping_rationale,
+      requiresAgentResolution,
+    };
+  });
+
+  return {
+    target: draft.target,
+    source: draft.source,
+    base: draft.base,
+    cacheKey: draft.cacheKey,
+    groups: enrichedGroups,
+    blockers: draft.blockers,
+  };
+}
+
+const SEVERITY_RANK: Record<string, number> = {
+  clean: 0,
+  structural: 1,
+  divergence: 2,
+  conflict: 3,
+  break_point: 0, // handled separately below
+};
+
+function computeGroupKind(
+  g: PlanGroupDraft,
+  commitBySha: Map<string, IntakeReport['commits'][number]>,
+): PlanGroup['kind'] {
+  // Break point: any commit with primaryKind === 'break_point' → the group
+  // kind is break_point (the validator will then enforce singleton).
+  for (const sha of g.commits) {
+    if (commitBySha.get(sha)?.primaryKind === 'break_point') return 'break_point';
+  }
+
+  // Collect severities above `clean` present in the group.
+  const severities = new Set<string>();
+  for (const sha of g.commits) {
+    const pk = commitBySha.get(sha)?.primaryKind;
+    if (pk && (SEVERITY_RANK[pk] ?? 0) > 0) severities.add(pk);
+  }
+  if (severities.size === 0) return 'clean';
+  if (severities.size > 1) return 'mixed';
+  // Single non-clean severity present.
+  return severities.values().next().value as PlanGroup['kind'];
+}
+
+function unionFiles(
+  g: PlanGroupDraft,
+  commitBySha: Map<string, IntakeReport['commits'][number]>,
+): string[] {
+  const set = new Set<string>();
+  for (const sha of g.commits) {
+    const c = commitBySha.get(sha);
+    if (!c) continue;
+    for (const f of c.files) {
+      set.add(f.path);
+      if (f.oldPath) set.add(f.oldPath);
+    }
+  }
+  return [...set].sort();
 }
 
 // ---------------- helpers ----------------

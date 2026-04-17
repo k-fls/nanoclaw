@@ -16,7 +16,14 @@ import {
   tool,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import { PlanSchema, type Plan } from './intake-validate.js';
+import {
+  PlanDraftSchema,
+  PlanGroupDraftSchema,
+  enrichPlan,
+  type Plan,
+  type PlanDraft,
+} from './intake-validate.js';
+import type { IntakeReport } from './intake-analyze.js';
 
 export interface TriageInputs {
   analyzerJson: string;
@@ -93,33 +100,31 @@ export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
   const { model: fmModel, body: systemPrompt } = loadAgentPrompt(opts.agentPromptPath);
   const model = opts.model ? resolveModel(opts.model) : resolveModel(fmModel);
 
-  // Schema-enforced handoff. The tool receives a zod-validated Plan; the
-  // handler captures it for us. We return a terminal string so the agent
-  // knows the turn is done and doesn't keep calling tools.
-  let capturedPlan: Plan | null = null;
+  // Schema-enforced handoff. The tool takes the DRAFT schema — subjective
+  // fields only. Derived fields (kind, files, requiresAgentResolution, etc.)
+  // are computed post-hoc by enrichPlan, so the model can't get them wrong
+  // and doesn't spend tokens reasoning about them.
+  let capturedDraft: PlanDraft | null = null;
   const emitPlan = tool(
     'emit_plan',
-    'Emit the P1 intake decomposition plan. The input IS the plan; it is validated against the Plan schema.',
-    PlanSchema.shape,
+    'Emit the P1 intake decomposition plan. Provide ONLY subjective fields per group (name, commits[], attention, expected_outcome, mechanical_complexity, tags, functional_summary, grouping_rationale). Derived fields (kind, files, firstSha, lastSha, requiresAgentResolution, index) are computed automatically — do not emit them.',
+    PlanDraftSchema.shape,
     async (input) => {
-      // `input` is already zod-parsed by the SDK against PlanSchema.shape.
-      // We additionally re-parse the full PlanSchema to capture refinements
-      // on nested objects (e.g. groups array items).
-      const parsed = PlanSchema.safeParse(input);
+      const parsed = PlanDraftSchema.safeParse(input);
       if (!parsed.success) {
         return {
           content: [
             {
               type: 'text',
               text:
-                'emit_plan: input failed validation: ' +
+                'emit_plan: input failed draft validation: ' +
                 JSON.stringify(parsed.error.issues),
             },
           ],
           isError: true,
         };
       }
-      capturedPlan = parsed.data;
+      capturedDraft = parsed.data;
       return {
         content: [{ type: 'text', text: 'ok — plan captured' }],
       };
@@ -156,17 +161,30 @@ export async function runTriage(opts: TriageOptions): Promise<TriageResult> {
     },
   });
 
-  // Drain the stream. The handler captures the plan when the tool fires.
+  // Drain the stream. The handler captures the draft when the tool fires.
   for await (const _msg of stream as AsyncIterable<SDKMessage>) {
-    // no-op — the side effect is `capturedPlan` being set.
+    // no-op — the side effect is `capturedDraft` being set.
   }
 
-  if (!capturedPlan) {
+  if (!capturedDraft) {
     throw new Error(
       'triage: agent finished without calling emit_plan — check the prompt or retry',
     );
   }
-  return { plan: capturedPlan };
+
+  // Enrich the draft into a full Plan. The analyzer is loaded from the JSON
+  // the caller already has on disk (same input the agent saw).
+  const analyzer = parseAnalyzer(opts.inputs.analyzerJson);
+  const plan = enrichPlan(capturedDraft, analyzer);
+  return { plan };
+}
+
+function parseAnalyzer(json: string): IntakeReport {
+  try {
+    return JSON.parse(json) as IntakeReport;
+  } catch (e) {
+    throw new Error(`triage: could not parse analyzer JSON: ${(e as Error).message}`);
+  }
 }
 
 // ---------------- CLI plumbing ----------------
