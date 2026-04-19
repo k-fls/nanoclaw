@@ -30,8 +30,8 @@ import type { IntakeReport } from './intake-analyze.js';
 export interface TriageInputs {
   analyzerJson: string;
   divergenceReport?: string;
-  deletionVerdicts?: string;
-  additionVerdicts?: string;
+  discardedVerdicts?: string;
+  introducedVerdicts?: string;
 }
 
 export interface TriageOptions {
@@ -82,11 +82,11 @@ function buildPrompt(
   if (inputs.divergenceReport) {
     parts.push('## Divergence report\n\n```\n' + inputs.divergenceReport + '\n```');
   }
-  if (inputs.deletionVerdicts) {
-    parts.push('## fls-deletion verdicts\n\n```json\n' + inputs.deletionVerdicts + '\n```');
+  if (inputs.discardedVerdicts) {
+    parts.push('## discarded-file verdicts\n\n```json\n' + inputs.discardedVerdicts + '\n```');
   }
-  if (inputs.additionVerdicts) {
-    parts.push('## upstream-addition verdicts\n\n```json\n' + inputs.additionVerdicts + '\n```');
+  if (inputs.introducedVerdicts) {
+    parts.push('## introduced-file verdicts\n\n```json\n' + inputs.introducedVerdicts + '\n```');
   }
   if (retry) {
     parts.push(
@@ -225,8 +225,8 @@ function parseAnalyzer(json: string): IntakeReport {
 export interface CliArgs {
   analyzerPath: string;
   divergencePath?: string;
-  deletionVerdictsPath?: string;
-  additionVerdictsPath?: string;
+  discardedVerdictsPath?: string;
+  introducedVerdictsPath?: string;
   agentPromptPath?: string;
   model?: string;
   maxRetries?: number;
@@ -239,11 +239,11 @@ export async function runTriageCli(args: CliArgs): Promise<TriageResult> {
     divergenceReport: args.divergencePath
       ? readFileSync(args.divergencePath, 'utf8')
       : undefined,
-    deletionVerdicts: args.deletionVerdictsPath
-      ? readFileSync(args.deletionVerdictsPath, 'utf8')
+    discardedVerdicts: args.discardedVerdictsPath
+      ? readFileSync(args.discardedVerdictsPath, 'utf8')
       : undefined,
-    additionVerdicts: args.additionVerdictsPath
-      ? readFileSync(args.additionVerdictsPath, 'utf8')
+    introducedVerdicts: args.introducedVerdictsPath
+      ? readFileSync(args.introducedVerdictsPath, 'utf8')
       : undefined,
   };
   return runTriage({

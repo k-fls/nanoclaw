@@ -45,7 +45,7 @@ Scope for the first implementation pass. No process commands yet; just make the 
 
 | Phase | Deliverable |
 |---|---|
-| 1 | P1 intake automation: `intake-analyze.ts`, `cascade triage` with schema-enforced tool use + post-hoc enrichment + internal validator, `cascade-intake` skill, conflict-resolution + fls-deletion-inspection + upstream-addition-inspection subagents |
+| 1 | P1 intake automation: `intake-analyze.ts`, `cascade triage` with schema-enforced tool use + post-hoc enrichment + internal validator, `cascade-intake` skill, conflict-resolution + discarded-file-inspection + introduced-file-inspection subagents |
 | 2 | Auto-bump version logic, P2 propagation, edition snapshots, cross-repo tooling |
 | 3 | Adapter-model formalization, adapter coverage reporting |
 | 4 | P3 signals (path-ownership + size/shape + diff-vs-upstream) in shadow mode; `cascade-classify-ambiguous` agent; mutating half |

@@ -21,12 +21,12 @@ Slash commands (`.claude/commands/cascade-*.md`) orchestrate each process: run t
 
 ### Pre-merge analysis and decomposition
 
-1. **`intake-analyze.ts`** fetches upstream, computes the merge range, and emits a structured report: per-commit signals (primaryKind + files + tags + parents + author/date), aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points (tags / upstream merge commits), rename tracking, and two inspection-group arrays — `flsDeletionGroups` (components touching files fls deleted post-base that upstream modified) and `upstreamAdditionGroups` (components touching files fls never had that upstream added). Components are connected sub-graphs of upstream-range commits that share any touched file; see [inspection.md](inspection.md) for the component-grouping algorithm and the inspector contract. Per-commit `primaryKind` is drawn from `{clean, divergence, conflict, structural, break_point}`:
+1. **`intake-analyze.ts`** fetches upstream, computes the merge range, and emits a structured report: per-commit signals (primaryKind + files + tags + parents + author/date), aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points (tags / upstream merge commits), rename tracking, and two inspection-group arrays — `discardedGroups` (components touching files the target discarded post-base that upstream modified) and `introducedGroups` (components touching files the target never had that upstream added). Components are connected sub-graphs of upstream-range commits that share any touched file; see [inspection.md](inspection.md) for the component-grouping algorithm and the inspector contract. Per-commit `primaryKind` is drawn from `{clean, divergence, conflict, structural, break_point}`:
 
    | Kind | Rule |
    |---|---|
    | `clean` | no predicted conflicts, no intersection with the divergence set |
-   | `divergence` | touches a file in the fls divergence set |
+   | `divergence` | touches a file in the target-vs-base divergence set |
    | `conflict` | predicted conflict, no divergence-set intersection |
    | `structural` | merge commit (>1 parents), large rename, or apparent revert |
    | `break_point` | marker at an upstream tag or upstream merge commit |
@@ -49,7 +49,7 @@ Slash commands (`.claude/commands/cascade-*.md`) orchestrate each process: run t
 6. `merge-preserve.ts` performs the `--no-ff` merge with the resolved content.
 7. `version.ts` auto-bumps per [versioning.md](versioning.md).
 
-Default resolution rule (§7): prefer fls behavior where fls has diverged. Reviewer confirms the default applied correctly and that behavior wasn't silently flipped.
+Default resolution rule (§7): prefer the target's behavior where the target has diverged. Reviewer confirms the default applied correctly and that behavior wasn't silently flipped.
 
 ### Decomposition safety
 

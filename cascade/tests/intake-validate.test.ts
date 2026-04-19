@@ -56,8 +56,8 @@ function makeAnalyzer(overrides: Partial<IntakeReport> = {}): IntakeReport {
     predictedConflicts: [],
     breakPoints: [],
     renames: [],
-    flsDeletionGroups: [],
-    upstreamAdditionGroups: [],
+    discardedGroups: [],
+    introducedGroups: [],
     cacheKey: 'cacheX',
     ...overrides,
   };
@@ -309,7 +309,7 @@ describe('validatePlan — break-point singleton rule', () => {
 });
 
 describe('validatePlan — inspection-verdict attention floors', () => {
-  it('errors when a deletion-all-adopt group is not attention=heavy', () => {
+  it('errors when a discarded-all-adopt group is not attention=heavy', () => {
     const p = plan([
       {
         index: 0,
@@ -317,14 +317,14 @@ describe('validatePlan — inspection-verdict attention floors', () => {
         kind: 'clean',
         commits: ['aaa', 'bbb', 'ccc'],
         attention: 'light',
-        tags: ['deletion-all-adopt'],
+        tags: ['discarded-all-adopt'],
       },
     ]);
     const r = validatePlan({ plan: p, analyzer: makeAnalyzer() });
-    expect(r.violations.map((v) => v.rule)).toContain('deletion-all-adopt-needs-heavy-attention');
+    expect(r.violations.map((v) => v.rule)).toContain('discarded-all-adopt-needs-heavy-attention');
   });
 
-  it('errors when a deletion-inconclusive group is attention=none', () => {
+  it('errors when a discarded-inconclusive group is attention=none', () => {
     const p = plan([
       {
         index: 0,
@@ -332,14 +332,14 @@ describe('validatePlan — inspection-verdict attention floors', () => {
         kind: 'clean',
         commits: ['aaa', 'bbb', 'ccc'],
         attention: 'none',
-        tags: ['deletion-inconclusive'],
+        tags: ['discarded-inconclusive'],
       },
     ]);
     const r = validatePlan({ plan: p, analyzer: makeAnalyzer() });
     expect(r.violations.map((v) => v.rule)).toContain('inspection-mixed-or-inconclusive-needs-attention');
   });
 
-  it('errors when an addition-mixed group is attention=none', () => {
+  it('errors when an introduced-mixed group is attention=none', () => {
     const p = plan([
       {
         index: 0,
@@ -347,14 +347,14 @@ describe('validatePlan — inspection-verdict attention floors', () => {
         kind: 'clean',
         commits: ['aaa', 'bbb', 'ccc'],
         attention: 'none',
-        tags: ['addition-mixed'],
+        tags: ['introduced-mixed'],
       },
     ]);
     const r = validatePlan({ plan: p, analyzer: makeAnalyzer() });
     expect(r.violations.map((v) => v.rule)).toContain('inspection-mixed-or-inconclusive-needs-attention');
   });
 
-  it('errors when an addition-all-remove group is attention=none', () => {
+  it('errors when an introduced-all-remove group is attention=none', () => {
     const p = plan([
       {
         index: 0,
@@ -362,11 +362,11 @@ describe('validatePlan — inspection-verdict attention floors', () => {
         kind: 'clean',
         commits: ['aaa', 'bbb', 'ccc'],
         attention: 'none',
-        tags: ['addition-all-remove', 'post-merge-cleanup'],
+        tags: ['introduced-all-remove', 'post-merge-cleanup'],
       },
     ]);
     const r = validatePlan({ plan: p, analyzer: makeAnalyzer() });
-    expect(r.violations.map((v) => v.rule)).toContain('addition-all-remove-needs-attention');
+    expect(r.violations.map((v) => v.rule)).toContain('introduced-all-remove-needs-attention');
   });
 });
 

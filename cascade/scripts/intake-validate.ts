@@ -13,8 +13,8 @@ import { readFileSync } from 'node:fs';
 import { z, ZodIssue } from 'zod';
 import {
   IntakeReport,
-  FlsDeletionGroup,
-  UpstreamAdditionGroup,
+  DiscardedGroup,
+  IntroducedGroup,
 } from './intake-analyze.js';
 
 // Plan schemas — two layers:
@@ -350,18 +350,18 @@ export function validatePlan(opts: ValidateOptions): ValidateResult {
   //    echo). See cascade/docs/inspection.md § Triage outcome mapping.
   for (const g of plan.groups) {
     const tags = g.tags ?? [];
-    // Deletion `all-adopt` means the reviewer should reopen the deletion —
-    // a judgment call, not mechanical. Requires heavy attention.
-    if (tags.includes('deletion-all-adopt') && g.attention !== 'heavy') {
+    // Discarded `all-adopt` means the reviewer should reconsider the removal
+    // — a judgment call, not mechanical. Requires heavy attention.
+    if (tags.includes('discarded-all-adopt') && g.attention !== 'heavy') {
       violations.push({
-        rule: 'deletion-all-adopt-needs-heavy-attention',
+        rule: 'discarded-all-adopt-needs-heavy-attention',
         severity: 'error',
-        message: `group #${g.index} "${g.name}" is tagged deletion-all-adopt but attention=${g.attention}`,
+        message: `group #${g.index} "${g.name}" is tagged discarded-all-adopt but attention=${g.attention}`,
         group: g.index,
       });
     }
     // Mixed / inconclusive verdicts — reviewer has to read per-commit.
-    for (const tag of ['deletion-mixed', 'deletion-inconclusive', 'addition-mixed', 'addition-inconclusive']) {
+    for (const tag of ['discarded-mixed', 'discarded-inconclusive', 'introduced-mixed', 'introduced-inconclusive']) {
       if (tags.includes(tag) && g.attention === 'none') {
         violations.push({
           rule: 'inspection-mixed-or-inconclusive-needs-attention',
@@ -371,13 +371,13 @@ export function validatePlan(opts: ValidateOptions): ValidateResult {
         });
       }
     }
-    // Addition `all-remove` requires the reviewer to do a post-merge `git rm`.
-    // Not rubber-stamp-able — attention ≥ light.
-    if (tags.includes('addition-all-remove') && g.attention === 'none') {
+    // Introduced `all-remove` requires the reviewer to do a post-merge
+    // `git rm`. Not rubber-stamp-able — attention ≥ light.
+    if (tags.includes('introduced-all-remove') && g.attention === 'none') {
       violations.push({
-        rule: 'addition-all-remove-needs-attention',
+        rule: 'introduced-all-remove-needs-attention',
         severity: 'error',
-        message: `group #${g.index} "${g.name}" is tagged addition-all-remove (post-merge cleanup needed) but attention=none`,
+        message: `group #${g.index} "${g.name}" is tagged introduced-all-remove (post-merge cleanup needed) but attention=none`,
         group: g.index,
       });
     }
@@ -547,5 +547,5 @@ export function formatValidateReport(r: ValidateResult): string {
 
 // Unused export stubs: keep inspection-group types referenced so module
 // re-exports are stable if future checks consume them directly.
-export type _FlsDeletionGroupShape = FlsDeletionGroup;
-export type _UpstreamAdditionGroupShape = UpstreamAdditionGroup;
+export type _DiscardedGroupShape = DiscardedGroup;
+export type _IntroducedGroupShape = IntroducedGroup;
