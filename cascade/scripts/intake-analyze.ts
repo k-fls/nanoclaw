@@ -38,7 +38,6 @@ export interface FileChange {
 
 export interface CommitInfo {
   sha: string;
-  shortSha: string;
   subject: string;
   author: string;
   authorDate: string; // ISO 8601
@@ -633,10 +632,9 @@ function loadCommit(sha: string, repoRoot: string): CommitInfo {
 
   return {
     sha: fullSha,
-    shortSha: fullSha.slice(0, 7),
     subject: subject ?? '',
     author: author ?? '',
-    authorDate: authorDate ?? '',
+    authorDate: (authorDate ?? '').trim(),
     parents,
     isMerge,
     files,

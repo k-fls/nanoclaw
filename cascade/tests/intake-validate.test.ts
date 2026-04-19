@@ -12,7 +12,6 @@ function makeAnalyzer(overrides: Partial<IntakeReport> = {}): IntakeReport {
     commits: [
       {
         sha: 'aaa',
-        shortSha: 'aaa',
         subject: 'c1',
         author: 'x',
         authorDate: '2026-01-01T00:00:00Z',
@@ -25,7 +24,6 @@ function makeAnalyzer(overrides: Partial<IntakeReport> = {}): IntakeReport {
       },
       {
         sha: 'bbb',
-        shortSha: 'bbb',
         subject: 'c2',
         author: 'x',
         authorDate: '2026-01-02T00:00:00Z',
@@ -38,7 +36,6 @@ function makeAnalyzer(overrides: Partial<IntakeReport> = {}): IntakeReport {
       },
       {
         sha: 'ccc',
-        shortSha: 'ccc',
         subject: 'c3',
         author: 'x',
         authorDate: '2026-01-03T00:00:00Z',

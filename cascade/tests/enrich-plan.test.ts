@@ -13,7 +13,6 @@ function makeAnalyzer(
     commits: [
       {
         sha: 'aaa',
-        shortSha: 'aaa',
         subject: 'c1',
         author: 'x',
         authorDate: '2026-01-01',
@@ -26,7 +25,6 @@ function makeAnalyzer(
       },
       {
         sha: 'bbb',
-        shortSha: 'bbb',
         subject: 'c2',
         author: 'x',
         authorDate: '2026-01-02',
@@ -39,7 +37,6 @@ function makeAnalyzer(
       },
       {
         sha: 'ccc',
-        shortSha: 'ccc',
         subject: 'c3',
         author: 'x',
         authorDate: '2026-01-03',
@@ -54,7 +51,6 @@ function makeAnalyzer(
       },
       {
         sha: 'ddd',
-        shortSha: 'ddd',
         subject: 'v1.0',
         author: 'x',
         authorDate: '2026-01-04',

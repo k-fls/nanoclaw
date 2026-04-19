@@ -50,6 +50,8 @@ The analyzer gives you per-commit file lists but not diff content. For many comm
 
 **Corollary:** don't use `attention: none` on a group containing any commit with > 1000 lines of diff. A commit you can't summarize honestly isn't a commit you can rubber-stamp.
 
+**Mandatory — not heuristic — when any commit in the group touches a path in `intersection` (diverged surface):** run `git show <sha>` on each such commit before writing the group's `functional_summary`. This rule overrides the "use your judgment" framing above. The temptation to narrate speculative collisions ("plays against target's customizations", "risks colliding with fls's code") is highest exactly when you haven't read the diff, and the cost of a wrong speculation is reviewer over-attention on a benign change. If the diff is 10 lines, read the 10 lines; if it's 300, skim them. The summary must name the actual edit (numeric constant change, formatting-only, signature change, added/removed import), not a hypothesis about collision.
+
 ### When to inspect target-side code
 
 Sometimes the upstream change touches a file the target has diverged on, and you need to see *what the target did to that file* to judge whether upstream's change fits. Use `Read` or `Grep` on the target tree (`main`/`core` at its tip). Keep these reads proportionate — if you're reading dozens of files, you're probably doing the human's job, and that's a signal the group should just be flagged `attention: heavy`.
@@ -218,6 +220,9 @@ Free-form tags are allowed but prefer canonical forms so the skill and validator
 - Never list file paths. Paths belong in `files[]`.
 - If the upstream commit messages are terse and you can't infer behavior without reading the diff, say so: "Commits' subjects are non-descriptive ('fix', 'cleanup'); behavior unclear without diff review."
 - Keep it under 400 characters.
+- **Do not narrate speculative collisions.** Touching an `intersection` file is a signal for **attention** and **kind** — not a licence to invent a merge-collision story in the summary. Phrases like "plays against target's customizations" / "may conflict with" / "risks colliding with" are banned unless you've **actually read the diff** and can name the concrete line-level interaction. If the upstream change on a diverged-surface path is a numeric constant, a formatting change, a single added import, or other mechanically isolated edit, say that plainly ("Upstream bumps CLAUDE_CODE_AUTO_COMPACT_WINDOW from 200k to 165k; src/db.ts touches are formatting only"). The reviewer calibrates risk from `attention` + `tags`; the summary's job is "what did upstream change," not "what might hypothetically break."
+- **Describe the actual diff, not the file list.** Two adjacent commits touching the same diverged file can be 3 numeric tweaks or a subsystem rewrite; the file list alone cannot tell you which. A summary that reads the same whether the diff is 5 lines or 500 is a summary that didn't read the diff.
+- **Consume the analyzer's `whitespaceOnly` and `revertedAt` signals in prose.** If the only non-exempt touch on a diverged path is whitespace, say "formatting only on `<path>`". If a revert pair nets to zero, say "net-zero on `<path>` (<sha-a> then reverted by <sha-b>)". Don't write language that implies substantive change when the signals say otherwise — attention and prose must agree.
 
 ### `grouping_rationale`
 

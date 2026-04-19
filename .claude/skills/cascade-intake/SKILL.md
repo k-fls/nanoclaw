@@ -123,12 +123,31 @@ Proceed?
 **For each group, once confirmed:**
 
 1. Run `npm run cascade -- intake-upstream <lastSha> --source upstream/main -m "intake upstream: group N <name> (<firstSha..lastSha>)"`.
-2. If the result status is `merged`: report the merge SHA + the group's `expected_outcome` ("outcome was: accept — matched"), move on.
+2. If the result status is `merged`: report the merge SHA + the group's `expected_outcome` ("outcome was: accept — matched"), move on to step 6.
 3. If `noop`: skip.
 4. If `conflicted`: run the per-file conflict loop, then `npm run cascade -- intake-upstream --continue -m "..."`.
 5. If the actual outcome doesn't match `expected_outcome` (e.g. plan said `reject` but the merge introduced files), pause and ask the user whether to roll back — plan drift is a real signal.
+6. **Apply post-merge cleanup for the group, then commit it automatically.** The user's approval of the group already covered the cleanup (it's named in the plan's `functional_summary` and `tags` — not a new decision). The executor's merge commit lands upstream's work verbatim; the cleanup commit records the target-side adjustment on top. Leaving the cleanup uncommitted would leave the working tree dirty and the next `cascade check` / next group's merge in an inconsistent state.
 
-After every group, run `npm run cascade -- check` and halt the entire flow on the first error. Report the failure; do not attempt the next group. Ask the user how to proceed (abort with `intake-upstream --abort`, reset, or resolve manually).
+   Trigger cleanup when the group carries any of these signals:
+   - Tag `introduced-all-remove` + `post-merge-cleanup` — `git rm` the files named in `functional_summary`.
+   - Tag `introduced-mixed` with per-commit `remove` verdicts in `introducedVerdicts` — `git rm` the files the inspector flagged as remove-worthy, as named in that commit's `feature_narratives`.
+   - Tag `discarded-mixed` with per-commit `adopt` verdicts that require surfacing upstream's work the merge dropped — only when the cleanup is a mechanical `git checkout <upstream-sha> -- <path>`; anything more judgment-heavy (port into target's current site, rewrite, integrate differently) is NOT automatic — surface to the user and stop.
+   - Tag `discarded-all-adopt` — **never automatic.** The reviewer decides HOW to un-drop upstream's work. Surface the adoption candidates from the inspection summary and stop; the user handles it.
+
+   **Cleanup commit mechanics:**
+
+   ```
+   git <cleanup-ops>                           # git rm <files>, or git checkout <sha> -- <path>
+   git commit -m "post-merge cleanup: group N <name>" \
+     -m "<1-line rationale naming the verdict tag and the files touched>"
+   ```
+
+   Use a single commit per group's cleanup. Commit message body names the tag that drove it (e.g. `introduced-all-remove: removed migrate-nanoclaw/{index.js,telemetry.js}`) and lists the affected files so `git log` stays navigable. Do NOT batch cleanup across groups — each group's cleanup sits immediately after its merge, matching the plan's decision boundaries.
+
+   **If the cleanup cannot be done mechanically** — for example the plan's `functional_summary` doesn't list specific files, or the remove-verdict commits span more files than the group clearly intended — stop, describe what's ambiguous, and ask the user. Do not guess.
+
+After every group (post-cleanup if one ran), run `npm run cascade -- check` and halt the entire flow on the first error. Report the failure; do not attempt the next group. Ask the user how to proceed (abort with `intake-upstream --abort`, reset, or resolve manually).
 
 ### 5. Per-file conflict loop
 

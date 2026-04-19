@@ -200,7 +200,7 @@ function cmdIntakeAnalyze(args: string[]): number {
   const root = repoRoot();
   const report = analyzeIntake({ repoRoot: root, target, source });
   if (json) {
-    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    process.stdout.write(JSON.stringify(report) + '\n');
   } else {
     process.stdout.write(formatIntakeReport(report) + '\n');
   }
@@ -215,7 +215,7 @@ function cmdDivergenceReport(args: string[]): number {
   const root = repoRoot();
   const report = divergenceReport({ repoRoot: root, target, source });
   if (json) {
-    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    process.stdout.write(JSON.stringify(report) + '\n');
   } else {
     process.stdout.write(formatDivergenceReport(report, { verbose }) + '\n');
   }
@@ -310,21 +310,19 @@ async function cmdInspect(args: string[]): Promise<number> {
   });
   const fs = await import('node:fs');
   if (discardedOutPath) {
-    fs.writeFileSync(discardedOutPath, JSON.stringify(discarded, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(discardedOutPath, JSON.stringify(discarded) + '\n', 'utf8');
     process.stderr.write(
       `inspect: wrote ${discarded.length} discarded verdict(s) to ${discardedOutPath}\n`,
     );
   }
   if (introducedOutPath) {
-    fs.writeFileSync(introducedOutPath, JSON.stringify(introduced, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(introducedOutPath, JSON.stringify(introduced) + '\n', 'utf8');
     process.stderr.write(
       `inspect: wrote ${introduced.length} introduced verdict(s) to ${introducedOutPath}\n`,
     );
   }
   if (!discardedOutPath && !introducedOutPath) {
-    process.stdout.write(
-      JSON.stringify({ discarded, introduced }, null, 2) + '\n',
-    );
+    process.stdout.write(JSON.stringify({ discarded, introduced }) + '\n');
   }
   return 0;
 }
@@ -351,7 +349,7 @@ async function cmdTriage(args: string[]): Promise<number> {
     model,
     maxRetries,
   });
-  const out = JSON.stringify(plan, null, 2) + '\n';
+  const out = JSON.stringify(plan) + '\n';
   if (outPath) {
     const fs = await import('node:fs');
     fs.writeFileSync(outPath, out, 'utf8');
