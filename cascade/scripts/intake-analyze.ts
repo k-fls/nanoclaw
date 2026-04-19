@@ -53,37 +53,66 @@ export interface CommitInfo {
   tags: string[];
 }
 
-// A file absent from target that upstream has kept working on in-range,
-// grouped by the fls commit that performed the deletion when one exists.
-// Covers two cases:
-//   (1) fls deleted the file post-base (`git diff base..target` status D);
-//   (2) upstream added the file post-base and fls never had it (no fls
-//       deletion commit; grouped under 'unknown').
-// Both appear as `D` in `git diff source..target` — "present on upstream,
-// absent on fls". Candidate for human review: mechanically the merge would
-// silently acquire (case 2) or silently drop (case 1) upstream's work; the
-// reviewer decides whether to port, accept, or reject.
-//
-// The name retains `Deletion` for API compatibility with existing consumers
-// (skill, inspect-fls-deletion agent); the widened semantics are documented
-// here and surfaced by the 'unknown' deletionSha for case (2).
+// An inspection component — a connected component of upstream-range commits
+// that share at least one touched file (transitively). See
+// cascade/docs/inspection.md § Component grouping for the algorithm and
+// rationale. A component is the atomic unit the inspectors operate on:
+// commits inside a component are reasoned about together because upstream's
+// work on them is file-wise coupled.
+export interface InspectionComponent {
+  // Stable id = sha256(sorted member shas).slice(0, 16). Determinism guaranteed
+  // because the union-find order is deterministic against the analyzer's
+  // topo-ordered commit list.
+  id: string;
+  // Upstream range commits in this component, in analyzer (topo) order.
+  commits: string[];
+  // Union of every path touched by the component's commits (both focus and
+  // context files). Sorted.
+  allTouchedFiles: string[];
+}
+
+// A component that contains at least one file fls deleted post-base that
+// upstream kept modifying in-range. The deletion inspector runs on the
+// `deletedFiles` subset; the component's full commit set provides context.
 export interface FlsDeletionGroup {
-  // fls commit that deleted the files. 'unknown' when no fls deletion
-  // commit exists — either because the file was renamed-then-deleted (we
-  // don't follow renames, consistent with ownership.md) or because the file
-  // was never on fls in the first place (upstream added it post-base).
-  deletionSha: string | 'unknown';
-  deletionSubject: string;
-  deletionAuthorDate: string; // ISO 8601; empty for 'unknown'
-  files: FlsDeletedFile[];
+  component: InspectionComponent;
+  // Files in the component that fls deleted since base and upstream touched
+  // in-range with delta ≥ config.fls_deletion_min_delta_lines.
+  deletedFiles: FlsDeletedFile[];
 }
 
 export interface FlsDeletedFile {
   path: string;
-  // Upstream delta on the deleted path since the merge-base, in lines.
+  // fls commit that deleted the path; 'unknown' for rename-then-delete we
+  // don't follow (cascade/docs/ownership.md).
+  deletionSha: string | 'unknown';
+  deletionSubject: string;
+  deletionAuthorDate: string;
+  // Upstream delta (added + removed) on the path since merge-base, in lines.
   upstreamAdded: number;
   upstreamRemoved: number;
-  // SHAs of range commits that touched this path.
+  upstreamTouchingCommits: string[];
+}
+
+// A component that contains at least one file upstream added in-range that
+// fls never had. The addition inspector runs on the `addedFiles` subset;
+// the component's full commit set provides context.
+export interface UpstreamAdditionGroup {
+  component: InspectionComponent;
+  // Files in the component that fls does not have and upstream added,
+  // filtered to file sizes ≥ config.upstream_addition_min_file_lines.
+  addedFiles: UpstreamAddedFile[];
+}
+
+export interface UpstreamAddedFile {
+  path: string;
+  // Upstream commit that first introduced the path on source's history.
+  introductionSha: string;
+  introductionSubject: string;
+  introductionAuthorDate: string;
+  // Size of the file on source tip, in lines. Addition's natural metric —
+  // what fls will acquire — contrasted with deletion's churn metric.
+  fileLines: number;
   upstreamTouchingCommits: string[];
 }
 
@@ -99,10 +128,14 @@ export interface IntakeReport {
   predictedConflicts: string[];
   breakPoints: { sha: string; refs: string[] }[];
   renames: { from: string; to: string; sha: string }[];
-  // Files deleted on target that upstream kept modifying, grouped by fls
-  // deletion commit. Filtered to upstream deltas above the threshold set by
-  // config.yaml `fls_deletion_min_lines`.
+  // Components containing fls-deleted files upstream kept modifying; the
+  // deletion inspector runs on each. Filtered by config.yaml
+  // `fls_deletion_min_delta_lines`.
   flsDeletionGroups: FlsDeletionGroup[];
+  // Components containing upstream-added files fls doesn't have; the
+  // addition inspector runs on each. Filtered by config.yaml
+  // `upstream_addition_min_file_lines`.
+  upstreamAdditionGroups: UpstreamAdditionGroup[];
   cacheKey: string;
 }
 
@@ -182,13 +215,14 @@ export function analyzeIntake(opts: AnalyzeOptions): IntakeReport {
     .filter((c) => c.primaryKind === 'break_point')
     .map((c) => ({ sha: c.sha, refs: c.tags }));
 
-  const flsDeletionGroups = computeFlsDeletionGroups({
+  const { flsDeletionGroups, upstreamAdditionGroups } = computeInspectionGroups({
     repoRoot,
     base,
     target,
     source,
-    minLines: config.fls_deletion_min_lines,
     commits,
+    deletionMinDeltaLines: config.fls_deletion_min_delta_lines,
+    additionMinFileLines: config.upstream_addition_min_file_lines,
   });
 
   const cacheKey = computeCacheKey(target, source, base, shas);
@@ -206,96 +240,286 @@ export function analyzeIntake(opts: AnalyzeOptions): IntakeReport {
     breakPoints,
     renames,
     flsDeletionGroups,
+    upstreamAdditionGroups,
     cacheKey,
   };
 }
 
-// ---------------- fls deletion inspection ----------------
+// ---------------- inspection component grouping ----------------
 
-// Find files deleted on target since base that upstream kept modifying, then
-// group them by the fls deletion commit. See cascade/docs/processes.md § P1
-// deletion inspection for the contract consumed by cascade-inspect-fls-deletion.
-function computeFlsDeletionGroups(params: {
+// Compute the two inspection-group arrays from the upstream-range commits.
+// The same set of connected components feeds both; each group refers to a
+// component by object reference and carries only its focus-file subset.
+// See cascade/docs/inspection.md for the algorithm, rationale, and contract
+// with the inspector agents.
+function computeInspectionGroups(params: {
   repoRoot: string;
   base: string;
   target: string;
   source: string;
-  minLines: number;
   commits: CommitInfo[];
-}): FlsDeletionGroup[] {
-  const { repoRoot, base, target, source, minLines, commits } = params;
+  deletionMinDeltaLines: number;
+  additionMinFileLines: number;
+}): { flsDeletionGroups: FlsDeletionGroup[]; upstreamAdditionGroups: UpstreamAdditionGroup[] } {
+  const { repoRoot, base, target, source, commits, deletionMinDeltaLines, additionMinFileLines } = params;
 
-  // Files present on upstream tip but absent from target tip — covers both
-  // "fls deleted post-base" and "fls never had (upstream added post-base)".
-  // The direction `source..target` asks git "what would need to be deleted
-  // going from source to target" — i.e. what source has that target doesn't.
-  const flsAbsent = new Set(
+  // Files present on source tip but absent on target tip. Some were deleted
+  // by fls post-base; some were added by upstream post-base and fls never had
+  // them. Partition by kind below.
+  const presentOnSourceAbsentOnTarget = new Set(
     gitNames(['diff', '--diff-filter=D', '--name-only', `${source}..${target}`], repoRoot),
   );
-  if (flsAbsent.size === 0) return [];
 
-  // Candidates: range files upstream touched that are absent from fls.
-  const candidates: string[] = [];
-  const touchingByPath = new Map<string, string[]>();
+  // Partition by kind: "deleted by fls" → deletion facts; "never had" →
+  // addition facts. Paths with no discoverable anchor on either side are
+  // dropped — they have no handle we can reason about.
+  interface DeletionFact {
+    path: string;
+    sha: string | 'unknown';
+    subject: string;
+    authorDate: string;
+    upstreamAdded: number;
+    upstreamRemoved: number;
+  }
+  interface AdditionFact {
+    path: string;
+    introductionSha: string;
+    introductionSubject: string;
+    introductionAuthorDate: string;
+    fileLines: number;
+  }
+  const deletionFacts = new Map<string, DeletionFact>();
+  const additionFacts = new Map<string, AdditionFact>();
+
+  for (const path of presentOnSourceAbsentOnTarget) {
+    const deletionSha = firstDeletionCommit(base, target, path, repoRoot);
+    if (deletionSha !== 'unknown') {
+      const { added, removed } = upstreamNumstat(base, source, path, repoRoot);
+      if (added + removed < deletionMinDeltaLines) continue;
+      const h = loadCommitHeader(deletionSha, repoRoot);
+      deletionFacts.set(path, {
+        path,
+        sha: deletionSha,
+        subject: h.subject,
+        authorDate: h.authorDate,
+        upstreamAdded: added,
+        upstreamRemoved: removed,
+      });
+      continue;
+    }
+    const introSha = firstIntroductionCommit(source, path, repoRoot);
+    if (!introSha) continue; // no anchor — drop
+    const fileLines = blobLineCount(source, path, repoRoot);
+    if (fileLines < additionMinFileLines) continue;
+    const h = loadCommitHeader(introSha, repoRoot);
+    additionFacts.set(path, {
+      path,
+      introductionSha: introSha,
+      introductionSubject: h.subject,
+      introductionAuthorDate: h.authorDate,
+      fileLines,
+    });
+  }
+
+  if (deletionFacts.size === 0 && additionFacts.size === 0) {
+    return { flsDeletionGroups: [], upstreamAdditionGroups: [] };
+  }
+
+  // Build per-commit touched-file sets AND per-file touching-commit sets
+  // for union-find. Only commits touching a candidate file participate;
+  // other commits don't anchor components even if they share a file with
+  // a candidate-touching commit (otherwise a repo-wide refactor would
+  // collapse everything into one giant component).
+  //
+  // Actually we DO want full transitive closure per the design: A touches
+  // deleted B + file C; D touches C. A and D end up in the same component
+  // even if D doesn't touch B. So the commit participates iff it touches
+  // any candidate file — or shares any file (transitively) with a commit
+  // that does. Implementation: seed with candidate-touching commits, then
+  // grow the component via any shared file.
+  const candidateFiles = new Set<string>([...deletionFacts.keys(), ...additionFacts.keys()]);
+  const seedCommits = new Set<string>();
+  const filesByCommit = new Map<string, Set<string>>();
   for (const c of commits) {
+    const touched = new Set<string>();
     for (const f of c.files) {
-      if (!flsAbsent.has(f.path)) continue;
-      const list = touchingByPath.get(f.path) ?? [];
-      list.push(c.sha);
-      touchingByPath.set(f.path, list);
+      touched.add(f.path);
+      if (f.oldPath) touched.add(f.oldPath);
+    }
+    filesByCommit.set(c.sha, touched);
+    for (const p of touched) {
+      if (candidateFiles.has(p)) {
+        seedCommits.add(c.sha);
+        break;
+      }
     }
   }
-  for (const p of touchingByPath.keys()) candidates.push(p);
-  if (candidates.length === 0) return [];
+  if (seedCommits.size === 0) {
+    return { flsDeletionGroups: [], upstreamAdditionGroups: [] };
+  }
 
-  // Upstream delta per candidate path; filter by threshold.
-  type Enriched = FlsDeletedFile & { deletionSha: string | 'unknown' };
-  const enriched: Enriched[] = [];
-  for (const path of candidates) {
-    const { added, removed } = upstreamNumstat(base, source, path, repoRoot);
-    if (added + removed < minLines) continue;
-    enriched.push({
-      path,
-      upstreamAdded: added,
-      upstreamRemoved: removed,
-      upstreamTouchingCommits: (touchingByPath.get(path) ?? []).sort(),
-      deletionSha: firstDeletionCommit(base, target, path, repoRoot),
+  // Union-find over the bipartite commit-file graph, restricted to
+  // commits reachable from a seed via shared files. Iterate a worklist:
+  // whenever a new commit joins, union it with its files; whenever a new
+  // file joins, union it with every commit that touches it.
+  const uf = new UnionFind();
+  const commitTouchers = new Map<string, Set<string>>(); // file -> commits touching it
+  for (const [sha, touched] of filesByCommit) {
+    for (const p of touched) {
+      const s = commitTouchers.get(p) ?? new Set<string>();
+      s.add(sha);
+      commitTouchers.set(p, s);
+    }
+  }
+
+  const visitedCommits = new Set<string>();
+  const worklist: string[] = [...seedCommits];
+  while (worklist.length) {
+    const sha = worklist.pop()!;
+    if (visitedCommits.has(sha)) continue;
+    visitedCommits.add(sha);
+    const touched = filesByCommit.get(sha) ?? new Set<string>();
+    for (const p of touched) {
+      uf.union(`c:${sha}`, `f:${p}`);
+      for (const other of commitTouchers.get(p) ?? []) {
+        if (!visitedCommits.has(other)) worklist.push(other);
+      }
+    }
+  }
+
+  // Gather components.
+  const byRoot = new Map<string, { commits: Set<string>; files: Set<string> }>();
+  for (const sha of visitedCommits) {
+    const root = uf.find(`c:${sha}`);
+    const entry = byRoot.get(root) ?? { commits: new Set(), files: new Set() };
+    entry.commits.add(sha);
+    for (const p of filesByCommit.get(sha) ?? []) entry.files.add(p);
+    byRoot.set(root, entry);
+  }
+
+  // Build components in analyzer (topo) order by earliest member commit.
+  const topoIndex = new Map<string, number>();
+  commits.forEach((c, i) => topoIndex.set(c.sha, i));
+  const components: InspectionComponent[] = [];
+  const compFiles = new Map<string, Set<string>>();
+  for (const [, entry] of byRoot) {
+    const commitList = [...entry.commits].sort(
+      (a, b) => (topoIndex.get(a) ?? 0) - (topoIndex.get(b) ?? 0),
+    );
+    const id = componentId(commitList);
+    components.push({
+      id,
+      commits: commitList,
+      allTouchedFiles: [...entry.files].sort(),
     });
+    compFiles.set(id, entry.files);
   }
-  if (enriched.length === 0) return [];
+  components.sort(
+    (a, b) => (topoIndex.get(a.commits[0]) ?? 0) - (topoIndex.get(b.commits[0]) ?? 0),
+  );
 
-  // Group by deletion sha. 'unknown' becomes its own group.
-  const byDeletion = new Map<string, Enriched[]>();
-  for (const e of enriched) {
-    const key = e.deletionSha;
-    const list = byDeletion.get(key) ?? [];
-    list.push(e);
-    byDeletion.set(key, list);
+  // Per-component file lookups for deletion/addition groups.
+  const flsDeletionGroups: FlsDeletionGroup[] = [];
+  const upstreamAdditionGroups: UpstreamAdditionGroup[] = [];
+  const touchingByPath = buildTouchingByPath(commits);
+
+  for (const component of components) {
+    const files = compFiles.get(component.id)!;
+    const deletedFiles: FlsDeletedFile[] = [];
+    const addedFiles: UpstreamAddedFile[] = [];
+    for (const p of [...files].sort()) {
+      const d = deletionFacts.get(p);
+      if (d) {
+        deletedFiles.push({
+          path: d.path,
+          deletionSha: d.sha,
+          deletionSubject: d.subject,
+          deletionAuthorDate: d.authorDate,
+          upstreamAdded: d.upstreamAdded,
+          upstreamRemoved: d.upstreamRemoved,
+          upstreamTouchingCommits: (touchingByPath.get(p) ?? []).sort(),
+        });
+        continue;
+      }
+      const a = additionFacts.get(p);
+      if (a) {
+        addedFiles.push({
+          path: a.path,
+          introductionSha: a.introductionSha,
+          introductionSubject: a.introductionSubject,
+          introductionAuthorDate: a.introductionAuthorDate,
+          fileLines: a.fileLines,
+          upstreamTouchingCommits: (touchingByPath.get(p) ?? []).sort(),
+        });
+      }
+    }
+    if (deletedFiles.length > 0) flsDeletionGroups.push({ component, deletedFiles });
+    if (addedFiles.length > 0) upstreamAdditionGroups.push({ component, addedFiles });
   }
 
-  const groups: FlsDeletionGroup[] = [];
-  for (const [deletionSha, files] of byDeletion) {
-    const { subject, authorDate } =
-      deletionSha === 'unknown'
-        ? { subject: '', authorDate: '' }
-        : loadCommitHeader(deletionSha, repoRoot);
-    groups.push({
-      deletionSha,
-      deletionSubject: subject,
-      deletionAuthorDate: authorDate,
-      files: files
-        .map(({ deletionSha: _d, ...rest }) => rest)
-        .sort((a, b) => a.path.localeCompare(b.path)),
+  return { flsDeletionGroups, upstreamAdditionGroups };
+}
+
+class UnionFind {
+  private parent = new Map<string, string>();
+  find(x: string): string {
+    const p = this.parent.get(x);
+    if (p === undefined) {
+      this.parent.set(x, x);
+      return x;
+    }
+    if (p === x) return x;
+    const root = this.find(p);
+    this.parent.set(x, root);
+    return root;
+  }
+  union(a: string, b: string): void {
+    const ra = this.find(a);
+    const rb = this.find(b);
+    if (ra !== rb) this.parent.set(ra, rb);
+  }
+}
+
+function componentId(sortedCommits: string[]): string {
+  const h = createHash('sha256');
+  for (const s of sortedCommits) {
+    h.update(s);
+    h.update('\0');
+  }
+  return h.digest('hex').slice(0, 16);
+}
+
+function buildTouchingByPath(commits: CommitInfo[]): Map<string, string[]> {
+  const m = new Map<string, string[]>();
+  for (const c of commits) {
+    for (const f of c.files) {
+      for (const p of [f.path, f.oldPath].filter(Boolean) as string[]) {
+        const list = m.get(p) ?? [];
+        list.push(c.sha);
+        m.set(p, list);
+      }
+    }
+  }
+  return m;
+}
+
+function blobLineCount(sha: string, path: string, repoRoot: string): number {
+  try {
+    const out = execFileSync('git', ['show', `${sha}:${path}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 128 * 1024 * 1024,
     });
+    // Line count = number of newlines; git appends a trailing newline for
+    // text files. Binary files throw or produce garbage — we still count
+    // newlines as a best-effort metric.
+    let n = 0;
+    for (let i = 0; i < out.length; i++) if (out.charCodeAt(i) === 0x0a) n++;
+    return n;
+  } catch {
+    return 0;
   }
-  // Deterministic order: 'unknown' last, others by deletion date ascending
-  // (older deletions first → stable and intuitive for reviewers).
-  groups.sort((a, b) => {
-    if (a.deletionSha === 'unknown') return 1;
-    if (b.deletionSha === 'unknown') return -1;
-    return a.deletionAuthorDate.localeCompare(b.deletionAuthorDate);
-  });
-  return groups;
 }
 
 function upstreamNumstat(
@@ -341,6 +565,31 @@ function firstDeletionCommit(
   );
   const first = out.split('\n').find(Boolean);
   return first || 'unknown';
+}
+
+// Earliest upstream commit that ADDED this path. Used to anchor
+// upstream-addition files (paths fls never had) to the commit that
+// introduced them on source. Returns undefined when no add commit is found
+// on the source branch.
+function firstIntroductionCommit(
+  source: string,
+  path: string,
+  repoRoot: string,
+): string | undefined {
+  const out = git(
+    [
+      'log',
+      '--diff-filter=A',
+      '--format=%H',
+      '--reverse',
+      source,
+      '--',
+      path,
+    ],
+    repoRoot,
+  );
+  const first = out.split('\n').find(Boolean);
+  return first || undefined;
 }
 
 function loadCommitHeader(
@@ -701,9 +950,13 @@ export function formatReport(r: IntakeReport): string {
   lines.push(`  predicted conflicts: ${r.predictedConflicts.length}`);
   lines.push(`  break points:     ${r.breakPoints.length}`);
   lines.push(`  renames:          ${r.renames.length}`);
-  const flsDelFiles = r.flsDeletionGroups.reduce((n, g) => n + g.files.length, 0);
+  const deletedFilesCount = r.flsDeletionGroups.reduce((n, g) => n + g.deletedFiles.length, 0);
+  const addedFilesCount = r.upstreamAdditionGroups.reduce((n, g) => n + g.addedFiles.length, 0);
   lines.push(
-    `  fls-deleted+upstream-modified: ${flsDelFiles} file(s) in ${r.flsDeletionGroups.length} deletion-commit group(s)`,
+    `  fls-deletion inspection: ${deletedFilesCount} file(s) across ${r.flsDeletionGroups.length} component(s)`,
+  );
+  lines.push(
+    `  upstream-addition inspection: ${addedFilesCount} file(s) across ${r.upstreamAdditionGroups.length} component(s)`,
   );
   let wsOnly = 0;
   let reverted = 0;
@@ -734,13 +987,26 @@ export function formatReport(r: IntakeReport): string {
   }
   if (r.flsDeletionGroups.length > 0) {
     lines.push('');
-    lines.push('fls-deleted + upstream-modified:');
+    lines.push('fls-deletion inspection groups:');
     for (const g of r.flsDeletionGroups) {
-      const sha = g.deletionSha === 'unknown' ? 'unknown' : g.deletionSha.slice(0, 7);
-      const label = g.deletionSubject || '(no subject)';
-      lines.push(`  [${sha}] ${label}`);
-      for (const f of g.files) {
-        lines.push(`    ${f.path}   +${f.upstreamAdded}/-${f.upstreamRemoved}`);
+      lines.push(`  [component:${g.component.id}] commits=${g.component.commits.length}`);
+      for (const f of g.deletedFiles) {
+        const tag = f.deletionSha === 'unknown' ? 'unknown' : `del:${f.deletionSha.slice(0, 7)}`;
+        lines.push(
+          `    ${f.path}   +${f.upstreamAdded}/-${f.upstreamRemoved}   [${tag}] ${f.deletionSubject || '(no subject)'}`,
+        );
+      }
+    }
+  }
+  if (r.upstreamAdditionGroups.length > 0) {
+    lines.push('');
+    lines.push('upstream-addition inspection groups:');
+    for (const g of r.upstreamAdditionGroups) {
+      lines.push(`  [component:${g.component.id}] commits=${g.component.commits.length}`);
+      for (const f of g.addedFiles) {
+        lines.push(
+          `    ${f.path}   ${f.fileLines} lines   [intro:${f.introductionSha.slice(0, 7)}] ${f.introductionSubject || '(no subject)'}`,
+        );
       }
     }
   }

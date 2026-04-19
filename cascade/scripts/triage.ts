@@ -31,6 +31,7 @@ export interface TriageInputs {
   analyzerJson: string;
   divergenceReport?: string;
   deletionVerdicts?: string;
+  additionVerdicts?: string;
 }
 
 export interface TriageOptions {
@@ -83,6 +84,9 @@ function buildPrompt(
   }
   if (inputs.deletionVerdicts) {
     parts.push('## fls-deletion verdicts\n\n```json\n' + inputs.deletionVerdicts + '\n```');
+  }
+  if (inputs.additionVerdicts) {
+    parts.push('## upstream-addition verdicts\n\n```json\n' + inputs.additionVerdicts + '\n```');
   }
   if (retry) {
     parts.push(
@@ -221,7 +225,8 @@ function parseAnalyzer(json: string): IntakeReport {
 export interface CliArgs {
   analyzerPath: string;
   divergencePath?: string;
-  verdictsPath?: string;
+  deletionVerdictsPath?: string;
+  additionVerdictsPath?: string;
   agentPromptPath?: string;
   model?: string;
   maxRetries?: number;
@@ -234,8 +239,11 @@ export async function runTriageCli(args: CliArgs): Promise<TriageResult> {
     divergenceReport: args.divergencePath
       ? readFileSync(args.divergencePath, 'utf8')
       : undefined,
-    deletionVerdicts: args.verdictsPath
-      ? readFileSync(args.verdictsPath, 'utf8')
+    deletionVerdicts: args.deletionVerdictsPath
+      ? readFileSync(args.deletionVerdictsPath, 'utf8')
+      : undefined,
+    additionVerdicts: args.additionVerdictsPath
+      ? readFileSync(args.additionVerdictsPath, 'utf8')
       : undefined,
   };
   return runTriage({

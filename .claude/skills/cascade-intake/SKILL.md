@@ -26,7 +26,8 @@ All working artifacts for this intake run live under `.cascade/.intake/<cacheKey
 
 - `.cascade/.intake/<cacheKey>/analyzer.json` — raw analyzer output
 - `.cascade/.intake/<cacheKey>/divergence.txt` — divergence-report output
-- `.cascade/.intake/<cacheKey>/deletion-verdicts.json` — concatenated verdicts from `cascade-inspect-fls-deletion` (one entry per group, if any)
+- `.cascade/.intake/<cacheKey>/deletion-verdicts.json` — concatenated verdicts from `cascade-inspect-fls-deletion` (one entry per `flsDeletionGroups[i]` component from the analyzer; these are pre-triage component verdicts, not triage-group verdicts)
+- `.cascade/.intake/<cacheKey>/addition-verdicts.json` — concatenated verdicts from `cascade-inspect-upstream-addition` (one entry per `upstreamAdditionGroups[i]` component)
 - `.cascade/.intake/<cacheKey>/plan.json` — approved decomposition plan
 - `.cascade/.intake/<cacheKey>/progress.json` — groups completed / in-progress / pending
 
@@ -44,21 +45,36 @@ Create `.cascade/.intake/<cacheKey>/` using the `cacheKey` from the JSON. Write 
 
 Also run `npm run cascade -- divergence-report` and save to `.cascade/.intake/<cacheKey>/divergence.txt` — the triage agent benefits from seeing where fls has diverged.
 
-### 2a. Inspect fls deletions (parallel to triage)
+### 2a. Inspect components (parallel to triage)
 
-If the analyzer's `flsDeletionGroups` is non-empty, dispatch one `cascade-inspect-fls-deletion` subagent per group **in parallel**, before (or alongside) step 2b triage. Groups cover two shapes: a real fls deletion commit (fls had the files, removed them) or `deletionSha === 'unknown'` (fls never had the files — upstream added them post-base, or a rename we can't follow).
+The analyzer emits two inspection-group arrays — `flsDeletionGroups` and `upstreamAdditionGroups`. Each entry refers to a component: a connected sub-graph of upstream-range commits that share any touched file. A single component can feed **both** a deletion group and an addition group (different focus files, shared commits); dispatch happens per (component, inspector) pair.
 
-For each group, assemble the subagent input:
+Dispatch in parallel before (or alongside) step 2b triage:
 
-- `fls_deletion_commit`: `{ sha, subject, body, author_date }` — fetch via `git show -s --format='%H%n%s%n%aI%n%b' <deletionSha>`. For `deletionSha === 'unknown'`, pass sha/subject/body/author_date as empty strings.
-- `files`: for each file in the group, pack:
+- For each `flsDeletionGroups[i]`: dispatch `cascade-inspect-fls-deletion` with the component's commits as context and `deletedFiles` as focus.
+- For each `upstreamAdditionGroups[i]`: dispatch `cascade-inspect-upstream-addition` with the component's commits as context and `addedFiles` as focus.
+
+Input assembly (both inspectors share the shape; see [cascade/docs/inspection.md](../../cascade/docs/inspection.md) for the full contract):
+
+- `component_id`, `inspection_kind` ("deletion" or "addition") — straight from the analyzer entry.
+- `commits`: for each sha in `component.commits`, fetch `{ sha, subject, body, author, authorDate }` via `git show -s --format='%H%n%s%n%an%n%aI%n%b' <sha>`.
+- `focus_files`: for each focus file (deletion: `deletedFiles`; addition: `addedFiles`), pack:
   - `path`
-  - `base_content` — `git show <base>:<path>`; pass `""` when the path did not exist at base (`git show` exits non-zero — treat that as the empty state, which is the case for fls-absent files).
-  - `upstream_tip_content` — `git show <source>:<path>`
-  - `upstream_touching_commits` — `[{ sha, subject }]` from the analyzer's `upstreamTouchingCommits`, resolved with `git show -s --format=%s <sha>`
-  - `port_hints` (optional) — if the deleted file exported named symbols, run a quick `rg -n 'exportedSymbol' src/` for each and pass the results. Cheap and high-signal. Skip if the file is not TypeScript/JavaScript or has no obvious exports.
+  - `base_content` — `git show <base>:<path>`; pass `""` when `git show` exits non-zero (path did not exist at base — normal for addition focus files).
+  - `upstream_tip_content` — `git show <source>:<path>`.
+  - `upstream_touching_commits` — `[{ sha, subject }]` from the analyzer's `upstreamTouchingCommits`, each resolved with `git show -s --format=%s <sha>`.
+  - `port_hints` (optional) — for files exporting named symbols, run `rg -n 'exportedSymbol' src/` and pass results. Skip for non-TS/JS files or files without obvious exports.
+- `context_files`: for each path in `component.allTouchedFiles` not in `focus_files`, pack `{ path, upstream_tip_content_excerpt }`. Excerpt = first ~100 lines of `git show <source>:<path>` (truncate larger files).
+- `kind_specific_context`:
+  - Deletion: `{ fls_deletion_commit: { sha, subject, body, author_date } }` fetched via `git show -s --format='%H%n%s%n%aI%n%b' <deletedFiles[0].deletionSha>`. All files in a deletion group share the component's deletion context only loosely — pass the context for the dominant deletion commit (the one anchoring the most files). For `deletionSha === "unknown"`, pass all fields as empty strings.
+  - Addition: `{ fls_feature_overview }` — optional; when present, a short digest of current fls skills, modules, and recent removals. Initially empty/omitted; populated as a later enhancement.
 
-Collect each subagent's JSON verdict into an array and write it to `.cascade/.intake/<cacheKey>/deletion-verdicts.json`. These feed both the triage agent (as additional context) and the final plan presentation.
+Collect each subagent's JSON verdict into the appropriate array:
+
+- Deletion verdicts → `.cascade/.intake/<cacheKey>/deletion-verdicts.json`
+- Addition verdicts → `.cascade/.intake/<cacheKey>/addition-verdicts.json`
+
+Both feed the triage agent (as additional context) and the final plan presentation.
 
 ### 2b. Triage
 
@@ -68,7 +84,8 @@ Run `cascade triage` — it reads the agent prompt at `.claude/agents/cascade-tr
 npm run cascade -- triage \
   --analyzer .cascade/.intake/<cacheKey>/analyzer.json \
   --divergence .cascade/.intake/<cacheKey>/divergence.txt \
-  --verdicts .cascade/.intake/<cacheKey>/deletion-verdicts.json \
+  --deletion-verdicts .cascade/.intake/<cacheKey>/deletion-verdicts.json \
+  --addition-verdicts .cascade/.intake/<cacheKey>/addition-verdicts.json \
   --out .cascade/.intake/<cacheKey>/plan.json
 ```
 
@@ -82,7 +99,7 @@ Omit `--verdicts` if step 2a produced no inspector output. Omit `--divergence` o
 
 Show the prose summary to the user verbatim. Show the JSON plan collapsed / summarized (groups with kind, attention, outcome, commitCount).
 
-**If any deletion group's header is `rationale-reopened` or `inconclusive`**, surface it prominently to the user before asking for plan approval — this is the signal they are most likely to miss on a skim.
+**If any inspection verdict's `group_header` is `mixed` or `inconclusive`, or any addition verdict is `all-remove`, or any deletion verdict is `all-adopt`**, surface these prominently to the user before asking for plan approval — they're the signals most likely to miss on a skim. `all-adopt` on a deletion component means the reviewer should consider reopening the deletion; `all-remove` on an addition component means the reviewer should plan post-merge `git rm`.
 
 Ask the user:
 
@@ -178,7 +195,7 @@ When another agent invokes this skill (not a human), the "approve plan" and "app
 
 | Command | Purpose |
 |---|---|
-| `npm run cascade -- intake-analyze [--json]` | Read-only analysis (per-commit signals, divergence, conflicts, deletion groups) |
+| `npm run cascade -- intake-analyze [--json]` | Read-only analysis (per-commit signals, divergence, conflicts, fls-deletion + upstream-addition components) |
 | `npm run cascade -- divergence-report [-v]` | fls-vs-upstream divergence view |
 | `npm run cascade -- intake-validate <analyzer.json> <plan.json>` | Gate between triage and human approval |
 | `npm run cascade -- intake-upstream <sha> -m <msg>` | Execute a group merge |

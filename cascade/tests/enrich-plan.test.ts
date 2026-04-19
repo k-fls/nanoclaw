@@ -73,6 +73,7 @@ function makeAnalyzer(
     breakPoints: [{ sha: 'ddd', refs: ['v1.0'] }],
     renames: [{ from: 'src/a.ts', to: 'src/renamed.ts', sha: 'ccc' }],
     flsDeletionGroups: [],
+    upstreamAdditionGroups: [],
     cacheKey: 'cacheX',
     ...overrides,
   };

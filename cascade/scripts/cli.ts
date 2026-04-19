@@ -289,20 +289,22 @@ function cmdIntakeValidate(args: string[]): number {
 async function cmdTriage(args: string[]): Promise<number> {
   const analyzerPath = takeOption(args, '--analyzer');
   const divergencePath = takeOption(args, '--divergence') ?? undefined;
-  const verdictsPath = takeOption(args, '--verdicts') ?? undefined;
+  const deletionVerdictsPath = takeOption(args, '--deletion-verdicts') ?? undefined;
+  const additionVerdictsPath = takeOption(args, '--addition-verdicts') ?? undefined;
   const outPath = takeOption(args, '--out') ?? undefined;
   const model = takeOption(args, '--model') ?? undefined;
   const maxRetriesStr = takeOption(args, '--max-retries');
   const maxRetries = maxRetriesStr ? Number(maxRetriesStr) : undefined;
   if (!analyzerPath) {
     die(
-      'usage: cascade triage --analyzer <path> [--divergence <path>] [--verdicts <path>] [--out <path>] [--model <id>] [--max-retries <n>]',
+      'usage: cascade triage --analyzer <path> [--divergence <path>] [--deletion-verdicts <path>] [--addition-verdicts <path>] [--out <path>] [--model <id>] [--max-retries <n>]',
     );
   }
   const { plan, attempts } = await runTriageCli({
     analyzerPath: analyzerPath!,
     divergencePath,
-    verdictsPath,
+    deletionVerdictsPath,
+    additionVerdictsPath,
     model,
     maxRetries,
   });
@@ -340,7 +342,7 @@ function usage(): string {
     '  intake-upstream --continue [-m <msg>] [--json]',
     '  intake-upstream --abort',
     '  intake-validate <analyzer.json> <plan.json> [--json]',
-    '  triage --analyzer <path> [--divergence <p>] [--verdicts <p>] [--out <p>] [--model <id>] [--max-retries <n>]',
+    '  triage --analyzer <path> [--divergence <p>] [--deletion-verdicts <p>] [--addition-verdicts <p>] [--out <p>] [--model <id>] [--max-retries <n>]',
     '  self-test',
     '  help',
   ].join('\n');

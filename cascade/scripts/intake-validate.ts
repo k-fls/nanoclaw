@@ -14,6 +14,7 @@ import { z, ZodIssue } from 'zod';
 import {
   IntakeReport,
   FlsDeletionGroup,
+  UpstreamAdditionGroup,
 } from './intake-analyze.js';
 
 // Plan schemas — two layers:
@@ -342,26 +343,41 @@ export function validatePlan(opts: ValidateOptions): ValidateResult {
     }
   }
 
-  // 6. Deletion verdicts → attention floor. If the skill supplied deletion
-  //    verdicts back into the plan (as triage is instructed to reflect them
-  //    via tags), enforce the attention floor for reopened / inconclusive.
-  //    We cannot see the verdicts directly from the analyzer (they're agent
-  //    output), so we rely on the plan's tags as the authoritative echo.
+  // 6. Inspection-verdict tags → attention floor. The triage agent reflects
+  //    inspector verdicts back into the plan via canonical tags; we enforce
+  //    the attention floor from those tags (we can't see the verdicts directly
+  //    because they're agent output, so the plan tags are the authoritative
+  //    echo). See cascade/docs/inspection.md § Triage outcome mapping.
   for (const g of plan.groups) {
     const tags = g.tags ?? [];
-    if (tags.includes('deletion-rationale-reopened') && g.attention !== 'heavy') {
+    // Deletion `all-adopt` means the reviewer should reopen the deletion —
+    // a judgment call, not mechanical. Requires heavy attention.
+    if (tags.includes('deletion-all-adopt') && g.attention !== 'heavy') {
       violations.push({
-        rule: 'deletion-reopened-needs-heavy-attention',
+        rule: 'deletion-all-adopt-needs-heavy-attention',
         severity: 'error',
-        message: `group #${g.index} "${g.name}" is tagged deletion-rationale-reopened but attention=${g.attention}`,
+        message: `group #${g.index} "${g.name}" is tagged deletion-all-adopt but attention=${g.attention}`,
         group: g.index,
       });
     }
-    if (tags.includes('deletion-rationale-inconclusive') && g.attention === 'none') {
+    // Mixed / inconclusive verdicts — reviewer has to read per-commit.
+    for (const tag of ['deletion-mixed', 'deletion-inconclusive', 'addition-mixed', 'addition-inconclusive']) {
+      if (tags.includes(tag) && g.attention === 'none') {
+        violations.push({
+          rule: 'inspection-mixed-or-inconclusive-needs-attention',
+          severity: 'error',
+          message: `group #${g.index} "${g.name}" is tagged ${tag} but attention=none`,
+          group: g.index,
+        });
+      }
+    }
+    // Addition `all-remove` requires the reviewer to do a post-merge `git rm`.
+    // Not rubber-stamp-able — attention ≥ light.
+    if (tags.includes('addition-all-remove') && g.attention === 'none') {
       violations.push({
-        rule: 'deletion-inconclusive-needs-attention',
+        rule: 'addition-all-remove-needs-attention',
         severity: 'error',
-        message: `group #${g.index} "${g.name}" is tagged deletion-rationale-inconclusive but attention=none`,
+        message: `group #${g.index} "${g.name}" is tagged addition-all-remove (post-merge cleanup needed) but attention=none`,
         group: g.index,
       });
     }
@@ -529,6 +545,7 @@ export function formatValidateReport(r: ValidateResult): string {
   return lines.join('\n') + '\n';
 }
 
-// Unused export stub: keeps FlsDeletionGroup referenced so module re-exports
-// are stable if future checks consume it directly.
+// Unused export stubs: keep inspection-group types referenced so module
+// re-exports are stable if future checks consume them directly.
 export type _FlsDeletionGroupShape = FlsDeletionGroup;
+export type _UpstreamAdditionGroupShape = UpstreamAdditionGroup;

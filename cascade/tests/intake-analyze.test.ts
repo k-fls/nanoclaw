@@ -167,14 +167,11 @@ describe('analyzeIntake — renames tracked', () => {
   });
 });
 
-describe('analyzeIntake — fls deletion inspection', () => {
-  it('detects a file fls deleted that upstream kept modifying', () => {
+describe('analyzeIntake — fls-deletion inspection groups', () => {
+  it('detects an fls-deleted file upstream kept modifying', () => {
     seedBase();
-    // fls deletes src/a.ts
     repo.run('rm', 'src/a.ts');
-    repo.commit('fls: remove legacy a');
-    // upstream keeps modifying src/a.ts (enough lines to clear the 10-line
-    // threshold from seedCascadeRegistry's config).
+    const delSha = repo.commit('fls: remove legacy a');
     repo.checkout('upstream/main');
     const body = Array.from({ length: 15 }, (_, i) => `line ${i}`).join('\n') + '\n';
     repo.write('src/a.ts', body);
@@ -182,95 +179,136 @@ describe('analyzeIntake — fls deletion inspection', () => {
     repo.checkout('main');
     const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
     expect(r.flsDeletionGroups.length).toBe(1);
+    expect(r.upstreamAdditionGroups.length).toBe(0);
     const g = r.flsDeletionGroups[0];
-    expect(g.deletionSha).not.toBe('unknown');
-    expect(g.deletionSubject).toBe('fls: remove legacy a');
-    expect(g.files).toHaveLength(1);
-    expect(g.files[0].path).toBe('src/a.ts');
-    expect(g.files[0].upstreamAdded + g.files[0].upstreamRemoved).toBeGreaterThanOrEqual(10);
-    expect(g.files[0].upstreamTouchingCommits.length).toBeGreaterThan(0);
+    expect(g.component.commits.length).toBe(1);
+    expect(g.deletedFiles).toHaveLength(1);
+    const f = g.deletedFiles[0];
+    expect(f.path).toBe('src/a.ts');
+    expect(f.deletionSha).toBe(delSha);
+    expect(f.deletionSubject).toBe('fls: remove legacy a');
+    expect(f.upstreamAdded + f.upstreamRemoved).toBeGreaterThanOrEqual(10);
+    expect(f.upstreamTouchingCommits.length).toBeGreaterThan(0);
   });
 
-  it('groups multiple files deleted in the same fls commit together', () => {
+  it('component groups upstream commits that share any touched file', () => {
     seedBase();
-    // fls deletes two files in one commit.
     repo.run('rm', 'src/a.ts');
-    repo.run('rm', 'src/b.ts');
-    repo.commit('fls: remove legacy a and b');
-    // upstream modifies both with enough lines.
+    repo.commit('fls: remove legacy a');
     repo.checkout('upstream/main');
     const body = Array.from({ length: 15 }, (_, i) => `L${i}`).join('\n') + '\n';
+    // Commit A: modifies deleted src/a.ts AND touches unrelated file src/c.ts.
     repo.write('src/a.ts', body);
-    repo.commit('upstream: extend a');
-    repo.write('src/b.ts', body);
-    repo.commit('upstream: extend b');
+    repo.write('src/c.ts', body);
+    repo.commit('upstream: edit a and c');
+    // Commit D: touches src/c.ts only.
+    repo.write('src/c.ts', body + 'extra\n');
+    repo.commit('upstream: tweak c again');
     repo.checkout('main');
     const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
     expect(r.flsDeletionGroups.length).toBe(1);
     const g = r.flsDeletionGroups[0];
-    expect(g.files.map((f) => f.path).sort()).toEqual(['src/a.ts', 'src/b.ts']);
+    // Both commits share src/c.ts → same component.
+    expect(g.component.commits.length).toBe(2);
+    // Only src/a.ts is in deletedFiles (it's the fls-deleted path).
+    expect(g.deletedFiles.map((f) => f.path)).toEqual(['src/a.ts']);
   });
 
-  it('splits into separate groups when deletions happen in separate fls commits', () => {
-    seedBase();
-    repo.run('rm', 'src/a.ts');
-    repo.commit('fls: remove a');
-    repo.run('rm', 'src/b.ts');
-    repo.commit('fls: remove b');
-    repo.checkout('upstream/main');
-    const body = Array.from({ length: 15 }, (_, i) => `L${i}`).join('\n') + '\n';
-    repo.write('src/a.ts', body);
-    repo.commit('upstream: edit a');
-    repo.write('src/b.ts', body);
-    repo.commit('upstream: edit b');
-    repo.checkout('main');
-    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
-    expect(r.flsDeletionGroups.length).toBe(2);
-    expect(r.flsDeletionGroups[0].files).toHaveLength(1);
-    expect(r.flsDeletionGroups[1].files).toHaveLength(1);
-  });
-
-  it('detects files upstream added in-range that fls never had (case 2: fls-absent, not fls-deleted)', () => {
-    seedBase();
-    // fls makes no changes. main stays at base.
-    // upstream adds a new file that fls has never had.
-    repo.checkout('upstream/main');
-    const body = Array.from({ length: 15 }, (_, i) => `L${i}`).join('\n') + '\n';
-    repo.write('src/new-upstream-only.ts', body);
-    repo.commit('upstream: add skill file');
-    repo.checkout('main');
-    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
-    expect(r.flsDeletionGroups.length).toBe(1);
-    const g = r.flsDeletionGroups[0];
-    // No fls deletion commit — fls never had this file.
-    expect(g.deletionSha).toBe('unknown');
-    expect(g.files.map((f) => f.path)).toContain('src/new-upstream-only.ts');
-  });
-
-  it('filters out upstream deltas below the threshold', () => {
+  it('filters fls-deleted files whose upstream delta is below the threshold', () => {
     seedBase();
     repo.run('rm', 'src/a.ts');
     repo.commit('fls: remove a');
     repo.checkout('upstream/main');
-    // Only 1 line of change — below the 10-line threshold.
-    repo.write('src/a.ts', 'a0\nadded\n');
+    repo.write('src/a.ts', 'a0\nadded\n'); // 1 line delta, below 10
     repo.commit('upstream: tiny edit');
     repo.checkout('main');
     const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
     expect(r.flsDeletionGroups).toHaveLength(0);
   });
+});
 
-  it('emits no groups when nothing fls deleted is modified upstream', () => {
+describe('analyzeIntake — upstream-addition inspection groups', () => {
+  it('detects an upstream-added file fls never had', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    const body = Array.from({ length: 55 }, (_, i) => `L${i}`).join('\n') + '\n';
+    repo.write('src/new-upstream-only.ts', body);
+    const introSha = repo.commit('upstream: add skill file');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.flsDeletionGroups.length).toBe(0);
+    expect(r.upstreamAdditionGroups.length).toBe(1);
+    const g = r.upstreamAdditionGroups[0];
+    expect(g.addedFiles).toHaveLength(1);
+    const f = g.addedFiles[0];
+    expect(f.path).toBe('src/new-upstream-only.ts');
+    expect(f.introductionSha).toBe(introSha);
+    expect(f.introductionSubject).toBe('upstream: add skill file');
+    expect(f.fileLines).toBeGreaterThanOrEqual(50);
+  });
+
+  it('files added in different upstream commits form separate components unless file-coupled', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    const body = Array.from({ length: 55 }, (_, i) => `L${i}`).join('\n') + '\n';
+    repo.write('.claude/skills/alpha/SKILL.md', body);
+    repo.write('.claude/skills/alpha/impl.ts', body);
+    repo.commit('add alpha skill');
+    repo.write('.claude/skills/beta/SKILL.md', body);
+    repo.commit('add beta skill');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.upstreamAdditionGroups.length).toBe(2);
+    const paths = r.upstreamAdditionGroups.map((g) => g.addedFiles.map((f) => f.path).sort());
+    expect(paths).toEqual([
+      ['.claude/skills/alpha/SKILL.md', '.claude/skills/alpha/impl.ts'],
+      ['.claude/skills/beta/SKILL.md'],
+    ]);
+  });
+
+  it('filters out small upstream additions below the threshold', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    repo.write('src/tiny.ts', 'const x = 1;\n');
+    repo.commit('add tiny stub');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.upstreamAdditionGroups).toHaveLength(0);
+  });
+
+  it('emits no addition groups when nothing fls-absent is added upstream', () => {
+    seedBase();
+    repo.checkout('upstream/main');
+    // Modifies a file fls already has — not an addition.
+    repo.write('src/a.ts', 'a-mod\n');
+    repo.commit('upstream: tweak a');
+    repo.checkout('main');
+    const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
+    expect(r.upstreamAdditionGroups).toHaveLength(0);
+  });
+});
+
+describe('analyzeIntake — mixed component', () => {
+  it('a single component can feed both a deletion group and an addition group', () => {
     seedBase();
     repo.run('rm', 'src/a.ts');
     repo.commit('fls: remove a');
     repo.checkout('upstream/main');
-    // Upstream edits a different file.
-    repo.write('src/b.ts', 'b-changed\nmore\nlines\nand\nmore\nand\nmore\nand\nmore\nand\nmore\nand\n');
-    repo.commit('upstream: edit b');
+    const body = Array.from({ length: 55 }, (_, i) => `L${i}`).join('\n') + '\n';
+    // One upstream commit: modifies deleted src/a.ts AND adds src/new.ts.
+    repo.write('src/a.ts', body);
+    repo.write('src/new.ts', body);
+    repo.commit('upstream: touch a and introduce new');
     repo.checkout('main');
     const r = analyzeIntake({ repoRoot: repo.root, target: 'main', source: 'upstream/main' });
-    expect(r.flsDeletionGroups).toHaveLength(0);
+    expect(r.flsDeletionGroups.length).toBe(1);
+    expect(r.upstreamAdditionGroups.length).toBe(1);
+    // Both refer to the same component id.
+    expect(r.flsDeletionGroups[0].component.id).toBe(
+      r.upstreamAdditionGroups[0].component.id,
+    );
+    expect(r.flsDeletionGroups[0].deletedFiles.map((f) => f.path)).toEqual(['src/a.ts']);
+    expect(r.upstreamAdditionGroups[0].addedFiles.map((f) => f.path)).toEqual(['src/new.ts']);
   });
 });
 
@@ -292,7 +330,8 @@ describe('analyzeIntake — whitespace-only per-file signal', () => {
         version_depth: 3,
         upstream_remote: 'upstream',
         upstream_main_branch: 'main',
-        fls_deletion_min_lines: 10,
+        fls_deletion_min_delta_lines: 10,
+        upstream_addition_min_file_lines: 50,
         intake_whitespace_only: false,
       },
     });

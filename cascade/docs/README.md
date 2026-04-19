@@ -11,6 +11,7 @@ Implementation spec for the branch model, ownership, versioning, and processes d
 - [processes.md](processes.md) — P1–P5 with the three-tier design
 - [phases.md](phases.md) — full phase roadmap (Phase 0 through Phase 5)
 - [phase-0.md](phase-0.md) — detailed scope for the first implementation phase
+- [inspection.md](inspection.md) — contract for the P1 inspector subagents (fls-deletion + upstream-addition)
 
 ## Design principles
 

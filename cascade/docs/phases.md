@@ -29,10 +29,10 @@ Full scope: [phase-0.md](phase-0.md).
 Handle ongoing upstream merges with agent-drafted triage and conflict resolutions. Splits the merge into reviewable sub-merges before touching the worktree.
 
 **Deliverables**
-- `intake-analyze.ts` — read-only analysis: per-commit signals (primaryKind, files, tags, parents), aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points, rename tracking, fls-deletion groups. Produces structured JSON + human-readable pretty-print. Deterministic; cacheable by `(from_sha, to_sha, merge_base)`.
+- `intake-analyze.ts` — read-only analysis: per-commit signals (primaryKind, files, tags, parents), aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points, rename tracking, fls-deletion and upstream-addition inspection-group arrays (components of upstream-range commits sharing any touched file; see [inspection.md](inspection.md)). Produces structured JSON + human-readable pretty-print. Deterministic; cacheable by `(from_sha, to_sha, merge_base)`.
 - `cascade divergence-report` — `git diff core..upstream/main` rendered as per-file/per-hunk JSON + text (no registry file).
 - `intake-upstream.ts` — per-group merge executor (runs once per approved group). Fetch, `--no-ff` merge, conflict loop.
-- `cascade-intake` skill + `cascade-triage-intake` / `cascade-inspect-fls-deletion` / `cascade-resolve-conflict` agent prompts — orchestrate: analyze → inspect deletions → triage → human-approve plan → per-group merge loop.
+- `cascade-intake` skill + `cascade-triage-intake` / `cascade-inspect-fls-deletion` / `cascade-inspect-upstream-addition` / `cascade-resolve-conflict` agent prompts — orchestrate: analyze → inspect deletion + addition components (parallel) → triage → human-approve plan → per-group merge loop.
 - `triage.ts` — runs the triage agent via Claude Agent SDK `query()` with an in-process MCP server exposing `emit_plan` (decode-time schema-enforced via zod). Enriches draft → full plan → validates → retries on violations internally.
 - `intake-validate.ts` — deterministic post-enrichment validator: contiguity, coverage, break-point singletons, intersection-coverage attention floor, conflict-resolution flag gating, deletion-verdict attention floors. Debug-accessible as `cascade intake-validate`; normally runs inside `cascade triage`.
 

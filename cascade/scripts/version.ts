@@ -41,10 +41,16 @@ export interface RepoConfig {
   version_depth: number;
   upstream_remote: string;
   upstream_main_branch: string;
-  // P1 deletion-inspection threshold: only flag fls-deleted files whose
-  // upstream delta exceeds this many total lines (added + removed).
-  // Default 10; override per repo if the signal is too noisy or too quiet.
-  fls_deletion_min_lines: number;
+  // P1 fls-deletion-inspection threshold: flag an fls-deleted file only
+  // when upstream's in-range delta on it (added + removed lines) exceeds
+  // this. Low floor is right — a small bugfix on a deleted file can still
+  // be worth reviewing. Default 10.
+  fls_deletion_min_delta_lines: number;
+  // P1 upstream-addition-inspection threshold: flag an upstream-added file
+  // fls never had only when its size on source tip exceeds this many lines.
+  // Higher floor is right — small new files (stubs, gitkeeps) rarely need
+  // adoption review. Default 50.
+  upstream_addition_min_file_lines: number;
   // Whether the analyzer computes the whitespace-only per-file signal used
   // by the attention-floor exemption. Default true. Set false for projects
   // where whitespace is semantic (Python, YAML, Makefiles, shell heredocs):
@@ -53,7 +59,8 @@ export interface RepoConfig {
 }
 
 const DEFAULTS = {
-  fls_deletion_min_lines: 10,
+  fls_deletion_min_delta_lines: 10,
+  upstream_addition_min_file_lines: 50,
   intake_whitespace_only: true,
 };
 
@@ -67,8 +74,10 @@ export function loadConfig(repoRoot: string): RepoConfig {
     version_depth: parsed.version_depth,
     upstream_remote: parsed.upstream_remote,
     upstream_main_branch: parsed.upstream_main_branch,
-    fls_deletion_min_lines:
-      parsed.fls_deletion_min_lines ?? DEFAULTS.fls_deletion_min_lines,
+    fls_deletion_min_delta_lines:
+      parsed.fls_deletion_min_delta_lines ?? DEFAULTS.fls_deletion_min_delta_lines,
+    upstream_addition_min_file_lines:
+      parsed.upstream_addition_min_file_lines ?? DEFAULTS.upstream_addition_min_file_lines,
     intake_whitespace_only:
       parsed.intake_whitespace_only ?? DEFAULTS.intake_whitespace_only,
   };

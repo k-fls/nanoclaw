@@ -19,9 +19,9 @@ You are given:
    - `commits[]` — each with `sha`, `subject`, `author`, `authorDate`, `parents`, `isMerge`, `files[]`, `kinds[]`, `primaryKind`, `tags[]` (upstream refs at that commit). This is your primary grouping input. Each `files[]` entry may carry two optional per-(commit, path) signals:
      - `whitespaceOnly: true` — this commit's diff on this path is non-empty but empty under `--ignore-all-space` (formatting / import order). Suppressed when the repo's `.cascade/config.yaml` sets `intake_whitespace_only: false` (projects where whitespace is semantic — Python, YAML, Makefiles); in that case the field is never present and formatting-only commits are treated like any other divergence touch.
      - `revertedAt: "<sha>"` — this commit lies inside a rollback window on this path: some later commit in the range returns the path to a state it held at or before this commit's pre-state. The `<sha>` is the reverter.
-   - `aggregateFiles`, `divergenceFiles`, `intersection`, `predictedConflicts`, `breakPoints`, `renames`, `flsDeletionGroups`. `flsDeletionGroups` covers both "fls deleted the file post-base" and "fls never had it (upstream added it post-base)" — both appear as files present on upstream but absent on fls. The second case is grouped under `deletionSha: "unknown"` (there is no fls deletion commit because fls never had the file).
+   - `aggregateFiles`, `divergenceFiles`, `intersection`, `predictedConflicts`, `breakPoints`, `renames`, `flsDeletionGroups`, `upstreamAdditionGroups`. Each `flsDeletionGroups[i]` / `upstreamAdditionGroups[i]` refers to an `InspectionComponent` — a connected sub-graph of upstream-range commits that share any touched file. A single component may feed both a deletion group and an addition group. Components are the unit the inspector agents operate on.
 2. Optional: the human-readable output of `cascade divergence-report` for context on where fls has diverged.
-3. Optional: `flsDeletionVerdicts` — an array of verdicts produced by `cascade-inspect-fls-deletion`, one per non-empty `flsDeletionGroups` entry. Each verdict has `group_header`, `group_rationale`, and per-file breakdown.
+3. Optional: `flsDeletionVerdicts` and `upstreamAdditionVerdicts` — arrays of verdicts produced by `cascade-inspect-fls-deletion` and `cascade-inspect-upstream-addition` respectively. One entry per analyzer component. Each verdict has `component_id`, `inspection_kind`, `group_header` (`all-adopt | all-remove | mixed | inconclusive`), `commit_verdicts[]` (per-commit `adopt | remove | escalate`), and `feature_narratives[]`. The inspectors run pre-triage on analyzer components; these are not triage groups. See [cascade/docs/inspection.md](../../cascade/docs/inspection.md) for the full contract.
 
 Do not re-run the analyzer. If fields look stale or missing, say so and ask for a fresh run.
 
@@ -173,9 +173,9 @@ How hard the actual merge mechanics are. Independent of whether the human needs 
 
 How much the human needs to think about this group at confirmation time. Independent of complexity.
 
-- `none` — outcome is mechanical and pre-determined. Pure clean group, OR pure fls-absent/deleted-area group where the deletion inspector returned `rationale-holds` (case-1 merge drops upstream's work; case-2 merge acquires files the reviewer will delete post-merge). The human's "proceed" is a rubber-stamp.
+- `none` — outcome is mechanical and pre-determined. Pure clean group, OR a group that sits entirely within an inspection component whose verdict is unanimous (`all-adopt` or `all-remove`) in a way that matches the mechanical default (deletion `all-remove` / addition `all-adopt`) — the reviewer's "proceed" is a rubber-stamp. See rule 7 below for outcome mapping.
 - `light` — outcome is mostly mechanical but needs a quick sanity check. Renames on diverged surface with no behavioral delta; side-touches on unrelated files that need a glance; predictable SDK/dependency bumps.
-- `heavy` — real judgment required. Genuine conflicts needing synthesis; `rationale-reopened` / `inconclusive` deletion groups; structurals touching ≥ 3 intersection files; anything where `expected_outcome === 'unclear'`.
+- `heavy` — real judgment required. Genuine conflicts needing synthesis; inspection verdicts `mixed` / `inconclusive`; deletion verdicts `all-adopt` (reopening a deletion is a judgment call); addition verdicts `all-remove` on large components; structurals touching ≥ 3 intersection files; anything where `expected_outcome === 'unclear'`.
 
 **A group can be `mechanical_complexity: high` and `attention: none`** — e.g. a 20-file upstream structural where every file is in an fls-deleted area and the inspector confirmed rationale holds. The merge is complex mechanically but the outcome (silent rejection of the upstream work) is pre-decided.
 
@@ -186,7 +186,7 @@ How much the human needs to think about this group at confirmation time. Indepen
 Your best guess at what the merge will actually result in. The reviewer uses this to calibrate how surprised to be.
 
 - `accept` — upstream's changes will land cleanly, fls gets them as-is.
-- `reject` — upstream's changes will be silently dropped (**case-1 only**: fls deleted surface / fls override wins / merge-tree result is all-fls). Do NOT use `reject` for fls-absent groups — the merge acquires those files on fls; use `accept` with a post-merge cleanup tag instead.
+- `reject` — upstream's changes will be silently dropped by the merge (applies to deletion components where the deletion stands; fls override wins; merge-tree result is all-fls). Do NOT use `reject` for addition components — the merge acquires those files on fls; use `accept` with `post-merge-cleanup` tag when the reviewer plans to `git rm`.
 - `synthesize` — non-trivial merge, content from both sides combines.
 - `unclear` — you cannot predict; the reviewer needs to look at the actual diff.
 
@@ -198,10 +198,9 @@ Concrete, specific reasons. Canonical forms:
 - `conflict-predicted:<path>` — file in analyzer's `predictedConflicts`.
 - `large-structural:<N-files>` — structural singleton with many files.
 - `rename-crosses-boundary` — rename inside group, pre- or post-rename path is divergent.
-- `deletion-rationale-holds` / `deletion-rationale-partial` / `deletion-rationale-reopened` / `deletion-rationale-inconclusive` — derived from `flsDeletionVerdicts`. **Reopened → `attention: heavy`; inconclusive → `attention` ≥ `light`** (validator enforces).
-- `fls-deleted-silent-drop` — case-1 group (real `flsDeletionGroups[k].deletionSha`): fls had the files and deleted them; merge drops upstream's work. Pairs with `expected_outcome: reject`.
-- `fls-absent-silent-acquire` — case-2 group (`deletionSha === 'unknown'`): fls never had the files and upstream added them post-base; merge acquires them on fls. Pairs with `expected_outcome: accept`. Add `post-merge-cleanup` when the inspector returned `rationale-holds` so the reviewer sees the follow-up `git rm` is needed.
-- `post-merge-cleanup` — reviewer should take a deletion action after the merge lands (paired with `fls-absent-silent-acquire` + `rationale-holds`).
+- `deletion-all-remove` / `deletion-all-adopt` / `deletion-mixed` / `deletion-inconclusive` — derived from `flsDeletionVerdicts`. **`deletion-all-adopt` → `attention: heavy` + `expected_outcome: unclear`** (reopening a deletion is the reviewer's call, not mechanical). **`deletion-mixed` → `attention` ≥ `light`; `deletion-inconclusive` → `attention` ≥ `light`** (validator enforces).
+- `addition-all-adopt` / `addition-all-remove` / `addition-mixed` / `addition-inconclusive` — derived from `upstreamAdditionVerdicts`. **`addition-all-remove` pairs with `post-merge-cleanup` tag** — the merge acquires, reviewer deletes post-merge. **`addition-mixed` → `attention` ≥ `light`; `addition-inconclusive` → `attention` ≥ `light`**.
+- `post-merge-cleanup` — reviewer should `git rm` specific files after the merge lands. Paired with `addition-all-remove`.
 - `break-point:<ref>` — an upstream tag / upstream-merge commit sits in this group.
 - `clean-mechanical` — add this when `attention === 'none'` to make the "no thought required" signal explicit.
 - `side-touches:<path>` — a file outside the group's main theme that the group modifies; common cause of `attention: light`.
@@ -232,11 +231,18 @@ One sentence, ≤ 150 chars, naming the single shared theme. If you cannot write
 
 For each group, walk this list in order. Set `attention` to the **maximum** level any rule raises.
 
-1. **Deletion verdicts (strongest signal).** For each entry in `flsDeletionVerdicts`:
-   - `rationale-holds` → tag `deletion-rationale-holds`. Attention derived from other rules.
-   - `rationale-partially-holds` → tag `deletion-rationale-partial`. Attention ≥ `light`. Mention port-candidate files in `functional_summary`.
-   - `rationale-reopened` → tag `deletion-rationale-reopened`. Attention = `heavy`. `expected_outcome: unclear`.
-   - `inconclusive` → tag `deletion-rationale-inconclusive`. Attention ≥ `light`; `heavy` if the `escalation_reason` is non-trivial.
+1. **Inspection verdicts (strongest signal).** For each entry in `flsDeletionVerdicts` or `upstreamAdditionVerdicts` whose component commits land in this triage group, read the `group_header`:
+   - **Deletion verdicts:**
+     - `all-remove` → tag `deletion-all-remove`. Mechanical default stands (deletion drops upstream's work). Attention derived from other rules.
+     - `all-adopt` → tag `deletion-all-adopt`. Attention = `heavy`. `expected_outcome: unclear` (reviewer decides HOW to un-drop — revive the file, port the changes, etc.).
+     - `mixed` → tag `deletion-mixed`. Attention ≥ `light`. Mention per-commit verdict split in `functional_summary`.
+     - `inconclusive` → tag `deletion-inconclusive`. Attention ≥ `light`; `heavy` if the `escalation_reason` is non-trivial.
+   - **Addition verdicts:**
+     - `all-adopt` → tag `addition-all-adopt`. Mechanical default stands (merge acquires). Attention derived from other rules.
+     - `all-remove` → tag `addition-all-remove` + `post-merge-cleanup`. `expected_outcome: accept` (merge lands the files) but add a `functional_summary` line naming the post-merge `git rm` targets.
+     - `mixed` → tag `addition-mixed`. Attention ≥ `light`. Mention per-commit verdict split.
+     - `inconclusive` → tag `addition-inconclusive`. Attention ≥ `light`; `heavy` if `escalation_reason` is non-trivial.
+   Per-commit `adopt`/`remove`/`escalate` verdicts also give you permission to split the triage group at commit boundaries where verdicts flip — the thematic grouping rule still applies.
 
 2. **Predicted conflicts.** If any file in the group is in `predictedConflicts` → `attention: heavy`, `expected_outcome: synthesize` (or `unclear` if many files conflict), `requiresAgentResolution: true`, tag `conflict-predicted:<path>`.
 
@@ -250,14 +256,16 @@ For each group, walk this list in order. Set `attention` to the **maximum** leve
    - `< 5 files`, no intersection touch → `attention: light`.
    - `≥ 5 files` touching intersection → `attention: heavy`, `expected_outcome: unclear`. Tag the specific intersection files.
 
-7. **Pure fls-absent-or-deleted area + `rationale-holds`.** Every file in the group sits in a `flsDeletionGroups[k].files[*].path` and the relevant deletion verdicts are `rationale-holds`. Outcome depends on the group's `deletionSha`:
-   - **Case 1 — real `deletionSha` (fls had the files, deleted them).** Merge silently drops upstream's work. Set `attention: none`, `expected_outcome: reject`, tags include `clean-mechanical` + `deletion-rationale-holds` + `fls-deleted-silent-drop`.
-   - **Case 2 — `deletionSha === 'unknown'` (fls never had the files; upstream added them post-base).** Merge silently acquires the files. Set `attention: none`, `expected_outcome: accept`, tags include `clean-mechanical` + `deletion-rationale-holds` + `fls-absent-silent-acquire` + `post-merge-cleanup`. Mention the post-merge `git rm` in `functional_summary` so the reviewer sees the follow-up.
-   - **Mixed group spanning both cases** — a single group whose files come from both a real-sha and an unknown-sha `flsDeletionGroups[k]` entry. This is an honest anti-pattern: the outcomes are opposite (drop vs acquire), so they can't share a single `expected_outcome`. Split the group along the case boundary rather than coalescing.
+7. **Unanimous inspection outcome, mechanical default stands.** A triage group whose commits come entirely from components with unanimous inspection verdicts (deletion `all-remove` OR addition `all-adopt`, no contradictions) and no other attention-raising signal can sit at `attention: none`:
+   - **Deletion component + `all-remove`.** Merge silently drops upstream's work (mechanical default). Set `attention: none`, `expected_outcome: reject`, tags include `clean-mechanical` + `deletion-all-remove`.
+   - **Addition component + `all-adopt`.** Merge silently acquires; that's what the reviewer wants. Set `attention: none`, `expected_outcome: accept`, tags include `clean-mechanical` + `addition-all-adopt`.
+   - **Addition component + `all-remove`.** Merge acquires but reviewer will delete post-merge — this is technically the `addition-all-remove` case. Use `attention: light`, `expected_outcome: accept`, tags include `addition-all-remove` + `post-merge-cleanup`. Name the `git rm` targets in `functional_summary`. Attention is `light` (not `none`) because the reviewer has to do something after the merge, which is not rubber-stamp-able.
+   - **Deletion component + `all-adopt`.** Reviewer needs to un-drop upstream's work — HOW is their call (revive file / port changes / etc.). This is rule-1's heavy case: `attention: heavy`, `expected_outcome: unclear`, tag `deletion-all-adopt`.
+   - **Mixed-component anti-pattern.** A triage group whose commits come from multiple components with contradicting verdicts (e.g., one component `all-adopt`, another `all-remove`) can't share a single `expected_outcome`. Split along the component boundary rather than coalescing.
    
-   The merge touching many files does not inflate attention in any of these — outcome is deterministic once the case is identified.
+   The merge touching many files does not inflate attention when the verdicts are unanimous — outcome is deterministic once the component verdict is identified.
    
-   **Caveat — intersection-touching commits in the group.** A mixed group that includes an upstream merge commit (or any commit) touching files in `intersection` cannot drop to `attention: none` even if the fls-absent/deleted portion is `rationale-holds`. The intersection touches are a separate judgment call and force `attention ≥ light` per rule 3. Split off the intersection-touching commits into their own group, or accept the raised attention for the combined group.
+   **Caveat — intersection-touching commits in the group.** A triage group that includes commits touching files in `intersection` cannot drop to `attention: none` even if the inspection verdict is unanimous. The intersection touches are a separate judgment call and force `attention ≥ light` per rule 3. Split off intersection-touching commits into their own group, or accept the raised attention for the combined group.
 
 8. **All-clean no-side-touches.** Pure additive upstream work that doesn't touch divergent surface. `attention: none`, `expected_outcome: accept`, tag `clean-mechanical`.
 
@@ -265,13 +273,32 @@ Attention is the **max** across triggered rules. Never downgrade an attention le
 
 ## What to output for the human
 
-After the JSON, write 5–15 lines of prose:
+Three sections, in this order, after the plan JSON:
 
-- One sentence on the range (commit count, divergence intersection size, conflict count, deletion groups).
-- A table (or aligned list) with columns: `#idx | name | kind | attention | outcome | 1-line functional_summary`.
-- Explicit callouts for any `attention: heavy` group with a non-obvious reason (divergence hiding in clean metadata, rename chain crossing groups, reopened deletion rationale, etc.).
+### Plan summary
 
-Keep it terse. The human reads this back-to-back with the analyzer's pretty-print.
+One sentence on the range (commit count, divergence intersection size, conflict count, inspection component counts). Then a table (or aligned list) with columns: `#idx | name | kind | attention | outcome | 1-line functional_summary`.
+
+### Inspection summary
+
+Distilled output from the two inspectors. For each inspector kind (`deletion`, `addition`), list:
+
+- Component count by group_header: `N all-adopt · N all-remove · N mixed · N inconclusive`.
+- Per-commit verdict counts: `N adopt · N remove · N escalate`.
+- Escalations surfaced: file + component + `escalation_reason` (one line each; if >5, list top 5 and say "+N more").
+- Top feature_narratives worth the reviewer's eye (pick 1–3 per inspector; titles only, one line each).
+
+### Reviewer follow-up actions
+
+Typed list. Three action kinds, each heading optional if empty:
+
+- **Adoption candidates.** Components whose verdicts are `all-adopt` (or `mixed` with adopt-leaning commits). For each: component id, driver commit(s), one-line feature narrative. Reviewer decides HOW to integrate.
+- **Removal candidates.** Components whose verdicts are `all-remove` on the addition side (post-merge `git rm` list), and deletion components whose `all-remove` confirms the fls deletion stands (no action, informational).
+- **Escalations.** Components whose inspector returned `inconclusive` or whose `commit_verdicts[].verdict === 'escalate'`. Each entry names what additional tool call / human decision would resolve it.
+
+Do NOT recommend integration mechanics in any of these sections. The inspectors are instructed to keep prose to "what" (describing upstream's work) and never "how" (porting, reintroducing, wiring). Triage inherits that boundary: reviewer decides HOW.
+
+Keep each section terse. The human reads all three back-to-back with the analyzer's pretty-print.
 
 ## Re-invocation with validator errors
 
@@ -282,7 +309,9 @@ If the skill re-invokes you with `previous_plan` + `validator_violations`, treat
 - `break-point-not-singleton` → pull the break-point SHA into its own group (one commit, alone).
 - `intersection-file-unattended` → raise the containing group's `attention` to `light` or split so the divergent file lands in a non-`none` group.
 - `conflict-without-resolution-flag` → raise the containing group's `attention` to `heavy`. (The `requiresAgentResolution` flag is derived from `attention === 'heavy' || kind === 'conflict'`; raising attention is the lever you control.)
-- `deletion-reopened-needs-heavy-attention` / `deletion-inconclusive-needs-attention` → raise `attention` per the floor rules above.
+- `deletion-all-adopt-needs-heavy-attention` → raise `attention` to `heavy` on the group tagged `deletion-all-adopt`.
+- `inspection-mixed-or-inconclusive-needs-attention` → raise `attention` to at least `light` on the group carrying the `{deletion,addition}-{mixed,inconclusive}` tag.
+- `addition-all-remove-needs-attention` → raise `attention` to at least `light` on the group tagged `addition-all-remove` (post-merge `git rm` is not rubber-stamp-able).
 
 Re-emit the full plan. Do not partial-diff.
 
