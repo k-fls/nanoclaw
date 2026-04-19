@@ -66,6 +66,8 @@ Verdict is per commit.
 
 **`adopt` is not the default. Absence of a reason against ≠ reason for.** If you can't name a concrete reason the target *wants* this work, you do not have enough signal for `adopt` — use `mixed` if you see both sides, `escalate` if you need more input.
 
+**`remove` is not the default either. The rule is symmetric: absence of a reason for ≠ reason against.** A clean, self-contained upstream addition with no affirmative adopt signal and no default-to-remove trigger is an `escalate`, not a `remove`. "Target probably doesn't ship this style" / "doesn't fit the target's direction" / "commercial fork wouldn't want this" are **not** remove triggers — they are reviewer-scope judgments the inspector cannot make. If your reasoning for `remove` reduces to a product-direction claim about the target, your verdict must be `escalate` with that claim named as the reviewer question. `remove` requires an affirmative, evidence-cited trigger from the diff or narrative.
+
 **Do not treat "opt-in ⇒ harmless" as an adopt-justifier.** Whether shipping a dormant surface is acceptable is a reviewer judgment, not an inspector rubber-stamp. If the only argument for adopt is "it won't run unless invoked," that's at best `mixed`.
 
 **Default-to-remove triggers** (any one means the commit cannot be a clean `adopt`; it becomes `remove`, `mixed`, or `escalate` depending on what else is in the commit):
@@ -73,7 +75,7 @@ Verdict is per commit.
 - **External telemetry / analytics / tracking.** PostHog, Sentry, Datadog, GA, Mixpanel, hardcoded tracking keys, beacon endpoints. A commercial or personal fork rarely wants to ship upstream's instrumentation by default.
 - **Duplicate / overlapping surface.** The new feature covers ground target already has (named via `port_hints` or `target_feature_overview`). Shipping both is a reviewer decision, not a default.
 - **External service dependency target hasn't opted into.** New outbound calls, third-party accounts, license-restricted assets, network fetches at install/run time.
-- **Upstream-specific tooling.** Release / publish / migration helpers scoped to upstream's distribution channel, not target's.
+- **Upstream-specific distribution plumbing.** Release automation, publish scripts, changelog generators, package-manifest bumps pointing at upstream's registry / tag / CDN, CI wiring scoped to upstream's pipelines. **Scope is narrow:** plumbing that serves upstream's own distribution channel. A user-facing skill, command, or feature whose *filename* happens to contain "migrate" / "setup" / "install" / "release" is NOT this trigger — those are normal product features for upstream's users, and the adopt/remove call is a reviewer judgment (`escalate` if you can't affirmatively place it elsewhere).
 
 Commit-level mixing guidance:
 

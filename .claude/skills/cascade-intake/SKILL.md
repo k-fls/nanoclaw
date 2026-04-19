@@ -47,34 +47,19 @@ Also run `npm run cascade -- divergence-report` and save to `.cascade/.intake/<c
 
 ### 2a. Inspect components (parallel to triage)
 
-The analyzer emits two inspection-group arrays — `discardedGroups` and `introducedGroups`. Each entry refers to a component: a connected sub-graph of upstream-range commits that share any touched file. A single component can feed **both** a discarded component and an introduced component (different focus files, shared commits); dispatch happens per (component, inspector) pair.
+Run `cascade inspect`. It reads the analyzer report, mechanically assembles the inspector input for each `discardedGroups[i]` and `introducedGroups[i]` (commits, focus-file contents preloaded from git, `port_hints` from `rg` for TS/JS exports, context-file excerpts, kind-specific context), and dispatches the `cascade-inspect-discarded` / `cascade-inspect-introduced` subagents via the SDK with schema-enforced output (one-shot `emit_verdict` MCP tool). No orchestrator-authored framing reaches the inspectors — the prompts are the agents' `.md` bodies and the user prompt is the assembled JSON, period.
 
-Dispatch in parallel before (or alongside) step 2b triage:
+```
+npm run cascade -- inspect \
+  --analyzer .cascade/.intake/<cacheKey>/analyzer.json \
+  --discarded-out .cascade/.intake/<cacheKey>/discarded-verdicts.json \
+  --introduced-out .cascade/.intake/<cacheKey>/introduced-verdicts.json \
+  --concurrency 4
+```
 
-- For each `discardedGroups[i]`: dispatch `cascade-inspect-discarded` with the component's commits as context and `discardedFiles` as focus.
-- For each `introducedGroups[i]`: dispatch `cascade-inspect-introduced` with the component's commits as context and `introducedFiles` as focus.
+Progress lines are printed to stderr (one `▶` per job start, one `✓` per completion with `group_header` and `adopt/remove/mixed/escalate` counts). `--concurrency` defaults to 4 (env override `CASCADE_INSPECT_CONCURRENCY`); tune upward only if you're confident the API rate limit can absorb it. Omit either `--discarded-out` or `--introduced-out` to skip writing that side; with neither, the combined JSON prints to stdout.
 
-Input assembly (both inspectors share the shape; see [cascade/docs/inspection.md](../../cascade/docs/inspection.md) for the full contract):
-
-- `component_id`, `inspection_kind` ("discarded" or "introduced") — straight from the analyzer entry.
-- `commits`: for each sha in `component.commits`, fetch `{ sha, subject, body, author, authorDate }` via `git show -s --format='%H%n%s%n%an%n%aI%n%b' <sha>`.
-- `focus_files`: for each focus file (discarded kind: `discardedFiles`; introduced kind: `introducedFiles`), pack:
-  - `path`
-  - `base_content` — `git show <base>:<path>`; pass `""` when `git show` exits non-zero (path did not exist at base — normal for introduced focus files).
-  - `upstream_tip_content` — `git show <source>:<path>`.
-  - `upstream_touching_commits` — `[{ sha, subject }]` from the analyzer's `upstreamTouchingCommits`, each resolved with `git show -s --format=%s <sha>`.
-  - `port_hints` (optional) — for files exporting named symbols, run `rg -n 'exportedSymbol' src/` and pass results. Skip for non-TS/JS files or files without obvious exports.
-- `context_files`: for each path in `component.allTouchedFiles` not in `focus_files`, pack `{ path, upstream_tip_content_excerpt }`. Excerpt = first ~100 lines of `git show <source>:<path>` (truncate larger files).
-- `kind_specific_context`:
-  - Discarded: `{ target_removal_commit: { sha, subject, body, author_date } }` fetched via `git show -s --format='%H%n%s%n%aI%n%b' <discardedFiles[0].removalSha>`. All files in a discarded component share the component's removal context only loosely — pass the context for the dominant removal commit (the one anchoring the most files). For `removalSha === "unknown"`, pass all fields as empty strings.
-  - Introduced: `{ target_feature_overview }` — optional; when present, a short digest of the target's current skills, modules, and recent removals. Initially empty/omitted; populated as a later enhancement.
-
-Collect each subagent's JSON verdict into the appropriate array:
-
-- Discarded verdicts → `.cascade/.intake/<cacheKey>/discarded-verdicts.json`
-- Introduced verdicts → `.cascade/.intake/<cacheKey>/introduced-verdicts.json`
-
-Both feed the triage agent (as additional context) and the final plan presentation.
+See [cascade/docs/inspection.md](../../cascade/docs/inspection.md) for the input contract and the verdict schema. Both output files feed step 2b triage and the final plan presentation.
 
 ### 2b. Triage
 

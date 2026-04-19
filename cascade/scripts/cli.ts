@@ -24,6 +24,7 @@ import { analyzeIntake, formatReport as formatIntakeReport } from './intake-anal
 import { divergenceReport, formatDivergenceReport } from './divergence-report.js';
 import { validatePlan, formatValidateReport } from './intake-validate.js';
 import { runTriageCli } from './triage.js';
+import { runInspectCli } from './inspect.js';
 import {
   abortIntakeMerge,
   continueIntakeMerge,
@@ -286,6 +287,48 @@ function cmdIntakeValidate(args: string[]): number {
   return res.errors === 0 ? 0 : 1;
 }
 
+async function cmdInspect(args: string[]): Promise<number> {
+  const analyzerPath = takeOption(args, '--analyzer');
+  const discardedOutPath = takeOption(args, '--discarded-out') ?? undefined;
+  const introducedOutPath = takeOption(args, '--introduced-out') ?? undefined;
+  const concurrencyStr = takeOption(args, '--concurrency');
+  const concurrency = concurrencyStr ? Number(concurrencyStr) : undefined;
+  const model = takeOption(args, '--model') ?? undefined;
+  if (!analyzerPath) {
+    die(
+      'usage: cascade inspect --analyzer <path> [--discarded-out <p>] [--introduced-out <p>] [--concurrency <n>] [--model <id>]',
+    );
+  }
+  const root = repoRoot();
+  const { discarded, introduced } = await runInspectCli({
+    analyzerPath: analyzerPath!,
+    discardedOutPath,
+    introducedOutPath,
+    concurrency,
+    model,
+    repoRoot: root,
+  });
+  const fs = await import('node:fs');
+  if (discardedOutPath) {
+    fs.writeFileSync(discardedOutPath, JSON.stringify(discarded, null, 2) + '\n', 'utf8');
+    process.stderr.write(
+      `inspect: wrote ${discarded.length} discarded verdict(s) to ${discardedOutPath}\n`,
+    );
+  }
+  if (introducedOutPath) {
+    fs.writeFileSync(introducedOutPath, JSON.stringify(introduced, null, 2) + '\n', 'utf8');
+    process.stderr.write(
+      `inspect: wrote ${introduced.length} introduced verdict(s) to ${introducedOutPath}\n`,
+    );
+  }
+  if (!discardedOutPath && !introducedOutPath) {
+    process.stdout.write(
+      JSON.stringify({ discarded, introduced }, null, 2) + '\n',
+    );
+  }
+  return 0;
+}
+
 async function cmdTriage(args: string[]): Promise<number> {
   const analyzerPath = takeOption(args, '--analyzer');
   const divergencePath = takeOption(args, '--divergence') ?? undefined;
@@ -342,6 +385,7 @@ function usage(): string {
     '  intake-upstream --continue [-m <msg>] [--json]',
     '  intake-upstream --abort',
     '  intake-validate <analyzer.json> <plan.json> [--json]',
+    '  inspect --analyzer <path> [--discarded-out <p>] [--introduced-out <p>] [--concurrency <n>] [--model <id>]',
     '  triage --analyzer <path> [--divergence <p>] [--discarded-verdicts <p>] [--introduced-verdicts <p>] [--out <p>] [--model <id>] [--max-retries <n>]',
     '  self-test',
     '  help',
@@ -370,6 +414,8 @@ async function main(): Promise<number> {
         return cmdIntakeUpstream(rest);
       case 'intake-validate':
         return cmdIntakeValidate(rest);
+      case 'inspect':
+        return await cmdInspect(rest);
       case 'triage':
         return await cmdTriage(rest);
       case 'self-test':
