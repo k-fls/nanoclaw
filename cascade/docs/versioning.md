@@ -24,6 +24,8 @@ Uniform across all branch classes. Config: `.cascade/config.yaml` sets `version_
 | `edition/<name>` | declared in `.cascade/parent_branch` on the edition branch |
 | `deploy/<name>` | the edition it merges from (implicit) |
 
+**Module tags — deliberate deviation from §6.** Requirements §6 says modules need no versioning of their own and travel with `core`. We tag them anyway: without `module/<name>/<A.B.C.D>` tags, answering "what module version did edition X ship?" requires walking merge ancestry every time. The tags exist to make edition snapshots self-contained and edition-pinning fast, not to gate module releases — modules don't cut independent releases, they piggy-back on `core`'s D-bumps.
+
 ## Prefix derivation on merge
 
 On merge into branch X:

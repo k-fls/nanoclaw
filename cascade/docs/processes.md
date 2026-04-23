@@ -21,7 +21,7 @@ Slash commands (`.claude/commands/cascade-*.md`) orchestrate each process: run t
 
 ### Pre-merge analysis and decomposition
 
-1. **`intake-analyze.ts`** fetches upstream, computes the merge range, and emits a structured report: per-commit signals (primaryKind + files + tags + parents + author/date), aggregate file set, fls-divergence intersection, conflict prediction via `git merge-tree`, upstream break points (tags / upstream merge commits), rename tracking, and two inspection-group arrays — `discardedGroups` (components touching files the target discarded post-base that upstream modified) and `introducedGroups` (components touching files the target never had that upstream added). Components are connected sub-graphs of upstream-range commits that share any touched file; see [inspection.md](inspection.md) for the component-grouping algorithm and the inspector contract. Per-commit `primaryKind` is drawn from `{clean, divergence, conflict, structural, break_point}`:
+1. **`intake-analyze.ts`** fetches upstream, computes the merge range, and emits a structured report: per-commit signals (primaryKind + files + tags + parents + author/date), aggregate file set, target-vs-base divergence intersection, conflict prediction via `git merge-tree`, upstream break points (tags / upstream merge commits), rename tracking, and two inspection-group arrays — `discardedGroups` (components touching files the target discarded post-base that upstream modified) and `introducedGroups` (components touching files the target never had that upstream added). Components are connected sub-graphs of upstream-range commits that share any touched file; see [inspection.md](inspection.md) for the component-grouping algorithm and the inspector contract. Per-commit `primaryKind` is drawn from `{clean, divergence, conflict, structural, break_point}`:
 
    | Kind | Rule |
    |---|---|
@@ -63,7 +63,7 @@ Groups are contiguous ranges in upstream's history — the agent partitions an o
 1. `propagate.ts --dry-run` computes the merge sequence per [branch-model.md](branch-model.md)'s ongoing merges, in the order that keeps prefixes aligned (upstream → core → leaves → editions → deploys).
 2. Operator reviews the sequence.
 3. `propagate.ts` executes merges via `merge-preserve.ts`. Each merge:
-   - Refreshes the target from its version source first if prefix is stale.
+   - **Halts if the target's prefix is stale** vs. its version source and advises the operator to refresh from source first (or re-run with `--auto-refresh`). Halt-by-default, not implicit refresh — a refresh is itself a merge into a long-lived branch, and the README principle "humans confirm anything that merges into a long-lived branch" applies. `--auto-refresh` makes the exception opt-in and visible in dry-run as a `REFRESH` entry.
    - Auto-bumps and tags per the rules.
    - Halts on any prefix mismatch not covered by `parent_branch`.
 4. Deployments move forward only when explicitly propagated; no silent updates.
@@ -79,7 +79,7 @@ Cross-repo deploys: default path is patch handoff (emit `.patch` + metadata to a
 
 - **Path-ownership** — the file's owner is the proposed home. Strong signal when the file is owned by exactly one non-core branch.
 - **Size/shape** — minimal integration edits (per §8) in a core-owned file are attributed to the thing being integrated, not to core.
-- **Diff-vs-upstream** — on core-owned files, distinguishes fls-divergence maintenance (stays on core) from layer-specific changes.
+- **Diff-vs-upstream** — on core-owned files, distinguishes target-vs-upstream divergence maintenance (stays on core) from layer-specific changes.
 
 Signals v2 (later): symbol-dependency, import-graph, co-change, test-location, string-literal.
 
@@ -102,6 +102,8 @@ Signals are combined as a rule cascade, not a weighted vote — deterministic ru
 When the inline version on the source was adapted to deployment context (not functionally identical to what ends up in the clean home), P3 offers a third outcome in addition to "revert inline, take propagated" and "escalate": *relocate clean version to the proper home, keep a thin deployment-specific delta on top of the propagated version.* Human chooses at P3 time.
 
 ## P4 — Divergence review
+
+§7's "divergence record" obligation is split across phases, not delivered as a single artifact: the **mechanical projection** lives now (Phase 1's `cascade divergence-report` derives the record from `git diff core..upstream/main` on demand); the **annotation layer** (review dates, upstream-candidate flags, per-entry rules) lands in Phase 5 via `/cascade-divergences` and lives in commit messages / issue-tracker entries, not a sidecar YAML. The two halves together cover §7; neither half alone does.
 
 Divergences are what `git diff core..upstream/main` shows. No mandatory registry.
 

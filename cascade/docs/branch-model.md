@@ -53,6 +53,8 @@ Not classification, not reclassification. A named pattern for emergencies:
 4. Normal P2 propagates the fix back down to the deploy.
 5. `check.ts` recognises the cherry-pick and propagated version as the same fix; the loop is closed.
 
+Loop closure uses a `Cascade-Hotfix-Pair: <sha>` commit trailer written symmetrically on both the cherry-pick and the `core` merge by `cascade hotfix`. This is derived discipline (script-written, machine-parsed), not the author-side convention §13 forbids — authors never write the trailer and classification never depends on it.
+
 This avoids P3 being pressed into service as the emergency escape hatch.
 
 ## Reclassification flow (P3)
