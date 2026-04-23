@@ -17,7 +17,39 @@ import {
   formatOwnershipMap,
   writeOwnershipMap,
 } from './ownership.js';
-import { computeVersion, formatVersion } from './version.js';
+import {
+  NoPriorTagError,
+  SeedRejectedError,
+  SourceTagMissingError,
+  Version,
+  computeVersion,
+  formatVersion,
+  planBump,
+} from './version.js';
+import {
+  SnapshotForbiddenError,
+  SnapshotRequiredError,
+  TagExistsError,
+  TagNamingError,
+  parseTagBody,
+  readTagBody,
+  writeTag,
+} from './tags.js';
+import { computeSnapshot } from './edition-snapshot.js';
+import {
+  AfterNoMatchError,
+  executePropagate,
+  formatExecutionHuman,
+  formatPlanHuman,
+  planPropagation,
+  toEnvelope,
+} from './propagate.js';
+import {
+  MAX_SNAPSHOT_SCHEMA,
+  UnsupportedSnapshotVersionError,
+  assertSchemaSupported,
+  validateSnapshot,
+} from './snapshot-schema.js';
 import { appendBypass } from './bypass.js';
 import { mergePreserve } from './merge-preserve.js';
 import { analyzeIntake, formatReport as formatIntakeReport } from './intake-analyze.js';
@@ -30,6 +62,12 @@ import {
   continueIntakeMerge,
   runIntakeMerge,
 } from './intake-upstream.js';
+import {
+  cherryPick as hotfixCherryPick,
+  continueFlow as hotfixContinue,
+  start as hotfixStart,
+  HotfixResult,
+} from './hotfix.js';
 
 function repoRoot(): string {
   const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
@@ -159,6 +197,236 @@ function cmdVersion(args: string[]): number {
     process.stdout.write(`${branch}\tnull\t(${report.notes.join('; ')})\n`);
   }
   return 0;
+}
+
+function parseSeed(s: string): Version {
+  const m = s.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) throw new Error(`invalid --seed "${s}": expected A.B.C.D`);
+  return { a: +m[1], b: +m[2], c: +m[3], d: +m[4] };
+}
+
+function cmdTag(args: string[]): number {
+  const json = removeFlag(args, '--json');
+  const dryRun = removeFlag(args, '--dry-run');
+  const notes = takeOption(args, '-m') ?? takeOption(args, '--message') ?? undefined;
+  const seedStr = takeOption(args, '--seed');
+  const branch = args[0];
+  if (!branch) {
+    die('usage: cascade tag <branch> [-m <notes>] [--seed <A.B.C.D>] [--dry-run] [--json]');
+  }
+  const root = repoRoot();
+  const seed = seedStr ? parseSeed(seedStr) : undefined;
+
+  try {
+    const plan = planBump(branch, root, { seed });
+    if (plan.kind === 'noop') {
+      const msg = `tag: noop (${plan.reason})`;
+      if (json) process.stdout.write(JSON.stringify(plan) + '\n');
+      else process.stdout.write(msg + '\n');
+      return 0;
+    }
+    const next = formatVersion(plan.next);
+    if (dryRun) {
+      const msg = `tag: would write ${branch}/${next} (${plan.reason})`;
+      if (json) {
+        process.stdout.write(
+          JSON.stringify({ kind: 'plan', branch, next, reason: plan.reason }) + '\n',
+        );
+      } else {
+        process.stdout.write(msg + '\n');
+      }
+      return 0;
+    }
+    const isEdition = /^edition\/[^/]+$/.test(branch);
+    const snapshot = isEdition
+      ? computeSnapshot({ branch, version: plan.next, repoRoot: root })
+      : undefined;
+    const res = writeTag(
+      { branch, version: plan.next, notes, snapshot },
+      root,
+    );
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({ kind: 'wrote', tag: res.tag, sha: res.sha, reason: plan.reason }) + '\n',
+      );
+    } else {
+      process.stdout.write(`tag: wrote ${res.tag} (${plan.reason})\n`);
+    }
+    return 0;
+  } catch (e) {
+    return emitTagError(e as Error, branch, json);
+  }
+}
+
+function emitTagError(e: Error, branch: string, json: boolean): number {
+  interface HaltLike {
+    kind?: string;
+  }
+  const halt = e as HaltLike;
+  const kinds = new Set([
+    'no-prior-tag',
+    'seed-rejected',
+    'source-tag-missing',
+    'tag-version-mismatch',
+    'tag-naming',
+  ]);
+  if (halt.kind && kinds.has(halt.kind)) {
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({
+          halted: {
+            hop: null,
+            kind: halt.kind,
+            details: { branch, message: e.message },
+            remediation: remediationFor(halt.kind),
+          },
+          progress: { done: [], pending: [] },
+        }) + '\n',
+      );
+    } else {
+      process.stderr.write(`cascade tag: ${e.message}\n`);
+    }
+    return 1;
+  }
+  if (
+    e instanceof SnapshotRequiredError ||
+    e instanceof SnapshotForbiddenError
+  ) {
+    process.stderr.write(`cascade tag: ${e.message}\n`);
+    return 1;
+  }
+  throw e;
+}
+
+function remediationFor(kind: string): string {
+  switch (kind) {
+    case 'no-prior-tag':
+      return 'supply --seed <A.B.C.D>';
+    case 'seed-rejected':
+      return 'drop --seed; the version is derivable';
+    case 'source-tag-missing':
+      return 'cascade tag <branch> --seed <A.B.C.D>';
+    case 'tag-version-mismatch':
+      return 'delete the local stale tag (git tag -d <tag>) or follow-up-bump';
+    case 'tag-naming':
+      return 'use a valid branch name';
+    default:
+      return '';
+  }
+}
+
+function cmdPropagate(args: string[]): number {
+  const dryRun = removeFlag(args, '--dry-run');
+  const json = removeFlag(args, '--json');
+  const noFetch = removeFlag(args, '--no-fetch');
+  const after = takeOption(args, '--after') ?? undefined;
+  const root = repoRoot();
+
+  if (dryRun) {
+    const plan = planPropagation({ repoRoot: root, noFetch });
+    if (json) {
+      process.stdout.write(JSON.stringify(toEnvelope(plan)) + '\n');
+    } else {
+      process.stdout.write(formatPlanHuman(plan) + '\n');
+    }
+    return plan.preflight_halt ? 1 : 0;
+  }
+
+  let result;
+  try {
+    result = executePropagate({ repoRoot: root, noFetch, after });
+  } catch (e) {
+    if (e instanceof AfterNoMatchError) {
+      process.stderr.write(`cascade propagate: ${e.message}\n`);
+      return 2;
+    }
+    throw e;
+  }
+
+  if (json) {
+    process.stdout.write(
+      JSON.stringify({
+        halted: result.halted,
+        progress: result.progress,
+        tags_written: result.tags_written,
+      }) + '\n',
+    );
+  } else {
+    process.stdout.write(formatExecutionHuman(result) + '\n');
+  }
+  return result.halted ? 1 : 0;
+}
+
+function cmdSnapshot(args: string[]): number {
+  const json = removeFlag(args, '--json');
+  const tag = args[0];
+  if (!tag) die('usage: cascade snapshot <tag> [--json]');
+  const root = repoRoot();
+  const body = readTagBody(tag, root);
+  if (body === null) {
+    process.stderr.write(`cascade snapshot: tag "${tag}" does not exist\n`);
+    return 1;
+  }
+  let parsed;
+  try {
+    parsed = parseTagBody(body);
+  } catch (e) {
+    process.stderr.write(`cascade snapshot: ${(e as Error).message}\n`);
+    return 1;
+  }
+  if (parsed.snapshot === null) {
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({
+          halted: {
+            hop: null,
+            kind: 'not-an-edition-tag',
+            details: { tag },
+            remediation: 'pass a tag whose name begins with edition/<name>/',
+          },
+          progress: { done: [], pending: [] },
+        }) + '\n',
+      );
+    } else {
+      process.stderr.write(`cascade snapshot: not-an-edition-tag: "${tag}" carries no snapshot fence\n`);
+    }
+    return 1;
+  }
+  const rawSchema = (parsed.snapshot as { schema_version?: unknown }).schema_version;
+  if (typeof rawSchema === 'number') {
+    try {
+      assertSchemaSupported(rawSchema);
+    } catch (e) {
+      if (e instanceof UnsupportedSnapshotVersionError) {
+        if (json) {
+          process.stdout.write(
+            JSON.stringify({
+              halted: {
+                hop: null,
+                kind: e.kind,
+                details: { tag, tag_schema: e.tagSchema, cli_max: e.cliMax },
+                remediation: 'update cascade/ submodule in the consumer repo',
+              },
+              progress: { done: [], pending: [] },
+            }) + '\n',
+          );
+        } else {
+          process.stderr.write(`cascade snapshot: ${e.message}\n`);
+        }
+        return 1;
+      }
+      throw e;
+    }
+  }
+  // Validate schema shape (same validator used by CI).
+  try {
+    const snap = validateSnapshot(parsed.snapshot);
+    process.stdout.write(JSON.stringify(snap, null, 2) + '\n');
+    return 0;
+  } catch (e) {
+    process.stderr.write(`cascade snapshot: ${(e as Error).message}\n`);
+    return 1;
+  }
 }
 
 function cmdBypass(args: string[]): number {
@@ -360,6 +628,61 @@ async function cmdTriage(args: string[]): Promise<number> {
   return 0;
 }
 
+function cmdHotfix(args: string[]): number {
+  const json = removeFlag(args, '--json');
+  const cherry = removeFlag(args, '--cherry-pick');
+  const cont = removeFlag(args, '--continue');
+  const root = repoRoot();
+
+  let result: HotfixResult;
+  if (cherry) {
+    const deploy = args[0];
+    if (!deploy) die('usage: cascade hotfix --cherry-pick <deploy-branch>');
+    result = hotfixCherryPick(deploy, root);
+  } else if (cont) {
+    const handle = args[0];
+    if (!handle) die('usage: cascade hotfix --continue <handle>');
+    result = hotfixContinue(handle, root);
+  } else {
+    const [deploy, slug] = args;
+    if (!deploy || !slug) die('usage: cascade hotfix <deploy-branch> <slug>');
+    result = hotfixStart(deploy, slug, root);
+  }
+
+  if (json) {
+    process.stdout.write(JSON.stringify(result) + '\n');
+  } else {
+    process.stdout.write(formatHotfixResult(result, { cherry, cont }) + '\n');
+  }
+  return result.halted ? 1 : 0;
+}
+
+function formatHotfixResult(
+  r: HotfixResult,
+  mode: { cherry: boolean; cont: boolean },
+): string {
+  if (r.halted) {
+    const lines = [`HALT ${r.halted.kind}: ${r.halted.message}`];
+    if (r.halted.remediation) lines.push(`  → ${r.halted.remediation}`);
+    return lines.join('\n');
+  }
+  if (mode.cherry) {
+    const lines: string[] = [];
+    if (r.cherryPickBranch && r.cherryPickSha) {
+      lines.push(`cherry-picked ${r.ephemeralSha?.slice(0, 12)} onto ${r.cherryPickBranch} as ${r.cherryPickSha.slice(0, 12)}`);
+    }
+    if (r.tag) lines.push(`wrote tag ${r.tag.tag}`);
+    return lines.join('\n') || 'hotfix: done';
+  }
+  if (mode.cont) {
+    const lines: string[] = [];
+    if (r.mergeSha) lines.push(`merged ${r.ephemeralBranch ?? r.ephemeralSha?.slice(0, 12)} into core as ${r.mergeSha.slice(0, 12)}`);
+    if (r.cherryPickSha) lines.push(`reverse trailer points at ${r.cherryPickBranch} ${r.cherryPickSha.slice(0, 12)}`);
+    return lines.join('\n') || 'hotfix: done';
+  }
+  return `started ${r.ephemeralBranch} at ${r.ephemeralSha?.slice(0, 12)}`;
+}
+
 function cmdSelfTest(): number {
   const st = runSelfTest();
   process.stdout.write(`self-test: ${st.passed} passed, ${st.failed.length} failed\n`);
@@ -375,6 +698,9 @@ function usage(): string {
     '  check [--strict] [--json] [--verbose] [--self-test] [--no-write-map]',
     '  ownership [--verify] [--json]',
     '  version <branch> [--json]',
+    '  tag <branch> [-m <notes>] [--seed <A.B.C.D>] [--dry-run] [--json]',
+    '  snapshot <tag> [--json]',
+    '  propagate [--dry-run] [--json] [--no-fetch] [--after <branch>]',
     '  bypass <commit> <rule> <reason...>',
     '  merge <source> [--squash] [-m <msg>]',
     '  intake-analyze [--target <ref>] [--source <ref>] [--json]',
@@ -385,6 +711,9 @@ function usage(): string {
     '  intake-validate <analyzer.json> <plan.json> [--json]',
     '  inspect --analyzer <path> [--discarded-out <p>] [--introduced-out <p>] [--concurrency <n>] [--model <id>]',
     '  triage --analyzer <path> [--divergence <p>] [--discarded-verdicts <p>] [--introduced-verdicts <p>] [--out <p>] [--model <id>] [--max-retries <n>]',
+    '  hotfix <deploy-branch> <slug>',
+    '  hotfix --cherry-pick <deploy-branch>',
+    '  hotfix --continue <handle>',
     '  self-test',
     '  help',
   ].join('\n');
@@ -400,6 +729,12 @@ async function main(): Promise<number> {
         return cmdOwnership(rest);
       case 'version':
         return cmdVersion(rest);
+      case 'tag':
+        return cmdTag(rest);
+      case 'snapshot':
+        return cmdSnapshot(rest);
+      case 'propagate':
+        return cmdPropagate(rest);
       case 'bypass':
         return cmdBypass(rest);
       case 'merge':
@@ -416,6 +751,8 @@ async function main(): Promise<number> {
         return await cmdInspect(rest);
       case 'triage':
         return await cmdTriage(rest);
+      case 'hotfix':
+        return cmdHotfix(rest);
       case 'self-test':
         return cmdSelfTest();
       case 'help':

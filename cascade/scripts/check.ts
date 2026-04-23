@@ -19,7 +19,14 @@ import {
   writeOwnershipMap,
 } from './ownership.js';
 import { readBypassLog, validateEntry, BypassEntry } from './bypass.js';
-import { detectPrefixMismatch, loadConfig } from './version.js';
+import {
+  Version,
+  compareVersion,
+  detectPrefixMismatch,
+  loadConfig,
+  parseCascadeTag,
+} from './version.js';
+import { findOpenHotfixLoops } from './hotfix.js';
 
 export type Severity = 'error' | 'warning' | 'info';
 
@@ -179,6 +186,35 @@ export function runCheck(opts: CheckOptions): CheckResult {
     }
   }
 
+  // 5a. Hotfix loop open (Phase 2, Step 5). For each deploy/* cherry-pick
+  //     with a pair trailer, verify the reverse trailer is reachable from
+  //     the deploy tip within hotfix_loop_warn_days. Severity: warning.
+  {
+    let cfg;
+    try {
+      cfg = loadConfig(repoRoot);
+    } catch {
+      cfg = null;
+    }
+    if (cfg) {
+      for (const v of findOpenHotfixLoops(repoRoot, cfg)) {
+        violations.push({
+          rule: 'hotfix-loop-open',
+          severity: 'warning',
+          message: `${v.deploy}: cherry-pick ${v.cherryPickSha.slice(0, 7)} (paired with ${v.ephSha.slice(0, 7)}) has no reverse-pair commit reachable from ${v.deploy} tip; ${Math.floor(v.ageDays)} day(s) elapsed`,
+          commits: [v.cherryPickSha],
+        });
+      }
+    }
+  }
+
+  // 5b. Tag-naming + tag-monotonicity (Phase 2).
+  //
+  // Scope of tag-monotonicity is tags visible to the invocation's ref set:
+  // locally when run from a workstation, origin-augmented in CI. The
+  // local-vs-CI divergence is an accepted sharp edge (phase-2.md).
+  for (const v of checkTagDiscipline(registry, repoRoot)) violations.push(v);
+
   // 6. Squash-merge markers on long-lived branches. Best-effort heuristic —
   //    FF cannot be detected post-hoc (that's a forge-level gate, per §5).
   for (const { branch, commit, subject } of recentCommitsOnLongLived(registry, repoRoot, 500)) {
@@ -307,6 +343,112 @@ function looksLikeSquash(subject: string): boolean {
   if (/^Squashed commit of the following/i.test(subject)) return true;
   if (/\(squashed\)/i.test(subject)) return true;
   return false;
+}
+
+// Phase 2: tag discipline. Checks:
+//   - tag-naming: any tag whose name begins with a long-lived branch prefix
+//     followed by `/` must match `<branch>/<A.B.C.D>`.
+//   - tag-monotonicity: along a long-lived branch's first-parent history,
+//     cascade tags must appear in non-decreasing 4-tuple order.
+function checkTagDiscipline(
+  registry: BranchClass[],
+  repoRoot: string,
+): Violation[] {
+  const out: Violation[] = [];
+
+  const longLived: string[] = [];
+  for (const b of listAllBranches(repoRoot)) {
+    try {
+      if (isLongLived(classOf(b, registry))) longLived.push(b);
+    } catch {
+      /* skip unclassifiable */
+    }
+  }
+  if (longLived.length === 0) return out;
+
+  // Sort by length descending so `channel/telegram` is tried before `channel`
+  // (defensive — neither is actually a prefix of the other today, but the
+  // code shouldn't depend on that).
+  const prefixes = [...longLived].sort((a, b) => b.length - a.length);
+
+  const allTagsOut = (() => {
+    try {
+      return git(['tag'], repoRoot);
+    } catch {
+      return '';
+    }
+  })();
+  const allTags = allTagsOut ? allTagsOut.split('\n') : [];
+
+  // tag-naming.
+  for (const tag of allTags) {
+    const branch = prefixes.find((p) => tag.startsWith(p + '/'));
+    if (!branch) continue;
+    const parsed = parseCascadeTag(tag, branch);
+    if (!parsed) {
+      out.push({
+        rule: 'tag-naming',
+        severity: 'error',
+        message: `tag "${tag}" begins with long-lived branch prefix "${branch}/" but does not match <branch>/<A.B.C.D>`,
+      });
+    }
+  }
+
+  // tag-monotonicity. For each long-lived branch, walk first-parent history,
+  // collect cascade tags pointing at those commits, check non-decreasing.
+  for (const branch of longLived) {
+    if (!gitOk(['rev-parse', '--verify', branch], repoRoot)) continue;
+
+    // Tag → commit sha (for tags on this branch's prefix).
+    const tagToSha = new Map<string, string>();
+    const tagToVersion = new Map<string, Version>();
+    for (const tag of allTags) {
+      if (!tag.startsWith(branch + '/')) continue;
+      const v = parseCascadeTag(tag, branch);
+      if (!v) continue;
+      let sha: string;
+      try {
+        sha = git(['rev-list', '-n', '1', tag], repoRoot);
+      } catch {
+        continue;
+      }
+      tagToSha.set(tag, sha);
+      tagToVersion.set(tag, v);
+    }
+    if (tagToSha.size < 2) continue;
+
+    // First-parent order (oldest → newest).
+    let history: string[];
+    try {
+      history = git(['log', '--first-parent', '--format=%H', branch], repoRoot)
+        .split('\n')
+        .reverse();
+    } catch {
+      continue;
+    }
+    const commitOrder = new Map<string, number>();
+    history.forEach((sha, i) => commitOrder.set(sha, i));
+
+    const ordered = [...tagToSha.entries()]
+      .map(([tag, sha]) => ({ tag, sha, idx: commitOrder.get(sha) ?? -1, v: tagToVersion.get(tag)! }))
+      .filter((e) => e.idx >= 0)
+      .sort((a, b) => a.idx - b.idx);
+
+    for (let i = 1; i < ordered.length; i++) {
+      const prev = ordered[i - 1];
+      const cur = ordered[i];
+      if (compareVersion(cur.v, prev.v) < 0) {
+        out.push({
+          rule: 'tag-monotonicity',
+          severity: 'error',
+          message: `${branch}: tag ${cur.tag} (commit ${cur.sha.slice(0, 7)}) is newer in history than ${prev.tag} but its version is smaller`,
+          commits: [cur.sha],
+        });
+      }
+    }
+  }
+
+  return out;
 }
 
 function recentCommitsOnLongLived(

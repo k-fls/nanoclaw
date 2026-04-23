@@ -25,6 +25,7 @@ const KNOWN_RULES = new Set([
   'prefix-mismatch',
   'dead-rule',
   'unowned',
+  'hotfix-loop-open',
 ]);
 
 export function bypassLogPath(repoRoot: string): string {

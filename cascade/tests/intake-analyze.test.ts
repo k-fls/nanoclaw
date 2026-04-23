@@ -333,6 +333,8 @@ describe('analyzeIntake — whitespace-only per-file signal', () => {
         discarded_min_delta_lines: 10,
         introduced_min_file_lines: 50,
         intake_whitespace_only: false,
+        hotfix_loop_warn_days: 14,
+        downstream: null,
       },
     });
     for (const c of r.commits) {
