@@ -2,15 +2,24 @@
 
 Running log of places where the implementation diverges from the canonical documents, so future reviewers can decide whether to update the docs, the code, or both.
 
-## Channel and skill branches carry their own version tags
+## Modules and channels carry no versions of their own
 
 **Requirements §6** (`docs/FLSCLAW-BRANCHING-REQUIREMENTS.md`) mandates versions for `edition/<name>` and `deploy/<name>`, and explicitly *opts modules out* (“modules need no versioning of their own; they are tied to `core` and travel with its version”). Channel and skill branches are not mentioned at all — §6 neither requires nor forbids per-branch versions for them.
 
-**Cascade implementation** tags them uniformly. `channel/<name>/A.B.C.D`, `skill/<name>/A.B.C.D`, `skill/<s>/<c>/A.B.C.D`, and `module/<name>/A.B.C.D` are all produced by every propagate run. The implementation spec (`versioning.md`) openly calls out the module case as a *“deliberate deviation from §6”* and the same reasoning covers channels/skills. Rationale given there: edition snapshots need to answer “what module/channel version did edition X ship?” without walking merge ancestry; per-branch tags make that fast and make snapshots self-contained.
+**Cascade implementation** (post-resolution) tags only first-class artifacts: `core/A.B.C.D`, `edition/<name>/A.B.C.D`, `deploy/<name>/A.B.C.D`, and `skill/<name>/A.B.C.D` (plus `skill/<s>/<c>/A.B.C.D`). Modules and channels are marked `not_versioned: true` in `.cascade/branch-classes.yaml` — propagate still merges core into them so they don't drift, but writes no `<branch>/A.B.C.D` tag.
 
-**Impact on Phase 2 code.** The planner enumerates hops to every long-lived branch class, the D-bump rules apply uniformly, `cascade propagate` writes tags at every hop, and the edition-snapshot's `ownership_map` and `included` both assume per-branch versions exist. Reversing the decision would mean stripping channel/skill/module tagging from `planBump`, `executeHop`, and the snapshot schema.
+**Rationale.** The distinction is between independent artifacts and supporting carriers:
 
-**Status.** Settled by `versioning.md` but not by requirements §6. Worth revisiting in a future review of §6 to either ratify the uniform-tagging decision or walk it back.
+- **Skills** are first-class deliverables. They have an independent lifecycle — a skill can evolve, ship, and be consumed at its own cadence. "What version of skill X is in edition Y?" is a real question, answered cheaply by a tag.
+- **Modules and channels** are carriers bound to core. A module is a structural partition of core; a channel is a transport adapter for core. Neither has an independent lifecycle — if either diverges from core, that's a bug (caught by `check.ts` tag-discipline and prefix-mismatch rules), not a feature to record. A version tag on them would be a redundant restatement of core's version at the last propagate.
+
+The earlier "deliberate deviation from §6" framing in `versioning.md` — that per-branch tags make edition snapshots self-contained — turned out to be partly aspirational: the snapshot schema already records included channels/modules by **name**, not version. No current consumer reads per-module or per-channel tags, and the question "what channel version shipped in edition X?" is not meaningful under the carrier framing — it collapses to "what version of core shipped in edition X?", which the core tag still answers.
+
+**Impact on Phase 2 code.** `planPropagation` and `executeHop` intercept not-versioned targets: they still schedule and execute the merge (keeping channels/modules aligned with core) but skip `planBump` and tag writing. `versionSourceOf` continues to work for them so that an edition declaring `parent_branch: module/X` can still derive its prefix via the bootstrap path (module → core → upstream). The edition-snapshot schema is unchanged.
+
+**Status.** Resolved. Requirements §6 and `versioning.md` should be amended in a future doc pass to ratify "modules and channels are not versioned; skills are." Skills remain a live gap in §6 — they deserve explicit inclusion on the versioned side.
+
+**Test follow-up.** `propagate.test.ts`, `propagate-execute.test.ts`, `bump.test.ts`, and `tag-discipline.test.ts` still assert the old uniform-tagging behavior for module/channel fixtures and need to be updated to expect merge-only hops with no predicted tags.
 
 ## Orchestration shipped as skills, not plain slash commands
 

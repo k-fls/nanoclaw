@@ -68,10 +68,12 @@ export function seedCascadeRegistry(root: string) {
     pattern: '^module/[^/]+$'
     base: core
     version_source: core
+    not_versioned: true
   - name: channel
     pattern: '^channel/[^/]+$'
     base: core
     version_source: core
+    not_versioned: true
   - name: skill
     pattern: '^skill/[^/]+$'
     base: core

@@ -99,9 +99,13 @@ export function versionSourceOf(
   if (info.class.read_only) {
     throw new Error(`${branch} is read-only; it has no version source`);
   }
-  if (info.class.fallback || info.class.not_versioned) {
-    throw new Error(`versionSourceOf is not applicable to non-versioned branch "${branch}"`);
+  if (info.class.fallback) {
+    throw new Error(`versionSourceOf is not applicable to ephemeral branch "${branch}"`);
   }
+  // `not_versioned` branches (modules, channels) still declare a
+  // version_source — it's needed for prefix derivation when an edition
+  // names one as parent_branch, even though they themselves don't get
+  // `<branch>/A.B.C.D` tags.
   if (info.class.version_source_from_match) {
     return expand(info.class.version_source_from_match, info.match);
   }

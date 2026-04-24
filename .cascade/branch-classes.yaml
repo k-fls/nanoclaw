@@ -18,16 +18,23 @@ classes:
     base: upstream/main
     version_source: upstream/main
 
+  # Modules and channels are carriers bound to core — they travel with
+  # core's version and do not get their own `<branch>/A.B.C.D` tags. Skills
+  # remain versioned because they're first-class independent artifacts.
+  # See cascade/docs/phase-2-discrepancies.md § "Modules and channels carry
+  # no versions of their own".
   - name: module
     pattern: '^module/[^/]+$'
     base: core
     version_source: core
+    not_versioned: true
 
   - name: channel
     pattern: '^channel/[^/]+$'
     base: core
     version_source: core
     co_merges: ['upstream/skill/*']
+    not_versioned: true
 
   - name: skill
     pattern: '^skill/[^/]+$'

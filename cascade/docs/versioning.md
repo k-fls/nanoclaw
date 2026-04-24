@@ -16,15 +16,20 @@ Uniform across all branch classes. Config: `.cascade/config.yaml` sets `version_
 | Branch | Version source |
 |---|---|
 | `core` | `upstream/main` (upstream's own version) |
-| `module/<name>` | `core` |
-| `channel/<name>` | `core` |
+| `module/<name>` | `core` *(prefix source only; module branches themselves are not tagged)* |
+| `channel/<name>` | `core` *(prefix source only; channel branches themselves are not tagged)* |
 | `skill/<name>` | `core` |
 | `skill/<s>/<c>` | `skill/<s>` |
-| `module/<m>/<c>` | `module/<m>` |
+| `module/<m>/<c>` | `module/<m>` *(see module note)* |
 | `edition/<name>` | declared in `.cascade/parent_branch` on the edition branch |
 | `deploy/<name>` | the edition it merges from (implicit) |
 
-**Module tags — deliberate deviation from §6.** Requirements §6 says modules need no versioning of their own and travel with `core`. We tag them anyway: without `module/<name>/<A.B.C.D>` tags, answering "what module version did edition X ship?" requires walking merge ancestry every time. The tags exist to make edition snapshots self-contained and edition-pinning fast, not to gate module releases — modules don't cut independent releases, they piggy-back on `core`'s D-bumps.
+**Which branches get tagged — first-class artifacts vs. carriers.** The rule: a branch gets its own `<branch>/A.B.C.D` tag iff it is an independent artifact with its own lifecycle. The registry encodes this via `not_versioned: true` on the carrier classes.
+
+- **Tagged** (first-class): `core`, `edition/<name>`, `deploy/<name>`, `skill/<name>`, `skill/<s>/<c>`. Skills evolve, ship, and are consumed at their own cadence — "which version of skill X is in edition Y?" is a real question and the tag answers it cheaply.
+- **Not tagged** (carriers bound to core): `module/<name>`, `channel/<name>`. A module is a structural partition of core; a channel is a transport adapter for core. Neither has an independent lifecycle. A `module/<name>/A.B.C.D` tag would be a redundant restatement of `core`'s version at the last propagate, and "what channel version shipped in edition X?" is not a meaningful question under this framing — it collapses to "what version of `core` shipped in edition X?", which the `core` tag already answers. If a channel or module ever diverges from `core`, that's a bug (caught by `check.ts` prefix-mismatch and tag-discipline rules), not a state worth recording in a tag.
+
+Requirements §6 makes this call explicitly for modules; we extend the same reasoning to channels and leave skills on the versioned side. Phase 2 `cascade propagate` still merges `core` into channel/module branches so they don't drift, but writes no tag for them.
 
 ## Prefix derivation on merge
 
@@ -75,13 +80,13 @@ Most editions will want `parent_branch` pointing at `core`. It's the auto-bump e
 
 ```
 core/1.9.0.5
-module/crypto/1.9.0.3
-channel/telegram/1.9.0.3
 skill/reactions/1.9.0.2
 skill/reactions/telegram/1.9.0.1
 edition/starter/1.9.0.2
 deploy/prod-acme/1.9.0.2
 ```
+
+(Modules and channels don't get their own tags — see the carrier note above.)
 
 Namespaced to keep the flat tag space navigable. `git tag -l 'edition/starter/*'` shows only that edition's releases.
 

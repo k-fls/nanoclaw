@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import * as path from 'node:path';
 import {
   AfterNoMatchError,
   executePropagate,
@@ -34,17 +36,24 @@ function tagList(r: { root: string }): string[] {
 }
 
 describe('executePropagate — happy path', () => {
-  it('writes core tag and advances channel in one run', () => {
+  it('writes core tag and advances channel (merge-only, no tag)', () => {
     const r = buildRepo();
     const result = executePropagate({ repoRoot: r.root, noFetch: true });
     expect(result.halted).toBeNull();
-    // We expect core/1.9.0.1 to be written, then channel/telegram/1.9.0.1
-    // after merging core.
     const tags = result.tags_written.map((t) => t.tag);
+    // Channels are carriers bound to core: propagate merges core into them
+    // but writes no `channel/<name>/A.B.C.D` tag. Assert that first, then
+    // confirm core itself was tagged.
+    expect(tags).not.toContain('channel/telegram/1.9.0.1');
+    expect(tagList(r)).not.toContain('channel/telegram/1.9.0.1');
     expect(tags).toContain('core/1.9.0.1');
-    expect(tags).toContain('channel/telegram/1.9.0.1');
-    // The real repo state should reflect this.
-    expect(tagList(r)).toEqual(expect.arrayContaining(['core/1.9.0.1', 'channel/telegram/1.9.0.1']));
+    expect(tagList(r)).toContain('core/1.9.0.1');
+    // The channel hop lands in progress.done even though it produces no
+    // tag. (It may count as noop when core is already an ancestor of the
+    // channel, or as advanced when a merge is actually needed — we only
+    // care that it isn't stuck in pending.)
+    const doneTargets = result.progress.done.map((h) => h.split(' -> ')[1]);
+    expect(doneTargets).toContain('channel/telegram');
   });
 
   it('is idempotent: second run is all no-op', () => {
@@ -88,18 +97,35 @@ describe('executePropagate — merge-conflict halt', () => {
 
 describe('executePropagate — partial recovery', () => {
   it('writes missing tag when merge commit exists without tag', () => {
+    // Exercises the partial-state recovery path in executeHop: a previous
+    // run merged the source in but crashed before writing the tag. Uses an
+    // edition target since modules/channels are not_versioned under the
+    // carrier rule and so have no tag-recovery path.
     const r = buildRepo();
     // Tag core.
     r.run('checkout', 'core');
     writeTag({ branch: 'core', version: { a: 1, b: 9, c: 0, d: 1 } }, r.root);
-    // Merge core into channel/telegram but don't tag.
-    r.run('checkout', 'channel/telegram');
+    // Create an edition that declares core as its parent_branch.
+    r.run('checkout', '-b', 'edition/starter', 'core');
+    writeFileSync(path.join(r.root, '.cascade', 'parent_branch'), 'core\n');
+    r.run('add', '.cascade/parent_branch');
+    r.run('commit', '-q', '-m', 'declare parent');
+    // Advance core so there's something to propagate into the edition.
+    r.run('checkout', 'core');
+    r.write('more.txt', 'm\n');
+    r.commit('advance core');
+    writeTag({ branch: 'core', version: { a: 1, b: 9, c: 0, d: 2 } }, r.root);
+    // Merge core into edition/starter but don't tag — simulates a crash
+    // between merge and tag-write on the previous run.
+    r.run('checkout', 'edition/starter');
     r.run('merge', '--no-ff', '-m', 'merge core', 'core');
     // Partial state: merge done, tag missing. Re-run should just tag.
     const result = executePropagate({ repoRoot: r.root, noFetch: true });
     expect(result.halted).toBeNull();
     const tags = result.tags_written.map((t) => t.tag);
-    expect(tags).toContain('channel/telegram/1.9.0.1');
+    // First-bump D=1 regardless of source's D — the edition has no prior
+    // tag, so its first bump starts at 1.
+    expect(tags).toContain('edition/starter/1.9.0.1');
   });
 });
 
@@ -142,9 +168,14 @@ describe('executePropagate — --after session skip', () => {
       after: 'channel/telegram',
     });
     const tags = second.tags_written.map((t) => t.tag);
-    // whatsapp's first-bump baseline is at the pre-conflict merge-base, so
-    // it starts at D=1 even though core has advanced to 1.9.0.2 this run.
-    expect(tags).toContain('channel/whatsapp/1.9.0.1');
+    // Channels are not_versioned, so no `channel/whatsapp/*` tag is
+    // written. The --after skip is verified by whatsapp's hop landing in
+    // progress.done (merge executed) while telegram remains pending.
+    expect(tags).not.toContain('channel/whatsapp/1.9.0.1');
+    const doneTargets = second.progress.done.map((h) => h.split(' -> ')[1]);
+    const pendingTargets = second.progress.pending.map((h) => h.hop.split(' -> ')[1]);
+    expect(doneTargets).toContain('channel/whatsapp');
+    expect(pendingTargets).toContain('channel/telegram');
   });
 
   it('raises AfterNoMatchError when target has no pending hop', () => {

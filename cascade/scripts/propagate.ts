@@ -382,6 +382,33 @@ export function planPropagation(opts: PlanOptions): PropagationPlan {
     let predicted_tag: string | null = null;
     let bump_reason: BumpReason | null = null;
 
+    // Not-versioned targets (modules, channels) merge from source but do
+    // not get `<branch>/A.B.C.D` tags. Treat as 'done' when source is
+    // already merged, else 'pending' — planBump would throw for these.
+    let targetNotVersioned = false;
+    try {
+      targetNotVersioned = classOf(rh.target, registry).class.not_versioned === true;
+    } catch {
+      /* unclassifiable — fall through to planBump path which will skip */
+    }
+
+    if (targetNotVersioned) {
+      status = isAncestor(rh.source, rh.target, opts.repoRoot) ? 'done' : 'pending';
+      hops.push({
+        hop: hopName,
+        source: rh.source,
+        target: rh.target,
+        status,
+        halt_kind: undefined,
+        halt_reason: undefined,
+        predicted_tag: null,
+        predicted_version: null,
+        bump_reason: null,
+        blocked_by: blocked,
+      });
+      continue;
+    }
+
     try {
       const plan = planBump(rh.target, opts.repoRoot, { registry, config });
       if (plan.kind === 'noop') {
@@ -588,6 +615,16 @@ function executeHop(
 ): ExecuteHopResult {
   checkoutTarget(target, repoRoot);
 
+  // Not-versioned targets (modules, channels): merge-only, no tag. If the
+  // source is already merged there's nothing to do. Otherwise merge and
+  // advance the target without writing a tag.
+  let targetNotVersioned = false;
+  try {
+    targetNotVersioned = classOf(target, registry).class.not_versioned === true;
+  } catch {
+    /* unclassifiable — fall through */
+  }
+
   // MERGE_HEAD guard before anything else.
   const mh = inspectMergeHead(source, repoRoot);
   if (mh) {
@@ -601,6 +638,38 @@ function executeHop(
             : `MERGE_HEAD on ${target} is no longer an ancestor of source ${source}; abort (git merge --abort) and re-run`,
       },
     };
+  }
+
+  if (targetNotVersioned) {
+    if (isAncestor(source, target, repoRoot)) {
+      return { kind: 'done' };
+    }
+    const mergeRes = mergePreserve(
+      source,
+      { message: `cascade propagate: merge ${source}` },
+      repoRoot,
+      registry,
+    );
+    if (mergeRes.code !== 0) {
+      const conflictedFiles: string[] = [];
+      try {
+        const out = git(['diff', '--name-only', '--diff-filter=U'], repoRoot);
+        if (out) conflictedFiles.push(...out.split('\n').filter(Boolean));
+      } catch {
+        /* ignore */
+      }
+      return {
+        kind: 'halt',
+        halt: {
+          kind: 'merge-conflict',
+          message: `conflict merging ${source} into ${target}`,
+          details:
+            conflictedFiles.length > 0 ? { conflicted_files: conflictedFiles } : undefined,
+        },
+      };
+    }
+    // Merged, no tag to write — report as advanced with no TagWrite.
+    return { kind: 'wrote' };
   }
 
   // If the predicted tag already points at the target's tip, treat as done
@@ -782,9 +851,9 @@ export function executePropagate(opts: ExecuteOptions): ExecutionResult {
       noop += 1;
       continue;
     }
-    if (res.kind === 'wrote' && res.tag) {
+    if (res.kind === 'wrote') {
       done.push(h.hop);
-      tags_written.push(res.tag);
+      if (res.tag) tags_written.push(res.tag);
       advanced += 1;
       continue;
     }
