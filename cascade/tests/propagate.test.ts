@@ -74,21 +74,32 @@ describe('planPropagation', () => {
     expect(plan.hops).toHaveLength(0);
   });
 
-  it('envelope has halted:null + empty pending on clean fully-tagged repo', () => {
+  it('envelope has halted:null + empty pending on clean fully-merged repo', () => {
     const r = buildRepo();
     r.run('checkout', 'core');
     writeTag({ branch: 'core', version: { a: 1, b: 9, c: 0, d: 1 } }, r.root);
+    // Channels are not_versioned; "done" is derived from source-ancestor,
+    // not from a channel tag. Merge core into each channel to advance them.
     r.run('checkout', 'channel/telegram');
     r.run('merge', '--no-ff', '-m', 'merge core', 'core');
-    writeTag({ branch: 'channel/telegram', version: { a: 1, b: 9, c: 0, d: 1 } }, r.root);
     r.run('checkout', 'channel/whatsapp');
     r.run('merge', '--no-ff', '-m', 'merge core', 'core');
-    writeTag({ branch: 'channel/whatsapp', version: { a: 1, b: 9, c: 0, d: 1 } }, r.root);
     const plan = planPropagation({ repoRoot: r.root, noFetch: true });
     const env = toEnvelope(plan);
     expect(env.halted).toBeNull();
     expect(env.progress.pending).toEqual([]);
     expect(env.progress.done.length).toBeGreaterThan(0);
+  });
+
+  it('channel hops carry no predicted_tag (not_versioned carriers)', () => {
+    const r = buildRepo();
+    const plan = planPropagation({ repoRoot: r.root, noFetch: true });
+    const channelHops = plan.hops.filter((h) => h.target.startsWith('channel/'));
+    expect(channelHops.length).toBeGreaterThan(0);
+    for (const h of channelHops) {
+      expect(h.predicted_tag).toBeNull();
+      expect(h.predicted_version).toBeNull();
+    }
   });
 });
 

@@ -8,9 +8,29 @@ version_depth: 3
 upstream_remote: upstream
 upstream_main_branch: main
 
-# P1 deletion-inspection threshold: flag files fls deleted that upstream
-# still modifies, but only when upstream's delta on the deleted path
-# exceeds this many total lines (added + removed). Raises or lowers the
-# subagent workload; raise if signal is noisy, lower if it's missing
-# things. See cascade-inspect-fls-deletion agent.
-fls_deletion_min_lines: 10
+# P1 discarded-inspection threshold: flag files the target removed that
+# upstream still modifies, but only when upstream's delta on the removed
+# path exceeds this many total lines (added + removed). Raise if signal
+# is noisy, lower if it misses things.
+discarded_min_delta_lines: 10
+
+# P1 introduced-inspection threshold: file size (lines) of an
+# upstream-introduced path on source tip needed to trigger the
+# introduced-file inspector.
+introduced_min_file_lines: 50
+
+# P1 whitespace-only annotation. Disable for whitespace-semantic projects
+# (Python/YAML/Make) where whitespace changes carry meaning.
+intake_whitespace_only: true
+
+# P2 hotfix-loop-open warning threshold (days). `cascade check` flags a
+# cherry-pick on deploy/<name> whose `Cascade-Hotfix-Pair:` reverse merge
+# commit has not yet landed within this window.
+hotfix_loop_warn_days: 14
+
+# Downstream-repo marker. Present only in a deploy-side checkout that
+# consumes editions from an upstream cascade repo. The presence of
+# `downstream.source_remote` is the canonical "this repo is a downstream"
+# signal; source repos omit this block. See phase-2.md § Config additions.
+# downstream:
+#   source_remote: source

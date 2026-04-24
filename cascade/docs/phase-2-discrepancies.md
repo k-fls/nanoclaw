@@ -19,7 +19,7 @@ The earlier "deliberate deviation from §6" framing in `versioning.md` — that 
 
 **Status.** Resolved. Requirements §6 and `versioning.md` should be amended in a future doc pass to ratify "modules and channels are not versioned; skills are." Skills remain a live gap in §6 — they deserve explicit inclusion on the versioned side.
 
-**Test follow-up.** `propagate.test.ts`, `propagate-execute.test.ts`, `bump.test.ts`, and `tag-discipline.test.ts` still assert the old uniform-tagging behavior for module/channel fixtures and need to be updated to expect merge-only hops with no predicted tags.
+**Test follow-up.** Resolved. `propagate-execute.test.ts` was updated in the same commit; `propagate.test.ts` now asserts `predicted_tag: null` for channel hops and no longer writes vestigial channel tags; `bump.test.ts` has a case verifying `planBump` refuses `not_versioned` branches. `tag-discipline.test.ts` had no channel/module fixtures to update.
 
 ## Orchestration shipped as skills, not plain slash commands
 
@@ -41,8 +41,8 @@ The earlier "deliberate deviation from §6" framing in `versioning.md` — that 
 
 Captured for completeness — these are “not yet implemented,” not “diverging”:
 
-- **`seed-consistency` warning** (phase-2.md § `check.ts`). Code stub not landed in Step 1; deferred until after the first real seed-written tag exists, since the check needs baseline-at-seeded-commit logic that hasn’t paid rent yet.
-- **`prefix-mismatch` promotion to merge-commit enforcement** (phase-2.md § `check.ts`). Phase 0 has fixture-level enforcement only; the real-enforcement pass is deferred until Step 4’s execution surface is fully wired, to avoid a round-trip through `check.ts` before propagate can raise the same halt at merge time.
+- **`seed-consistency` warning** (phase-2.md § `check.ts`). Deferred indefinitely. No seeded tags exist in the repo yet; the natural feedback loop on the next `cascade propagate` would surface the same typo via a visible prefix jump, and the warning carries persistent noise for legitimately divergent seeds. Revisit when a real `--seed` is used.
+- **`prefix-mismatch` promotion to merge-commit enforcement** (phase-2.md § `check.ts`). Landed in `checkPrefixMismatchOnMerges` — walks first-parent merge history on each long-lived branch, identifies each parent's source branch via nearest cascade tag, and runs `detectPrefixMismatch` with `.cascade/parent_branch` read at the merge commit. The Phase 0 `runSelfTest` fixture stays as the determinism anchor. Propagate-time preemption (halt before `writeTag` on an edition whose sources disagree) is still deferred — `check.ts` catches the state post-merge; adding a pre-tag guard in `propagate.ts` is a follow-up if we want to stop bad commits from landing in the first place.
 - **Slash command for hotfix** → will ship as a skill (`.claude/skills/cascade-hotfix/`) when Step 5 lands, consistent with the propagate decision above.
 
 ## Step 5 — hotfix flow

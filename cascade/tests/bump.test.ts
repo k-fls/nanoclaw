@@ -170,4 +170,12 @@ describe('planBump', () => {
     r.run('checkout', '-b', 'hotfix/bug');
     expect(() => planBump('hotfix/bug', r.root)).toThrow(/ephemeral/);
   });
+
+  it('refuses not_versioned branches (channels and modules)', () => {
+    const r = setupCore();
+    r.run('checkout', '-b', 'channel/telegram', 'core');
+    expect(() => planBump('channel/telegram', r.root)).toThrow(/not versioned/);
+    r.run('checkout', '-b', 'module/foo', 'core');
+    expect(() => planBump('module/foo', r.root)).toThrow(/not versioned/);
+  });
 });

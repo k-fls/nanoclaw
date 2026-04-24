@@ -27,6 +27,21 @@ import {
   parseCascadeTag,
 } from './version.js';
 import { findOpenHotfixLoops } from './hotfix.js';
+import { execFileSync } from 'node:child_process';
+
+// Silent variant of `git` that discards stderr. Used for calls that
+// legitimately fail on negative-path branches (e.g. `git describe` on a
+// tagless commit, `git show :.cascade/parent_branch` when the file is
+// absent at that commit) — we read exit status via try/catch and don't
+// want "fatal: ..." noise in test output or CI logs.
+function gitSilent(args: string[], repoRoot: string): string {
+  return execFileSync('git', args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    maxBuffer: 256 * 1024 * 1024,
+  }).trimEnd();
+}
 
 export type Severity = 'error' | 'warning' | 'info';
 
@@ -214,6 +229,13 @@ export function runCheck(opts: CheckOptions): CheckResult {
   // locally when run from a workstation, origin-augmented in CI. The
   // local-vs-CI divergence is an accepted sharp edge (phase-2.md).
   for (const v of checkTagDiscipline(registry, repoRoot)) violations.push(v);
+
+  // 5c. Prefix-mismatch on merge commits (Phase 2). Walks merge commits on
+  //     each long-lived branch; for each, identifies the source branch of
+  //     every parent (nearest cascade tag via `git describe`) and runs
+  //     `detectPrefixMismatch` against the discovered sources. Promoted
+  //     from the Phase 0 self-test fixture to real-history enforcement.
+  for (const v of checkPrefixMismatchOnMerges(registry, repoRoot)) violations.push(v);
 
   // 6. Squash-merge markers on long-lived branches. Best-effort heuristic —
   //    FF cannot be detected post-hoc (that's a forge-level gate, per §5).
@@ -449,6 +471,143 @@ function checkTagDiscipline(
   }
 
   return out;
+}
+
+// Walk merge commits on every long-lived branch and flag prefix disagreements
+// between the versioned sources brought together by each merge. Real-history
+// counterpart to `runSelfTest`'s synthetic fixture.
+//
+// Source identification: for each parent of a merge commit, we take the
+// nearest annotated tag (via `git describe --tags --abbrev=0`) and interpret
+// it as `<long-lived-branch>/<A.B.C.D>` when the prefix matches a registered
+// branch. Parents whose nearest tag is not a cascade tag (or not reachable)
+// are silently dropped — they contribute no versioned source to the merge.
+//
+// Scope: bounded first-parent walk per branch (default 500 merges). Each
+// merge SHA is inspected at most once across all branches via `seen`.
+function checkPrefixMismatchOnMerges(
+  registry: BranchClass[],
+  repoRoot: string,
+  limit = 500,
+): Violation[] {
+  const out: Violation[] = [];
+  const longLived: string[] = [];
+  for (const b of listAllBranches(repoRoot)) {
+    try {
+      if (isLongLived(classOf(b, registry))) longLived.push(b);
+    } catch {
+      /* unclassifiable */
+    }
+  }
+  if (longLived.length === 0) return out;
+
+  // Longest-prefix-wins when parsing tag names (same defensive sort as
+  // checkTagDiscipline — `skill/voice/1.9.0.1` must match `skill/voice`,
+  // not a hypothetical shorter-prefix class).
+  const prefixes = [...longLived].sort((a, b) => b.length - a.length);
+  const identifyCache = new Map<string, { branch: string; version: Version } | null>();
+
+  const seen = new Set<string>();
+  for (const branch of longLived) {
+    if (!gitOk(['rev-parse', '--verify', branch], repoRoot)) continue;
+    let log: string;
+    try {
+      log = git(
+        [
+          'log',
+          '--first-parent',
+          '--merges',
+          `--max-count=${limit}`,
+          '--format=%H %P',
+          branch,
+        ],
+        repoRoot,
+      );
+    } catch {
+      continue;
+    }
+    if (!log) continue;
+
+    for (const line of log.split('\n')) {
+      const parts = line.split(' ').filter(Boolean);
+      if (parts.length < 3) continue; // merge sha + ≥2 parents
+      const [mergeSha, ...parents] = parts;
+      if (seen.has(mergeSha)) continue;
+      seen.add(mergeSha);
+
+      const byBranch = new Map<string, Version>();
+      for (const p of parents) {
+        const id = identifyParent(p, prefixes, repoRoot, identifyCache);
+        if (!id) continue;
+        const existing = byBranch.get(id.branch);
+        if (!existing || compareVersion(id.version, existing) > 0) {
+          byBranch.set(id.branch, id.version);
+        }
+      }
+      if (byBranch.size < 2) continue;
+
+      let parentBranch: string | null = null;
+      try {
+        const content = gitSilent(['show', `${mergeSha}:.cascade/parent_branch`], repoRoot);
+        parentBranch = content.trim().split('\n')[0]?.trim() || null;
+      } catch {
+        /* file not present at that commit */
+      }
+
+      const sources = [...byBranch.entries()].map(([name, version]) => ({ name, version }));
+      const r = detectPrefixMismatch(branch, sources, parentBranch);
+      if (r.severity === 'ok') continue;
+
+      const listed = sources
+        .map((s) => `${s.name}=${s.version.a}.${s.version.b}.${s.version.c}`)
+        .join(', ');
+      const qualifier = parentBranch
+        ? ` resolved via parent_branch "${parentBranch}"`
+        : ' and no .cascade/parent_branch declared';
+      out.push({
+        rule: 'prefix-mismatch',
+        severity: r.severity,
+        message: `${branch} merge ${mergeSha.slice(0, 7)}: prefix mismatch (${listed})${qualifier}`,
+        commits: [mergeSha],
+      });
+    }
+  }
+
+  return out;
+}
+
+function identifyParent(
+  sha: string,
+  prefixes: string[],
+  repoRoot: string,
+  cache: Map<string, { branch: string; version: Version } | null>,
+): { branch: string; version: Version } | null {
+  const hit = cache.get(sha);
+  if (hit !== undefined) return hit;
+  let tag: string;
+  try {
+    tag = gitSilent(['describe', '--tags', '--abbrev=0', sha], repoRoot).trim();
+  } catch {
+    cache.set(sha, null);
+    return null;
+  }
+  if (!tag) {
+    cache.set(sha, null);
+    return null;
+  }
+  const branch = prefixes.find((p) => tag.startsWith(p + '/'));
+  if (!branch) {
+    cache.set(sha, null);
+    return null;
+  }
+  const v = parseCascadeTag(tag, branch);
+  if (!v) {
+    cache.set(sha, null);
+    return null;
+  }
+  const result = { branch, version: v };
+  cache.set(sha, result);
+  return result;
 }
 
 function recentCommitsOnLongLived(

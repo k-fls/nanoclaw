@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { rmSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { formatReport, runCheck, runSelfTest } from '../scripts/check.js';
+import { writeTag } from '../scripts/tags.js';
 import { makeRepo, seedCascadeRegistry, Repo } from './fixtures.js';
 
 let repo: Repo;
@@ -210,5 +211,94 @@ describe('runCheck — ownership map is written when writeMap=true', () => {
     runCheck({ repoRoot: repo.root, writeMap: true });
     const map = readFileSync(path.join(repo.root, '.ownership_map.txt'), 'utf8');
     expect(map).toContain('x.ts');
+  });
+});
+
+describe('runCheck — prefix-mismatch on real merge commits', () => {
+  // Builds a fixture where an edition merges two sources whose latest tags
+  // disagree on A.B.C. Exercises the Phase 2 promotion of prefix-mismatch
+  // from fixture-only to real-history enforcement.
+  function buildDisagreeingEdition() {
+    // Upstream at v1.9.0, core branches off and gets tagged 1.9.0.1.
+    repo.write('README.md', 'r\n');
+    repo.commit('init');
+    repo.run('checkout', '-q', '-b', 'upstream/main');
+    repo.write('u.txt', 'u\n');
+    repo.commit('up');
+    repo.run('tag', '-a', 'v1.9.0', '-m', 'u190');
+    repo.run('checkout', '-q', '-b', 'core', 'v1.9.0');
+    repo.write('c.txt', 'c\n');
+    repo.commit('core-init');
+    writeTag({ branch: 'core', version: { a: 1, b: 9, c: 0, d: 1 } }, repo.root);
+
+    // Skill branches off core; tag it with a disagreeing prefix (1.8.0.x).
+    // Simulates a skill that lagged behind a core minor bump.
+    repo.run('checkout', '-q', '-b', 'skill/voice', 'core');
+    repo.write('voice.ts', 's\n');
+    repo.commit('skill init');
+    writeTag({ branch: 'skill/voice', version: { a: 1, b: 8, c: 0, d: 1 } }, repo.root);
+
+    // Edition merges both. This merge is what we expect to flag.
+    repo.run('checkout', '-q', '-b', 'edition/starter', 'core');
+    repo.run('merge', '--no-ff', '-m', 'merge skill/voice', 'skill/voice');
+    return repo.run('rev-parse', 'HEAD');
+  }
+
+  it('flags an edition merge whose sources disagree on A.B.C', () => {
+    buildDisagreeingEdition();
+    const r = runCheck({ repoRoot: repo.root, writeMap: false });
+    const pm = r.violations.filter((v) => v.rule === 'prefix-mismatch');
+    expect(pm.length).toBe(1);
+    expect(pm[0].severity).toBe('error');
+    expect(pm[0].message).toContain('core=1.9.0');
+    expect(pm[0].message).toContain('skill/voice=1.8.0');
+    expect(pm[0].message).toContain('no .cascade/parent_branch');
+  });
+
+  it('downgrades to warning when .cascade/parent_branch declares a source', () => {
+    buildDisagreeingEdition();
+    // Declare parent_branch on the edition and re-merge so the file is
+    // present at the merge commit's tree.
+    writeFileSync(path.join(repo.root, '.cascade', 'parent_branch'), 'core\n');
+    repo.run('add', '.cascade/parent_branch');
+    repo.run('commit', '-q', '-m', 'declare parent');
+    // Advance skill so a fresh merge is required.
+    repo.run('checkout', '-q', 'skill/voice');
+    repo.write('voice.ts', 's2\n');
+    repo.commit('skill advance');
+    writeTag({ branch: 'skill/voice', version: { a: 1, b: 8, c: 0, d: 2 } }, repo.root);
+    repo.run('checkout', '-q', 'edition/starter');
+    repo.run('merge', '--no-ff', '-m', 'merge skill again', 'skill/voice');
+
+    const r = runCheck({ repoRoot: repo.root, writeMap: false });
+    const pm = r.violations.filter((v) => v.rule === 'prefix-mismatch');
+    // The pre-parent_branch merge still errors (no file at that commit).
+    // The post-parent_branch merge downgrades to warning.
+    const warnings = pm.filter((v) => v.severity === 'warning');
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0].message).toContain('parent_branch "core"');
+  });
+
+  it('does not fire when sources agree on A.B.C', () => {
+    repo.write('README.md', 'r\n');
+    repo.commit('init');
+    repo.run('checkout', '-q', '-b', 'upstream/main');
+    repo.write('u.txt', 'u\n');
+    repo.commit('up');
+    repo.run('tag', '-a', 'v1.9.0', '-m', 'u190');
+    repo.run('checkout', '-q', '-b', 'core', 'v1.9.0');
+    repo.write('c.txt', 'c\n');
+    repo.commit('core-init');
+    writeTag({ branch: 'core', version: { a: 1, b: 9, c: 0, d: 1 } }, repo.root);
+    repo.run('checkout', '-q', '-b', 'skill/voice', 'core');
+    repo.write('s.ts', 's\n');
+    repo.commit('skill');
+    writeTag({ branch: 'skill/voice', version: { a: 1, b: 9, c: 0, d: 1 } }, repo.root);
+    repo.run('checkout', '-q', '-b', 'edition/starter', 'core');
+    repo.run('merge', '--no-ff', '-m', 'merge skill', 'skill/voice');
+
+    const r = runCheck({ repoRoot: repo.root, writeMap: false });
+    const pm = r.violations.filter((v) => v.rule === 'prefix-mismatch');
+    expect(pm).toEqual([]);
   });
 });
