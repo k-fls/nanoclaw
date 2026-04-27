@@ -129,6 +129,70 @@ describe('deriveOwnership — attribution', () => {
   });
 });
 
+describe('deriveOwnership — renames', () => {
+  it('treats a rename as a fresh introduction at the new path', () => {
+    // Per cascade/docs/ownership.md: "Renames are introductions at the new
+    // path. No --follow. A rename = new introduction; the branch performing
+    // the rename owns the file at its new path."
+    repo.write('seed.md', '# s\n');
+    repo.commit('core: init');
+    repo.write('src/legacy.ts', 'export const L = 1;\n');
+    repo.commit('core: add legacy');
+    repo.branch('module/foo');
+    repo.checkout('module/foo');
+    repo.run('mv', 'src/legacy.ts', 'src/renamed.ts');
+    repo.commit('module: rename legacy to renamed');
+    const r = deriveOwnership({ repoRoot: repo.root });
+    expect(r.entries.find((x) => x.path === 'src/renamed.ts')?.owner).toBe(
+      'module/foo',
+    );
+    expect(r.entries.find((x) => x.path === 'src/legacy.ts')).toBeUndefined();
+  });
+
+  it('suppresses rename-induced double-introduction warnings', () => {
+    // Setup: file added on main, renamed on main, then a downstream branch
+    // independently re-creates the renamed path (e.g. via cherry-pick or
+    // a single-parent rebase). Under --no-renames both the rename commit
+    // and the re-add commit appear as introducers of the new path on
+    // independent timelines — but it's not a real double-authoring; the
+    // rename heuristic recognizes one of them as a `git mv`. Warning
+    // should be suppressed; renamePairs should still list the event.
+    repo.write('seed.md', '# s\n');
+    repo.commit('core: init');
+    repo.write('a.ts', '1\n');
+    repo.commit('core: add a');
+    repo.run('mv', 'a.ts', 'b.ts');
+    repo.commit('core: rename a to b');
+    repo.branch('skill/oauth');
+    repo.checkout('skill/oauth');
+    // Independent re-add of b.ts on the downstream branch (different
+    // content, no rename relation to anything on this branch).
+    repo.write('b.ts', '2\n');
+    // Force a fresh add-commit. Use --allow-empty-message? No — just commit.
+    repo.run('add', 'b.ts');
+    repo.run('commit', '-q', '-m', 'oauth: re-add b');
+    const r = deriveOwnership({ repoRoot: repo.root });
+    // Double-intro warning suppressed because b.ts has a rename event whose
+    // commit is one of its introducers.
+    expect(r.doubleIntroductions.find((d) => d.path === 'b.ts')).toBeUndefined();
+  });
+
+  it('rename attribution is independent of git rename-detection config', () => {
+    // Determinism: enabling diff.renames must not change ownership output.
+    repo.run('config', 'diff.renames', 'true');
+    repo.write('seed.md', '# s\n');
+    repo.commit('core: init');
+    repo.write('a.ts', '1\n');
+    repo.commit('core: add a');
+    repo.branch('module/foo');
+    repo.checkout('module/foo');
+    repo.run('mv', 'a.ts', 'b.ts');
+    repo.commit('module: rename a to b');
+    const r = deriveOwnership({ repoRoot: repo.root });
+    expect(r.entries.find((x) => x.path === 'b.ts')?.owner).toBe('module/foo');
+  });
+});
+
 describe('deriveOwnership — determinism + format', () => {
   it('produces byte-identical output across runs', () => {
     repo.write('a.ts', 'a\n');
@@ -188,18 +252,27 @@ describe('deriveOwnership — ownership_overrides', () => {
   });
 
   it('override suppresses double-introduction for the overridden path', () => {
+    // Distinct content on each branch and a third post-merge content so
+    // neither content-equivalence nor reconciled-divergence suppresses
+    // the warning. The override is the only thing that can silence it.
     repo.write('README.md', '# seed\n');
     repo.commit('seed');
     repo.run('checkout', '-q', '-b', 'fa');
-    repo.write('dup.ts', 'same\n');
+    repo.write('dup.ts', 'alpha\n');
     repo.commit('a');
     repo.run('checkout', '-q', 'main');
     repo.run('checkout', '-q', '-b', 'fb');
-    repo.write('dup.ts', 'same\n');
+    repo.write('dup.ts', 'beta\n');
     repo.commit('b');
     repo.checkout('main');
     repo.merge('fa');
-    repo.merge('fb'); // identical content, no conflict
+    try {
+      repo.merge('fb');
+    } catch {
+      repo.write('dup.ts', 'gamma\n'); // third version — neither intro
+      repo.run('add', 'dup.ts');
+      repo.run('commit', '-q', '--no-edit');
+    }
 
     const before = deriveOwnership({ repoRoot: repo.root });
     expect(before.doubleIntroductions.find((d) => d.path === 'dup.ts')).toBeDefined();
@@ -207,6 +280,83 @@ describe('deriveOwnership — ownership_overrides', () => {
     writeOverrides('dup.ts  main\n');
     const after = deriveOwnership({ repoRoot: repo.root });
     expect(after.doubleIntroductions.find((d) => d.path === 'dup.ts')).toBeUndefined();
+  });
+
+  it('suppresses double-introduction when current tree blob matches one introducer (reconciled divergence)', () => {
+    // Two branches add the file with different content. Later, the tree
+    // converges on one of the two introduced versions (e.g. someone
+    // resolved the divergence by overwriting). Warning is suppressed
+    // because the divergence is no longer actionable — the surviving
+    // content matches an original introduction.
+    repo.write('README.md', '# seed\n');
+    repo.commit('seed');
+    repo.run('checkout', '-q', '-b', 'fa');
+    repo.write('div.ts', 'alpha\n');
+    repo.commit('a');
+    repo.run('checkout', '-q', 'main');
+    repo.run('checkout', '-q', '-b', 'fb');
+    repo.write('div.ts', 'beta\n');
+    repo.commit('b');
+    repo.checkout('main');
+    repo.merge('fa');
+    try {
+      repo.merge('fb');
+    } catch {
+      // Conflict resolved in favor of fa's content (alpha) — matches an
+      // intro blob, divergence reconciled.
+      repo.write('div.ts', 'alpha\n');
+      repo.run('add', 'div.ts');
+      repo.run('commit', '-q', '--no-edit');
+    }
+    const r = deriveOwnership({ repoRoot: repo.root });
+    expect(r.doubleIntroductions.find((d) => d.path === 'div.ts')).toBeUndefined();
+  });
+
+  it('keeps double-introduction warning when tree blob differs from all introducers', () => {
+    // Two distinct blobs introduced; tree later diverged from both (e.g.
+    // someone edited the file post-merge to a third version). The warning
+    // remains — divergence is real and the resolution is unclear.
+    repo.write('README.md', '# seed\n');
+    repo.commit('seed');
+    repo.run('checkout', '-q', '-b', 'fa');
+    repo.write('div.ts', 'alpha\n');
+    repo.commit('a');
+    repo.run('checkout', '-q', 'main');
+    repo.run('checkout', '-q', '-b', 'fb');
+    repo.write('div.ts', 'beta\n');
+    repo.commit('b');
+    repo.checkout('main');
+    repo.merge('fa');
+    try {
+      repo.merge('fb');
+    } catch {
+      repo.write('div.ts', 'gamma\n'); // third version, neither intro
+      repo.run('add', 'div.ts');
+      repo.run('commit', '-q', '--no-edit');
+    }
+    const r = deriveOwnership({ repoRoot: repo.root });
+    expect(r.doubleIntroductions.find((d) => d.path === 'div.ts')).toBeDefined();
+  });
+
+  it('suppresses double-introduction when all introducing commits store the same blob', () => {
+    // Two branches add the file with byte-identical content. Without
+    // suppression, this fires a double-intro warning. With blob-equality
+    // suppression, the warning is silenced — the same content traveling
+    // via cherry-pick / squash is not a real second authoring.
+    repo.write('README.md', '# seed\n');
+    repo.commit('seed');
+    repo.run('checkout', '-q', '-b', 'fa');
+    repo.write('same.ts', 'identical\n');
+    repo.commit('a');
+    repo.run('checkout', '-q', 'main');
+    repo.run('checkout', '-q', '-b', 'fb');
+    repo.write('same.ts', 'identical\n');
+    repo.commit('b');
+    repo.checkout('main');
+    repo.merge('fa');
+    repo.merge('fb');
+    const r = deriveOwnership({ repoRoot: repo.root });
+    expect(r.doubleIntroductions.find((d) => d.path === 'same.ts')).toBeUndefined();
   });
 
   it('flags an override whose owner is not a long-lived branch', () => {
@@ -228,6 +378,31 @@ describe('deriveOwnership — ownership_overrides', () => {
     const r = deriveOwnership({ repoRoot: repo.root });
     expect(r.redundantOverrides).toHaveLength(1);
     expect(r.redundantOverrides[0].path).toBe('r.ts');
+  });
+
+  it('flags a redundant override on a suppressed double-intro path', () => {
+    // The path has two introducing commits with identical content
+    // (content-equivalent suppression silences the double-intro warning).
+    // Mechanical derivation produces `main` via the independent-timeline
+    // tiebreak. Declaring `main` is therefore redundant — the override is
+    // not load-bearing for warning suppression (the blob-equality rule is)
+    // and it matches what derivation would produce anyway.
+    repo.write('README.md', '# seed\n');
+    repo.commit('seed');
+    repo.run('checkout', '-q', '-b', 'fa');
+    repo.write('same.ts', 'same\n');
+    repo.commit('a');
+    repo.run('checkout', '-q', 'main');
+    repo.run('checkout', '-q', '-b', 'fb');
+    repo.write('same.ts', 'same\n');
+    repo.commit('b');
+    repo.checkout('main');
+    repo.merge('fa');
+    repo.merge('fb');
+    writeOverrides('same.ts  main\n');
+    const r = deriveOwnership({ repoRoot: repo.root });
+    expect(r.doubleIntroductions.find((d) => d.path === 'same.ts')).toBeUndefined();
+    expect(r.redundantOverrides.find((o) => o.path === 'same.ts')?.owner).toBe('main');
   });
 
   it('throws on malformed line', () => {

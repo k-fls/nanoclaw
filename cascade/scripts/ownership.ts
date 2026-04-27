@@ -54,6 +54,17 @@ export interface OwnershipResult {
   invalidOverrides: { path: string; owner: string; reason: string }[];
 }
 
+// Internal advisory type — rename events from git's heuristic, used only
+// to suppress rename-induced double-introduction warnings. Not surfaced
+// on OwnershipResult: attribution is deterministic (treats every rename
+// as a fresh add per cascade/docs/ownership.md), so consumers should not
+// rely on this data.
+interface RenamePair {
+  from: string;
+  to: string;
+  commit: string;
+}
+
 export type RuleKind = 'project-owned' | 'safety-net';
 export interface ParsedRule {
   pattern: string; // the gitignore-syntax pattern (prefix stripped)
@@ -126,8 +137,13 @@ function listTrackedFiles(repoRoot: string): string[] {
 // real introductions. We post-filter: for each merge-commit "addition",
 // verify none of the other parents had the file; if any did, skip.
 function collectIntroductions(repoRoot: string): Map<string, string[]> {
+  // `--no-renames` is load-bearing: per cascade/docs/ownership.md (§"Renames
+  // are introductions at the new path"), a rename = fresh introduction and
+  // git's rename heuristics must not be consulted (determinism). Without
+  // this flag git's diff machinery classifies renames as `R` and
+  // `--diff-filter=A` silently drops the new path.
   const out = git(
-    ['log', '--all', '--diff-filter=A', '--name-only', '--format=COMMIT %H %P'],
+    ['log', '--all', '--no-renames', '--diff-filter=A', '--name-only', '--format=COMMIT %H %P'],
     repoRoot,
   );
   const intros = new Map<string, string[]>();
@@ -149,6 +165,41 @@ function collectIntroductions(repoRoot: string): Map<string, string[]> {
     }
   }
   return intros;
+}
+
+// Collect every rename event across reachable history. Advisory: used to
+// recognize rename-induced "double introductions" (a path appears to be
+// added twice when really one of those events is `git mv` of a file
+// already present under a different name). The output never influences
+// owner attribution — that path goes through `--no-renames` and treats
+// the rename as a fresh add at the new path.
+//
+// `--diff-filter=R` reports rename pairs as `R<score>\t<from>\t<to>`.
+function collectRenames(repoRoot: string): RenamePair[] {
+  const out = git(
+    ['log', '--all', '-M', '--diff-filter=R', '--raw', '--format=COMMIT %H'],
+    repoRoot,
+  );
+  const pairs: RenamePair[] = [];
+  let currentCommit: string | null = null;
+  for (const line of out.split('\n')) {
+    if (line.startsWith('COMMIT ')) {
+      currentCommit = line.slice(7).trim();
+      continue;
+    }
+    if (!line || !currentCommit) continue;
+    // Format: ":<srcMode> <dstMode> <srcSha> <dstSha> R<score>\t<from>\t<to>"
+    // `--raw` emits a leading `:` followed by space-separated fields, then
+    // a tab-separated `R<score>\tfrom\tto` tail.
+    const tabIdx = line.indexOf('\t');
+    if (tabIdx === -1) continue;
+    const head = line.slice(0, tabIdx);
+    if (!/\sR\d+$/.test(head)) continue;
+    const tail = line.slice(tabIdx + 1).split('\t');
+    if (tail.length < 2) continue;
+    pairs.push({ from: tail[0], to: tail[1], commit: currentCommit });
+  }
+  return pairs;
 }
 
 // Returns true if `path` exists in the tree of any parent except the first.
@@ -191,6 +242,18 @@ export function deriveOwnership(opts: DeriveOptions): OwnershipResult {
   const overrides = loadOwnershipOverrides(repoRoot);
   const trackedFiles = listTrackedFiles(repoRoot);
   const intros = collectIntroductions(repoRoot);
+  const renamePairs = collectRenames(repoRoot);
+  // Index: target path → set of commits that renamed something into it.
+  // Used to filter rename-induced double-intro warnings.
+  const renameTargetCommits = new Map<string, Set<string>>();
+  for (const r of renamePairs) {
+    let s = renameTargetCommits.get(r.to);
+    if (!s) {
+      s = new Set();
+      renameTargetCommits.set(r.to, s);
+    }
+    s.add(r.commit);
+  }
 
   // Validate overrides: each owner must be a recognized long-lived branch.
   // An override that names an invalid owner is reported and ignored (so the
@@ -257,51 +320,116 @@ export function deriveOwnership(opts: DeriveOptions): OwnershipResult {
   const overridden: string[] = [];
   const redundantOverrides: { path: string; owner: string }[] = [];
 
+  // Per-overridden-path derivation record, kept so the redundant-override
+  // check can reuse the main loop's mechanical answer instead of re-running
+  // a parallel (and inevitably-drifting) derivation. Only populated for
+  // paths that have an override entry, since those are the only ones the
+  // redundant-check inspects.
+  const derivationForOverridden = new Map<
+    string,
+    { derived: string | null; doubleIntroFired: boolean }
+  >();
+
   for (const file of trackedFiles) {
     if (perFileRuleMatch(file)) {
       entries.push({ path: file, owner: 'project' });
       continue;
     }
+    const overrideOwner = overrides.get(file);
     const commits = intros.get(file) ?? [];
 
-    // Explicit override wins over derivation. Also suppresses the double-
-    // introduction warning for this path (the human has explicitly
-    // acknowledged the history).
-    const overrideOwner = overrides.get(file);
-    if (overrideOwner !== undefined) {
-      entries.push({ path: file, owner: overrideOwner });
-      overridden.push(file);
-      continue;
-    }
-
     if (commits.length === 0) {
-      entries.push({ path: file, owner: 'default' });
+      if (overrideOwner !== undefined) {
+        entries.push({ path: file, owner: overrideOwner });
+        overridden.push(file);
+        derivationForOverridden.set(file, { derived: null, doubleIntroFired: false });
+      } else {
+        entries.push({ path: file, owner: 'default' });
+      }
       continue;
     }
     // Double-introduction detection: if two commits introduced the same path
     // on independent ancestries (neither is ancestor of the other), that's
-    // an error per §9.
-    if (commits.length > 1 && !anyAncestorRelation(commits, repoRoot)) {
-      doubleIntroductions.push({ path: file, commits });
+    // an error per §9. Three suppressions, applied in order:
+    //   1. Rename-induced: one of the introducers is a `git mv` whose
+    //      target is this path → the second "introduction" is the rename
+    //      surfacing under --no-renames, not a real second authoring.
+    //   2. Content-equivalent at intro: all introducers store the same blob
+    //      at this path → the same content reappeared via cherry-pick /
+    //      rebase / squash-from-upstream, not two independent authorings.
+    //   3. Reconciled divergence: introducers had differing blobs at intro
+    //      time, but the current tree blob matches one of them → the
+    //      divergence has been resolved (the surviving content is one of
+    //      the original introductions). The warning is post-hoc and not
+    //      actionable; the historical record stays in git log.
+    // All three are blob-hash equality checks — deterministic, no
+    // heuristics, safe to apply unconditionally.
+    const isDoubleIntro =
+      commits.length > 1 && !anyAncestorRelation(commits, repoRoot);
+    let doubleIntroFired = false;
+    if (isDoubleIntro) {
+      const renameCommitsForPath = renameTargetCommits.get(file);
+      const isRenameInduced =
+        renameCommitsForPath !== undefined &&
+        commits.some((c) => renameCommitsForPath.has(c));
+      if (!isRenameInduced) {
+        const blobs = new Set<string>();
+        for (const c of commits) {
+          try {
+            blobs.add(git(['rev-parse', `${c}:${file}`], repoRoot));
+          } catch {
+            blobs.add(`missing:${c}`);
+          }
+        }
+        const isContentEquivalent = blobs.size === 1;
+        let isReconciled = false;
+        if (!isContentEquivalent) {
+          try {
+            const treeBlob = git(['rev-parse', `HEAD:${file}`], repoRoot);
+            isReconciled = blobs.has(treeBlob);
+          } catch {
+            /* file not in HEAD (shouldn't happen for tracked files) */
+          }
+        }
+        doubleIntroFired = !isContentEquivalent && !isReconciled;
+      }
     }
 
     let owner: string | null = null;
-    // Stage 1: first-parent match (the commit was authored on this branch).
-    for (const b of longLived) {
-      const fp = firstParent.get(b)!;
-      if (commits.some((c) => fp.has(c))) {
-        owner = b;
-        break;
-      }
-    }
-    // Stage 2: full-ancestry fallback (commit arrived via merge; e.g. upstream
-    // import or ephemeral that's been merged in and deleted).
-    if (!owner) {
+    if (isDoubleIntro) {
+      // Independent introductions on multiple branches. Don't let Stage 1
+      // (first-parent on any branch) override Stage 2 on a more-general
+      // branch — a single-parent squash/rebase from upstream that re-adds
+      // an already-committed file looks like a first-parent introduction
+      // on the downstream branch, but the file's true home is upstream.
+      // Collapse stages: registry-earliest branch with any hit (fp or anc)
+      // wins.
       for (const b of longLived) {
+        const fp = firstParent.get(b)!;
         const anc = ancestry.get(b)!;
-        if (commits.some((c) => anc.has(c))) {
+        if (commits.some((c) => fp.has(c) || anc.has(c))) {
           owner = b;
           break;
+        }
+      }
+    } else {
+      // Stage 1: first-parent match (the commit was authored on this branch).
+      for (const b of longLived) {
+        const fp = firstParent.get(b)!;
+        if (commits.some((c) => fp.has(c))) {
+          owner = b;
+          break;
+        }
+      }
+      // Stage 2: full-ancestry fallback (commit arrived via merge; e.g.
+      // upstream import or ephemeral that's been merged in and deleted).
+      if (!owner) {
+        for (const b of longLived) {
+          const anc = ancestry.get(b)!;
+          if (commits.some((c) => anc.has(c))) {
+            owner = b;
+            break;
+          }
         }
       }
     }
@@ -319,6 +447,22 @@ export function deriveOwnership(opts: DeriveOptions): OwnershipResult {
         }
       }
     }
+
+    // Override (if present) wins over derivation in the entries map. The
+    // redundant-check below reads `derivationForOverridden` to compare
+    // override vs. mechanical owner without re-deriving.
+    if (overrideOwner !== undefined) {
+      entries.push({ path: file, owner: overrideOwner });
+      overridden.push(file);
+      derivationForOverridden.set(file, { derived: owner, doubleIntroFired });
+      // Override silences the warning for this path (the human has
+      // acknowledged the history) — do NOT push to doubleIntroductions.
+      continue;
+    }
+
+    if (doubleIntroFired) {
+      doubleIntroductions.push({ path: file, commits });
+    }
     if (!owner) {
       unowned.push(file);
       entries.push({ path: file, owner: 'default' });
@@ -327,19 +471,16 @@ export function deriveOwnership(opts: DeriveOptions): OwnershipResult {
     }
   }
 
-  // Redundant-override detection: an override is redundant only if both:
-  //   1. Derivation would have produced the same owner.
-  //   2. The path would NOT trigger a double-introduction warning (otherwise
-  //      the override is load-bearing — it's silencing the warning).
+  // Redundant-override detection: an override is redundant if mechanical
+  // derivation produces the same owner and the override isn't load-bearing
+  // for warning suppression. Reuses the main loop's per-path derivation
+  // (single source of truth — no parallel implementation that can drift).
   for (const p of overridden) {
-    const commits = intros.get(p) ?? [];
-    if (commits.length === 0) continue;
-    const wouldWarnDoubleIntro =
-      commits.length > 1 && !anyAncestorRelation(commits, repoRoot);
-    if (wouldWarnDoubleIntro) continue;
-    const derived = deriveOwnerViaHistory(commits, longLived, firstParent, ancestry);
+    const d = derivationForOverridden.get(p);
+    if (!d || d.derived === null) continue;
+    if (d.doubleIntroFired) continue; // override silences a real warning
     const declared = overrides.get(p);
-    if (derived && declared && derived === declared) {
+    if (declared && d.derived === declared) {
       redundantOverrides.push({ path: p, owner: declared });
     }
   }
@@ -356,24 +497,6 @@ export function deriveOwnership(opts: DeriveOptions): OwnershipResult {
     redundantOverrides,
     invalidOverrides,
   };
-}
-
-// Extracted attribution algorithm, reusable for redundant-override checks.
-function deriveOwnerViaHistory(
-  commits: string[],
-  longLived: string[],
-  firstParent: Map<string, Set<string>>,
-  ancestry: Map<string, Set<string>>,
-): string | null {
-  for (const b of longLived) {
-    const fp = firstParent.get(b);
-    if (fp && commits.some((c) => fp.has(c))) return b;
-  }
-  for (const b of longLived) {
-    const anc = ancestry.get(b);
-    if (anc && commits.some((c) => anc.has(c))) return b;
-  }
-  return null;
 }
 
 // Read-only (upstream) refs, in the order their classes appear in the

@@ -69,24 +69,36 @@ describe('runCheck — bypass log', () => {
 });
 
 describe('runCheck — upstream/* policy entry', () => {
-  // Helper: add the same file (identical content) on two independent branches
-  // off `base`, merge both back into `base`, and return the two intro commits.
-  // Identical content keeps the merge conflict-free while still producing two
-  // distinct introducing commits for the same path.
+  // Helper: add the same file with DISTINCT content on two independent
+  // branches off `base`, merge both back into `base`, and return the two
+  // intro commits. Distinct content is required because deriveOwnership
+  // suppresses double-introduction warnings when all introducing commits
+  // store the same blob (content-equivalence) or when the tree blob
+  // matches one of the introducer blobs (reconciled divergence). The
+  // post-merge content here is a third value so neither suppression
+  // applies, and the warning surfaces as expected.
   function doubleIntroduce(base: string, filename: string, content: string) {
     const brA = `feat-a-${filename.replace(/[^a-z]/gi, '')}`;
     const brB = `feat-b-${filename.replace(/[^a-z]/gi, '')}`;
     repo.run('checkout', '-q', base);
     repo.run('checkout', '-q', '-b', brA);
-    repo.write(filename, content);
+    repo.write(filename, `${content}-a\n`);
     const a = repo.commit(`intro ${filename} (A)`);
     repo.run('checkout', '-q', base);
     repo.run('checkout', '-q', '-b', brB);
-    repo.write(filename, content);
+    repo.write(filename, `${content}-b\n`);
     const b = repo.commit(`intro ${filename} (B)`);
     repo.checkout(base);
     repo.merge(brA);
-    repo.merge(brB); // same content → no conflict
+    try {
+      repo.merge(brB);
+    } catch {
+      // Different blobs collide on the second merge; resolve to a third
+      // version so reconciled-divergence suppression doesn't apply.
+      repo.write(filename, `${content}-merged\n`);
+      repo.run('add', filename);
+      repo.run('commit', '-q', '--no-edit');
+    }
     return { a, b };
   }
 

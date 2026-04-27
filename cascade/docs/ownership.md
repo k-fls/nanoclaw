@@ -83,21 +83,31 @@ for each file F in current tree (sorted):
   if empty:
     owner = "default"; continue
 
-  # Both stages iterate long-lived branches in branch-classes.yaml order
+  # All stages iterate long-lived branches in branch-classes.yaml order
   # (core, modules, channels, skills, adapters, editions, deploys;
   # ephemerals are never candidates). First match wins within each stage.
 
-  # Stage 1: the branch where the commit was authored — its --first-parent
-  # chain contains the intro commit directly.
-  owner = first long-lived branch, in registry order, whose first-parent
-          chain contains any of introducing_commits
+  if introducing_commits describe independent timelines (≥2 intros, none an
+     ancestor of any other):
+    # Independent-timeline tiebreak. A single-parent rebase/squash from
+    # upstream that re-adds an already-committed file looks like a
+    # first-parent introduction on the downstream branch — but the file's
+    # true home is upstream. Collapsing fp+anc within registry order keeps
+    # attribution on the most-general branch with any reach to an intro.
+    owner = first long-lived branch, in registry order, whose first-parent
+            chain OR full ancestry contains any of introducing_commits
+  else:
+    # Stage 1: the branch where the commit was authored — its --first-parent
+    # chain contains the intro commit directly.
+    owner = first long-lived branch, in registry order, whose first-parent
+            chain contains any of introducing_commits
 
-  # Stage 2 (only if Stage 1 did not match): the branch that absorbed the
-  # commit via merge (upstream imports, ephemeral merges). Its full
-  # ancestry contains the intro. Same iteration order.
-  if not matched:
-    owner = first long-lived branch, in registry order, whose full
-            ancestry contains any of introducing_commits
+    # Stage 2 (only if Stage 1 did not match): the branch that absorbed the
+    # commit via merge (upstream imports, ephemeral merges). Its full
+    # ancestry contains the intro. Same iteration order.
+    if not matched:
+      owner = first long-lived branch, in registry order, whose full
+              ancestry contains any of introducing_commits
 
   # Stage 3 (only if Stages 1 and 2 did not match): upstream-reachability.
   # A commit reachable from any read-only (upstream) ref maps to the core
@@ -116,7 +126,7 @@ for each file F in current tree (sorted):
 
 Cost: one `git log` pass plus one `git branch --contains` per unique introducing commit. Scales to repos of ~10k files in single-digit seconds.
 
-**Renames are introductions at the new path (per §9).** No `--follow`. A rename = new introduction; the branch performing the rename owns the file at its new path. This matches the requirements directly and removes a determinism risk — git's rename-detection heuristics aren't consulted, so cross-platform CI disagreements are impossible.
+**Renames are introductions at the new path (per §9).** No `--follow`. A rename = new introduction; the branch performing the rename owns the file at its new path. The introduction-collection log passes `--no-renames` so git's diff machinery cannot reclassify the new path as `R` and silently drop it from `--diff-filter=A`. This matches the requirements directly and removes a determinism risk — git's rename-detection heuristics aren't consulted for attribution, so cross-platform CI disagreements are impossible.
 
 **Delete-and-recreate.** A file deleted and later added at the same path is a fresh introduction. The recreating branch owns it. To preserve ownership, patch instead of delete.
 
@@ -141,7 +151,11 @@ Grep-friendly, diff-friendly, human-inspectable without tooling. Never a source 
 ## `check.ts` guarantees for ownership
 
 - **Determinism**: two consecutive derivations produce the same map. Achieved by treating renames as introductions (no `--follow`, no rename-heuristic dependency).
-- **No double introduction**: no file introduced on two branches in independent history. Warning when the introducing commits are on ephemerals / unclassifiable refs (benign legacy noise); error when two long-lived branches' first-parent chains each contain a distinct introducing commit. Overrides in `.cascade/ownership_overrides` suppress the warning for the overridden path.
+- **No double introduction**: no file introduced on two branches in independent history. Warning when the introducing commits are on ephemerals / unclassifiable refs (benign legacy noise); error when two long-lived branches' first-parent chains each contain a distinct introducing commit. Three deterministic suppressions, applied in order — each is a blob-hash equality check (no heuristics):
+  - **Rename-induced**: one introducer is a `git mv` whose target is this path. The second "introduction" is the rename surfacing under `--no-renames`, not a real second authoring. Git's rename heuristic is consulted for this *advisory* check only; it never feeds owner attribution.
+  - **Content-equivalent at intro**: all introducers store the same blob at this path. The same content reappeared via cherry-pick / rebase / squash-from-upstream, not two independent authorings.
+  - **Reconciled in tree**: introducers had differing blobs at intro time, but the current tree blob matches one of them. The divergence has been resolved (the surviving content is one of the original introductions). The historical record stays in git log.
+  Overrides in `.cascade/ownership_overrides` also suppress the warning for the overridden path (the human has acknowledged the history).
 - **Dead rules**: every `ownership_rules` pattern matches at least one current file, else info. Dead safety-net rules are expected and informational; a safety-net pattern that *does* match a committed file is a warning (`hygiene`).
 - **Unowned new files**: a newly-added file whose first-introduction commit isn't reachable from any long-lived branch requires an explicit ownership decision before `check.ts` passes.
 - **Override hygiene**: overrides naming a non-long-lived owner are errors (`override-invalid`); overrides whose declared owner already matches derivation are info (`override-redundant`). Because info severity is hidden by default, `cascade check` also prints a single-line notice (`notice: N override(s) appear redundant ...`) whenever any are present, so the rot signal stays visible without noise.

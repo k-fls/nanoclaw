@@ -317,6 +317,7 @@ const LEVEL = new Map<string, number>([
   ['upstream', 0],
   ['core', 1],
   ['module', 2],
+  ['module-legacy', 2],
   ['channel', 2],
   ['skill', 2],
   ['module-adapter', 3],

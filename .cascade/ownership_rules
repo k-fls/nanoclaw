@@ -9,10 +9,14 @@
 # Later entries override earlier ones, per gitignore semantics.
 # See cascade/docs/ownership.md.
 
-# Lockfiles — legitimately committed
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
+# Lockfiles — legitimately committed at the repo root only. Patterns are
+# anchored with a leading slash so that nested lockfiles (e.g.
+# cascade/package-lock.json, container/agent-runner/package-lock.json) fall
+# through to history-based ownership derivation and get attributed to the
+# module/skill that owns them.
+/package-lock.json
+/yarn.lock
+/pnpm-lock.yaml
 
 # Safety-net: shouldn't be committed
 ?node_modules/

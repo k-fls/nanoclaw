@@ -29,6 +29,15 @@ classes:
     version_source: core
     not_versioned: true
 
+  # Legacy module branches that predate the `module/*` naming. Same semantics
+  # as `module`, kept as a separate class so the canonical pattern stays
+  # clean and so this list is easy to retire once the branches are renamed.
+  - name: module-legacy
+    pattern: '^feature/((commands|crypto|interaction)-module|claude-updater)$'
+    base: core
+    version_source: core
+    not_versioned: true
+
   - name: channel
     pattern: '^channel/[^/]+$'
     base: core
