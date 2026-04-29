@@ -21,8 +21,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@chat-adapter/discord": "^4.24.0",
+    "@chat-adapter/state-memory": "^4.24.0",
     "@onecli-sh/sdk": "^0.2.0",
     "better-sqlite3": "11.10.0",
+    "chat": "^4.24.0",
     "cron-parser": "5.5.0"
   },
   "devDependencies": {
