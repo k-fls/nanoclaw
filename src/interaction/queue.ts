@@ -103,10 +103,7 @@ export class InteractionQueue {
    * Extract all entries matching a predicate. Removes them from the queue
    * and returns them. Fires the mutation callback for each removal.
    */
-  extract(
-    predicate: (e: InteractionEntry) => boolean,
-    reason: string,
-  ): InteractionEntry[] {
+  extract(predicate: (e: InteractionEntry) => boolean, reason: string): InteractionEntry[] {
     const extracted: InteractionEntry[] = [];
     this.entries = this.entries.filter((e) => {
       if (predicate(e)) {
@@ -116,10 +113,7 @@ export class InteractionQueue {
       return true;
     });
     for (const e of extracted) {
-      logger.info(
-        { interactionId: e.interactionId, eventType: e.eventType },
-        'Interaction queue: entry extracted',
-      );
+      logger.info({ interactionId: e.interactionId, eventType: e.eventType }, 'Interaction queue: entry extracted');
       this._onMutation?.(e.interactionId, e.eventType, 'removed', reason);
     }
     return extracted;

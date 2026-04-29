@@ -1,12 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { AsyncMutex } from './async-mutex.js';
-import {
-  InteractionQueue,
-  type InteractionEntry,
-  type InteractionEventKind,
-  type ReplyFn,
-} from './queue.js';
+import { InteractionQueue, type InteractionEntry, type InteractionEventKind, type ReplyFn } from './queue.js';
 import { InteractionStatusRegistry } from './status.js';
 import {
   consumeInteractions,
@@ -49,8 +44,7 @@ function entry(
     sourceId,
     eventParam: '',
     eventUrl: `https://example.com/flow?source=${sourceId}`,
-    replyFn:
-      replyFn === undefined ? vi.fn(async () => ({ done: true })) : replyFn,
+    replyFn: replyFn === undefined ? vi.fn(async () => ({ done: true })) : replyFn,
   };
 }
 
@@ -234,10 +228,7 @@ describe('consumeInteractions', () => {
 
   it('dispatches to registered handler for event type', async () => {
     const customHandler = vi.fn(async () => {});
-    registerInteractionHandler(
-      'notification' as InteractionEventKind,
-      customHandler,
-    );
+    registerInteractionHandler('notification' as InteractionEventKind, customHandler);
 
     try {
       const q = new InteractionQueue();
@@ -254,10 +245,7 @@ describe('consumeInteractions', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       expect(customHandler).toHaveBeenCalledTimes(1);
-      const [handledEntry, hCtx] = customHandler.mock.calls[0] as unknown as [
-        InteractionEntry,
-        HandlerContext,
-      ];
+      const [handledEntry, hCtx] = customHandler.mock.calls[0] as unknown as [InteractionEntry, HandlerContext];
       expect(handledEntry.sourceId).toBe('github');
       expect(hCtx.chat).toBe(chat);
       expect(hCtx.queue).toBe(q);
@@ -267,10 +255,7 @@ describe('consumeInteractions', () => {
       await consumerDone;
     } finally {
       // Clean up — deregister by re-registering with default
-      registerInteractionHandler(
-        'notification' as InteractionEventKind,
-        defaultHandler,
-      );
+      registerInteractionHandler('notification' as InteractionEventKind, defaultHandler);
     }
   });
 
@@ -285,22 +270,19 @@ describe('consumeInteractions', () => {
 
     // Register a handler that accesses ctx.chat after revoke
     let caughtError: unknown = null;
-    registerInteractionHandler(
-      'notification' as InteractionEventKind,
-      async (_entry, handlerCtx) => {
-        // First access works
-        await handlerCtx.chat.send('step 1');
-        // Simulate container stop
-        revoke();
-        // Next access should throw
-        try {
-          await handlerCtx.chat.send('step 2');
-        } catch (err) {
-          caughtError = err;
-          throw err;
-        }
-      },
-    );
+    registerInteractionHandler('notification' as InteractionEventKind, async (_entry, handlerCtx) => {
+      // First access works
+      await handlerCtx.chat.send('step 1');
+      // Simulate container stop
+      revoke();
+      // Next access should throw
+      try {
+        await handlerCtx.chat.send('step 2');
+      } catch (err) {
+        caughtError = err;
+        throw err;
+      }
+    });
 
     try {
       q.push(entry('github', null), 'test');
@@ -316,10 +298,7 @@ describe('consumeInteractions', () => {
       abort.abort();
       await consumerDone;
     } finally {
-      registerInteractionHandler(
-        'notification' as InteractionEventKind,
-        defaultHandler,
-      );
+      registerInteractionHandler('notification' as InteractionEventKind, defaultHandler);
     }
   });
 });

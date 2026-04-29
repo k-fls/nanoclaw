@@ -17,8 +17,7 @@ export interface ChatIODeps {
 
 /** Create a ChatIO that routes through the normal channel messaging. */
 export function createChatIO(deps: ChatIODeps): ChatIO {
-  const { channel, chatJid, getAgentTimestamp, setAgentTimestamp, saveState } =
-    deps;
+  const { channel, chatJid, getAgentTimestamp, setAgentTimestamp, saveState } = deps;
 
   let lastReceivedTs: string | null = null;
   let lastReceivedId: string | null = null;
@@ -32,8 +31,7 @@ export function createChatIO(deps: ChatIODeps): ChatIO {
     async receive(timeoutMs = 120_000): Promise<string | null> {
       const start = Date.now();
       const cursor = getMessagesSince(chatJid, '');
-      const lastTs =
-        cursor.length > 0 ? cursor[cursor.length - 1].timestamp : '';
+      const lastTs = cursor.length > 0 ? cursor[cursor.length - 1].timestamp : '';
       while (Date.now() - start < timeoutMs) {
         await new Promise((r) => setTimeout(r, 2000));
         const newer = getMessagesSince(chatJid, lastTs);

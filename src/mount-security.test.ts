@@ -2,13 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────
 
-const { mockExistsSync, mockReadFileSync, mockRealpathSync } = vi.hoisted(
-  () => ({
-    mockExistsSync: vi.fn() as ReturnType<typeof vi.fn>,
-    mockReadFileSync: vi.fn() as ReturnType<typeof vi.fn>,
-    mockRealpathSync: vi.fn() as ReturnType<typeof vi.fn>,
-  }),
-);
+const { mockExistsSync, mockReadFileSync, mockRealpathSync } = vi.hoisted(() => ({
+  mockExistsSync: vi.fn() as ReturnType<typeof vi.fn>,
+  mockReadFileSync: vi.fn() as ReturnType<typeof vi.fn>,
+  mockRealpathSync: vi.fn() as ReturnType<typeof vi.fn>,
+}));
 
 vi.mock('fs', () => ({
   default: {
@@ -163,9 +161,7 @@ describe('mount-security', () => {
       );
       const { loadMountAllowlist } = await import('./mount-security.js');
       const result = loadMountAllowlist()!;
-      const sshCount = result.blockedPatterns.filter(
-        (p) => p === '.ssh',
-      ).length;
+      const sshCount = result.blockedPatterns.filter((p) => p === '.ssh').length;
       expect(sshCount).toBe(1);
     });
 
@@ -211,10 +207,7 @@ describe('mount-security', () => {
     it('rejects containerPath containing ".."', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount(
-        { hostPath: '/allowed/rw/foo', containerPath: '../escape' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/foo', containerPath: '../escape' }, true);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('..');
     });
@@ -222,10 +215,7 @@ describe('mount-security', () => {
     it('rejects absolute containerPath', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount(
-        { hostPath: '/allowed/rw/foo', containerPath: '/absolute' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/foo', containerPath: '/absolute' }, true);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('relative');
     });
@@ -234,10 +224,7 @@ describe('mount-security', () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
       // Empty string is falsy, so || falls through to path.basename
-      const result = validateMount(
-        { hostPath: '/allowed/rw/foo', containerPath: '' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/foo', containerPath: '' }, true);
       expect(result.allowed).toBe(true);
       expect(result.resolvedContainerPath).toBe('foo');
     });
@@ -245,10 +232,7 @@ describe('mount-security', () => {
     it('rejects whitespace-only containerPath', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount(
-        { hostPath: '/allowed/rw/foo', containerPath: '   ' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/foo', containerPath: '   ' }, true);
       expect(result.allowed).toBe(false);
     });
 
@@ -287,10 +271,7 @@ describe('mount-security', () => {
     it('rejects path matching custom blocked pattern', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount(
-        { hostPath: '/allowed/rw/custom-blocked' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/custom-blocked' }, true);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('custom-blocked');
     });
@@ -299,10 +280,7 @@ describe('mount-security', () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
       // "credentials" is a default blocked pattern; "my-credentials-backup" contains it
-      const result = validateMount(
-        { hostPath: '/allowed/rw/my-credentials-backup' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/my-credentials-backup' }, true);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('credentials');
     });
@@ -310,10 +288,7 @@ describe('mount-security', () => {
     it('rejects deeply nested blocked path', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount(
-        { hostPath: '/allowed/rw/project/.env/config' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/project/.env/config' }, true);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.env');
     });
@@ -363,10 +338,7 @@ describe('mount-security', () => {
     it('defaults containerPath to basename of hostPath', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount(
-        { hostPath: '/allowed/rw/deep/nested/proj' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/deep/nested/proj' }, true);
       expect(result.allowed).toBe(true);
       expect(result.resolvedContainerPath).toBe('proj');
     });
@@ -374,10 +346,7 @@ describe('mount-security', () => {
     it('uses explicit containerPath when provided', async () => {
       setupValidAllowlist();
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount(
-        { hostPath: '/allowed/rw/foo', containerPath: 'custom-name' },
-        true,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/foo', containerPath: 'custom-name' }, true);
       expect(result.allowed).toBe(true);
       expect(result.resolvedContainerPath).toBe('custom-name');
     });
@@ -396,10 +365,7 @@ describe('mount-security', () => {
 
     it('expands ~ in hostPath', async () => {
       setupValidAllowlist({
-        allowedRoots: [
-          ...VALID_ALLOWLIST.allowedRoots,
-          { path: '/home/testuser/stuff', allowReadWrite: true },
-        ],
+        allowedRoots: [...VALID_ALLOWLIST.allowedRoots, { path: '/home/testuser/stuff', allowReadWrite: true }],
       });
       const { validateMount } = await import('./mount-security.js');
       const result = validateMount({ hostPath: '~/stuff/proj' }, true);
@@ -451,10 +417,7 @@ describe('mount-security', () => {
     it('allows read-write for non-main when nonMainReadOnly is false and root allows rw', async () => {
       setupValidAllowlist({ nonMainReadOnly: false });
       const { validateMount } = await import('./mount-security.js');
-      const result = validateMount(
-        { hostPath: '/allowed/rw/foo', readonly: false },
-        false,
-      );
+      const result = validateMount({ hostPath: '/allowed/rw/foo', readonly: false }, false);
       expect(result.effectiveReadonly).toBe(false);
     });
   });
@@ -466,11 +429,7 @@ describe('mount-security', () => {
       setupValidAllowlist();
       const { validateAdditionalMounts } = await import('./mount-security.js');
       const result = validateAdditionalMounts(
-        [
-          { hostPath: '/allowed/rw/good1' },
-          { hostPath: '/not-allowed/bad' },
-          { hostPath: '/allowed/rw/good2' },
-        ],
+        [{ hostPath: '/allowed/rw/good1' }, { hostPath: '/not-allowed/bad' }, { hostPath: '/allowed/rw/good2' }],
         'test-group',
         true,
       );
@@ -482,11 +441,7 @@ describe('mount-security', () => {
     it('prepends /workspace/extra/ to container paths', async () => {
       setupValidAllowlist();
       const { validateAdditionalMounts } = await import('./mount-security.js');
-      const result = validateAdditionalMounts(
-        [{ hostPath: '/allowed/rw/proj' }],
-        'test-group',
-        true,
-      );
+      const result = validateAdditionalMounts([{ hostPath: '/allowed/rw/proj' }], 'test-group', true);
       expect(result[0].containerPath).toBe('/workspace/extra/proj');
     });
 

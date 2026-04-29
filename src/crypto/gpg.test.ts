@@ -47,19 +47,11 @@ const {
 
 describe('isPgpMessage', () => {
   it('detects PGP message header', () => {
-    expect(
-      isPgpMessage(
-        '-----BEGIN PGP MESSAGE-----\nabc\n-----END PGP MESSAGE-----',
-      ),
-    ).toBe(true);
+    expect(isPgpMessage('-----BEGIN PGP MESSAGE-----\nabc\n-----END PGP MESSAGE-----')).toBe(true);
   });
 
   it('detects PGP header with surrounding text', () => {
-    expect(
-      isPgpMessage(
-        'here is the encrypted key:\n-----BEGIN PGP MESSAGE-----\nabc',
-      ),
-    ).toBe(true);
+    expect(isPgpMessage('here is the encrypted key:\n-----BEGIN PGP MESSAGE-----\nabc')).toBe(true);
   });
 
   it('returns false for plain text', () => {
@@ -148,10 +140,7 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
   it('isKeyExpired returns true for backdated key', () => {
     ensureGpgKey(baseDir, 'gpg-old-scope');
     // Backdate the meta to 100 days ago
-    const metaFile = path.join(
-      gpgHome(baseDir, 'gpg-old-scope'),
-      'key-meta.json',
-    );
+    const metaFile = path.join(gpgHome(baseDir, 'gpg-old-scope'), 'key-meta.json');
     const meta = JSON.parse(fs.readFileSync(metaFile, 'utf-8'));
     meta.createdAt = new Date(Date.now() - 100 * 86_400_000).toISOString();
     fs.writeFileSync(metaFile, JSON.stringify(meta));
@@ -184,9 +173,7 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
     // Meta should be refreshed
     const freshMeta = getKeyMeta(baseDir, scope);
     expect(isKeyExpired(baseDir, scope)).toBe(false);
-    expect(new Date(freshMeta!.createdAt).getTime()).toBeGreaterThan(
-      Date.now() - 5000,
-    );
+    expect(new Date(freshMeta!.createdAt).getTime()).toBeGreaterThan(Date.now() - 5000);
   });
 
   it('encrypt and decrypt round-trip', () => {
@@ -272,11 +259,7 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
     ensureGpgKey(baseDir, scope);
 
     expect(() =>
-      gpgDecrypt(
-        baseDir,
-        scope,
-        '-----BEGIN PGP MESSAGE-----\ninvalid\n-----END PGP MESSAGE-----',
-      ),
+      gpgDecrypt(baseDir, scope, '-----BEGIN PGP MESSAGE-----\ninvalid\n-----END PGP MESSAGE-----'),
     ).toThrow();
   });
 
@@ -324,17 +307,7 @@ describe.skipIf(!gpgAvailable)('gpg convenience (initGpg + gpg.*)', () => {
     });
     const encrypted = execFileSync(
       'gpg',
-      [
-        '--homedir',
-        userHome,
-        '--batch',
-        '--trust-model',
-        'always',
-        '--encrypt',
-        '--armor',
-        '--recipient',
-        'nanoclaw',
-      ],
+      ['--homedir', userHome, '--batch', '--trust-model', 'always', '--encrypt', '--armor', '--recipient', 'nanoclaw'],
       { input: 'conv-secret', stdio: ['pipe', 'pipe', 'pipe'] },
     ).toString('utf-8');
 

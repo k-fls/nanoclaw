@@ -25,18 +25,6 @@ export {
   type QueueMutationCallback,
   type ReplyFn,
 } from './queue.js';
-export {
-  InteractionStatusRegistry,
-  type InteractionEvent,
-  type InteractionState,
-} from './status.js';
-export {
-  type ChatIO,
-  setInteractionPrefix,
-  getInteractionPrefix,
-} from './types.js';
-export {
-  getInteractionSession,
-  startInteractionSession,
-  type InteractionSession,
-} from './session.js';
+export { InteractionStatusRegistry, type InteractionEvent, type InteractionState } from './status.js';
+export { type ChatIO, setInteractionPrefix, getInteractionPrefix } from './types.js';
+export { getInteractionSession, startInteractionSession, type InteractionSession } from './session.js';

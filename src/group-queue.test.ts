@@ -490,12 +490,7 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess(
-      'group1@g.us',
-      {} as any,
-      'container-1',
-      'test-group',
-    );
+    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
     queue.notifyIdle('group1@g.us');
 
     // Soft-stop the container
@@ -523,12 +518,7 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess(
-      'group1@g.us',
-      {} as any,
-      'container-1',
-      'test-group',
-    );
+    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
     queue.notifyIdle('group1@g.us');
 
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
@@ -543,16 +533,12 @@ describe('GroupQueue', () => {
 
     // After IDLE_BEFORE_EVICT, container transitions to EVICTABLE (not stopped yet)
     await vi.advanceTimersByTimeAsync(1);
-    closeWrites = writeFileSync.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
-    );
+    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
     expect(closeWrites).toHaveLength(0);
 
     // After EVICTION_TIMEOUT (14400000ms), container should be soft-stopped
     await vi.advanceTimersByTimeAsync(14400000);
-    closeWrites = writeFileSync.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
-    );
+    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
     expect(closeWrites).toHaveLength(1);
 
     resolveProcess!();
@@ -690,12 +676,7 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess(
-      'group1@g.us',
-      {} as any,
-      'container-1',
-      'test-group',
-    );
+    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
     queue.notifyIdle('group1@g.us');
 
     // Advance partially into IDLE_BEFORE_EVICT
@@ -734,12 +715,7 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess(
-      'group1@g.us',
-      {} as any,
-      'container-1',
-      'test-group',
-    );
+    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
 
     // First idle cycle
     queue.notifyIdle('group1@g.us');
@@ -765,16 +741,12 @@ describe('GroupQueue', () => {
 
     // Advance 1ms more → now EVICTABLE (but not stopped yet — needs EVICTION_TIMEOUT)
     await vi.advanceTimersByTimeAsync(1);
-    closeWrites = writeFileSync.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
-    );
+    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
     expect(closeWrites).toHaveLength(0);
 
     // Advance EVICTION_TIMEOUT → should be soft-stopped
     await vi.advanceTimersByTimeAsync(14400000);
-    closeWrites = writeFileSync.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
-    );
+    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
     expect(closeWrites).toHaveLength(1);
 
     resolveProcess!();

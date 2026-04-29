@@ -64,10 +64,7 @@ function fallbackSlackDecode(text: string): string {
 }
 
 /** Decode channel-specific encoding from stored messages (e.g. Slack entities). */
-export function decodeMessages(
-  msgs: NewMessage[],
-  channel: Channel,
-): NewMessage[] {
+export function decodeMessages(msgs: NewMessage[], channel: Channel): NewMessage[] {
   let decode = channel.decodeInbound?.bind(channel);
   if (!decode && channel.name === 'slack') {
     decode = fallbackSlackDecode;

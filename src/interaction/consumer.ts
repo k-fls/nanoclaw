@@ -75,18 +75,12 @@ export function createHandlerContext(
 // ── Handler registry ────────────────────────────────────────────────
 
 /** Per-event-type handler. Runs inside the chatLock — must not acquire it. */
-export type InteractionHandler = (
-  entry: InteractionEntry,
-  ctx: HandlerContext,
-) => Promise<void>;
+export type InteractionHandler = (entry: InteractionEntry, ctx: HandlerContext) => Promise<void>;
 
 const handlers = new Map<InteractionEventKind, InteractionHandler>();
 
 /** Register a handler for a specific event type. Replaces any existing handler. */
-export function registerInteractionHandler(
-  eventType: InteractionEventKind,
-  handler: InteractionHandler,
-): void {
+export function registerInteractionHandler(eventType: InteractionEventKind, handler: InteractionHandler): void {
   handlers.set(eventType, handler);
 }
 
@@ -127,10 +121,7 @@ export async function consumeInteractions(
         } catch {
           /* ctx revoked between throw and here — skip status update */
         }
-        logger.error(
-          { interactionId: entry.interactionId, err },
-          'Interaction processing error',
-        );
+        logger.error({ interactionId: entry.interactionId, err }, 'Interaction processing error');
       }
     } finally {
       chatLock.release();
@@ -147,18 +138,10 @@ export async function consumeInteractions(
  * processing an extracted entry outside the consumer loop).
  * When called standalone, the caller is responsible for locking.
  */
-export async function defaultHandler(
-  entry: InteractionEntry,
-  ctx: HandlerContext,
-): Promise<void> {
+export async function defaultHandler(entry: InteractionEntry, ctx: HandlerContext): Promise<void> {
   const prefix = getInteractionPrefix();
 
-  ctx.statusRegistry.emit(
-    entry.interactionId,
-    entry.eventType,
-    'active',
-    'presenting to user',
-  );
+  ctx.statusRegistry.emit(entry.interactionId, entry.eventType, 'active', 'presenting to user');
 
   // Notification-only: no reply expected
   if (!entry.replyFn) {
@@ -172,10 +155,7 @@ export async function defaultHandler(
       'completed',
       'notification delivered (no reply expected)',
     );
-    logger.info(
-      { interactionId: entry.interactionId },
-      'Interaction completed (notification-only)',
-    );
+    logger.info({ interactionId: entry.interactionId }, 'Interaction completed (notification-only)');
     return;
   }
 
@@ -196,16 +176,8 @@ export async function defaultHandler(
     if (!reply || reply.trim().toLowerCase() === 'cancel') {
       ctx.chat.hideMessage();
       ctx.chat.advanceCursor();
-      ctx.statusRegistry.emit(
-        entry.interactionId,
-        entry.eventType,
-        'failed',
-        'user cancelled',
-      );
-      logger.info(
-        { interactionId: entry.interactionId },
-        'Interaction cancelled by user',
-      );
+      ctx.statusRegistry.emit(entry.interactionId, entry.eventType, 'failed', 'user cancelled');
+      logger.info({ interactionId: entry.interactionId }, 'Interaction cancelled by user');
       return;
     }
 
@@ -216,20 +188,9 @@ export async function defaultHandler(
     done = result.done;
 
     if (done) {
-      ctx.statusRegistry.emit(
-        entry.interactionId,
-        entry.eventType,
-        'completed',
-        result.response ?? 'done',
-      );
-      await ctx.chat.send(
-        `${prefix}*${entry.sourceId}* completed.` +
-          (result.response ? ` ${result.response}` : ''),
-      );
-      logger.info(
-        { interactionId: entry.interactionId },
-        'Interaction completed successfully',
-      );
+      ctx.statusRegistry.emit(entry.interactionId, entry.eventType, 'completed', result.response ?? 'done');
+      await ctx.chat.send(`${prefix}*${entry.sourceId}* completed.` + (result.response ? ` ${result.response}` : ''));
+      logger.info({ interactionId: entry.interactionId }, 'Interaction completed successfully');
     } else {
       // Not done — show response and prompt again
       await ctx.chat.send(`${prefix}${result.response ?? 'Please try again.'}`);

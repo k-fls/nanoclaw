@@ -25,15 +25,8 @@ vi.mock('../logger.js', () => ({
 }));
 
 const { AesSecretBackend } = await import('./aes.js');
-const {
-  initEncryption,
-  getSecretBackend,
-  encrypt,
-  decrypt,
-  needsReEncryption,
-  reEncrypt,
-  isEncrypted,
-} = await import('./index.js');
+const { initEncryption, getSecretBackend, encrypt, decrypt, needsReEncryption, reEncrypt, isEncrypted } =
+  await import('./index.js');
 
 // ---------------------------------------------------------------------------
 // AesSecretBackend class
@@ -48,9 +41,7 @@ describe('AesSecretBackend', () => {
   });
 
   it('rejects invalid key length', () => {
-    expect(() => new AesSecretBackend(Buffer.alloc(16))).toThrow(
-      'must be 32 bytes',
-    );
+    expect(() => new AesSecretBackend(Buffer.alloc(16))).toThrow('must be 32 bytes');
   });
 
   it('encrypts and decrypts round-trip', () => {

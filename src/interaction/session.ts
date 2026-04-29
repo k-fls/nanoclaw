@@ -26,9 +26,7 @@ export interface InteractionSession {
 const active = new Map<string, InteractionSession>();
 
 /** Get the active interaction session for a group (if any). */
-export function getInteractionSession(
-  chatJid: string,
-): InteractionSession | undefined {
+export function getInteractionSession(chatJid: string): InteractionSession | undefined {
   return active.get(chatJid);
 }
 
@@ -36,10 +34,7 @@ export function getInteractionSession(
  * Start an interaction session: creates the queue, status registry,
  * and consumer loop. Registers in the active map.
  */
-export function startInteractionSession(
-  chatJid: string,
-  deps: ChatIODeps,
-): InteractionSession {
+export function startInteractionSession(chatJid: string, deps: ChatIODeps): InteractionSession {
   const chatLock = new AsyncMutex();
   const queue = new InteractionQueue();
   const statusRegistry = new InteractionStatusRegistry();
@@ -49,11 +44,7 @@ export function startInteractionSession(
     statusRegistry.emit(id, type, event, reason);
   });
 
-  const { ctx, revoke } = createHandlerContext(
-    createChatIO(deps),
-    queue,
-    statusRegistry,
-  );
+  const { ctx, revoke } = createHandlerContext(createChatIO(deps), queue, statusRegistry);
 
   const consumer = consumeInteractions(queue, chatLock, ctx, abort.signal);
 

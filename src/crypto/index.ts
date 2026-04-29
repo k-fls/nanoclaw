@@ -32,11 +32,7 @@ export {
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
-const CONFIG_DIR = path.join(
-  process.env.HOME || os.homedir(),
-  '.config',
-  'nanoclaw',
-);
+const CONFIG_DIR = path.join(process.env.HOME || os.homedir(), '.config', 'nanoclaw');
 const DEFAULT_KEY_PATH = path.join(CONFIG_DIR, 'encryption-key');
 
 // ── Singleton ───────────────────────────────────────────────────────────────

@@ -23,16 +23,10 @@ export function getAllCommands(): ReadonlyMap<string, Command> {
  * Handle a parsed command.
  * Returns a CommandResult that the caller acts on.
  */
-export function handleCommand(
-  name: string,
-  args: string,
-  runCtx: CommandRunContext,
-): CommandResult {
+export function handleCommand(name: string, args: string, runCtx: CommandRunContext): CommandResult {
   const cmd = commands.get(name);
   if (!cmd) {
-    return reply(
-      `Unknown command: /${name}\nType /help for available commands.`,
-    );
+    return reply(`Unknown command: /${name}\nType /help for available commands.`);
   }
   if (cmd.access) {
     const rejection = cmd.access(runCtx);

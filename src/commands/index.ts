@@ -18,11 +18,6 @@ export type {
   ParsedCommand,
 } from './types.js';
 export { parseCommand, extractCommand } from './parse.js';
-export {
-  registerCommand,
-  getCommand,
-  getAllCommands,
-  handleCommand,
-} from './registry.js';
+export { registerCommand, getCommand, getAllCommands, handleCommand } from './registry.js';
 export { executeCommand } from './execute.js';
 export { reply } from './helpers.js';

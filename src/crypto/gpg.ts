@@ -97,21 +97,13 @@ function writeMeta(baseDir: string, scope: string, maxAgeDays: number): void {
  * Ensure a GPG keypair exists for the given scope. Creates one if missing.
  * Records creation timestamp and max age in key-meta.json.
  */
-export function ensureGpgKey(
-  baseDir: string,
-  scope: string,
-  maxAgeDays?: number,
-): void {
+export function ensureGpgKey(baseDir: string, scope: string, maxAgeDays?: number): void {
   const home = gpgHome(baseDir, scope);
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
 
   // Check if key already exists
   try {
-    const result = execFileSync(
-      GPG_BIN,
-      ['--homedir', home, '--list-keys', KEY_ID],
-      { stdio: 'pipe' },
-    );
+    const result = execFileSync(GPG_BIN, ['--homedir', home, '--list-keys', KEY_ID], { stdio: 'pipe' });
     if (result.length > 0) return; // key exists, keep it
   } catch {
     // Key doesn't exist — generate it
@@ -142,11 +134,7 @@ export function ensureGpgKey(
 // Key regeneration (on expiry)
 // ---------------------------------------------------------------------------
 
-function regenerateKey(
-  baseDir: string,
-  scope: string,
-  maxAgeDays: number,
-): void {
+function regenerateKey(baseDir: string, scope: string, maxAgeDays: number): void {
   const home = gpgHome(baseDir, scope);
   fs.rmSync(home, { recursive: true, force: true });
   logger.info({ scope }, 'GPG key expired — regenerating');
@@ -166,19 +154,14 @@ function regenerateKey(
  */
 export function exportPublicKey(baseDir: string, scope: string): string {
   const meta = getKeyMeta(baseDir, scope);
-  if (
-    meta &&
-    Date.now() > Date.parse(meta.createdAt) + meta.maxAgeDays * MS_PER_DAY
-  ) {
+  if (meta && Date.now() > Date.parse(meta.createdAt) + meta.maxAgeDays * MS_PER_DAY) {
     regenerateKey(baseDir, scope, meta.maxAgeDays);
   }
 
   const home = gpgHome(baseDir, scope);
-  const result = execFileSync(
-    GPG_BIN,
-    ['--homedir', home, '--armor', '--export', KEY_ID],
-    { stdio: ['pipe', 'pipe', 'pipe'] },
-  );
+  const result = execFileSync(GPG_BIN, ['--homedir', home, '--armor', '--export', KEY_ID], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
   return result.toString('utf-8').trim();
 }
 
@@ -187,17 +170,12 @@ export function exportPublicKey(baseDir: string, scope: string): string {
 // ---------------------------------------------------------------------------
 
 /** Decrypt a PGP-encrypted message. Returns the plaintext. Never checks key expiry. */
-export function gpgDecrypt(
-  baseDir: string,
-  scope: string,
-  ciphertext: string,
-): string {
+export function gpgDecrypt(baseDir: string, scope: string, ciphertext: string): string {
   const home = gpgHome(baseDir, scope);
-  const result = execFileSync(
-    GPG_BIN,
-    ['--homedir', home, '--batch', '--quiet', '--decrypt'],
-    { input: ciphertext, stdio: ['pipe', 'pipe', 'pipe'] },
-  );
+  const result = execFileSync(GPG_BIN, ['--homedir', home, '--batch', '--quiet', '--decrypt'], {
+    input: ciphertext,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
   return result.toString('utf-8').trim();
 }
 
