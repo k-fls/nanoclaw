@@ -1,17 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
-import {
-  ASSISTANT_NAME,
-  getTriggerPattern,
-  TRIGGER_PATTERN,
-} from './config.js';
-import {
-  decodeMessages,
-  escapeXml,
-  formatMessages,
-  formatOutbound,
-  stripInternalTags,
-} from './router.js';
+import { ASSISTANT_NAME, getTriggerPattern, TRIGGER_PATTERN } from './config.js';
+import { decodeMessages, escapeXml, formatMessages, formatOutbound, stripInternalTags } from './router.js';
 import type { Channel, NewMessage } from './types.js';
 
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
@@ -58,9 +48,7 @@ describe('escapeXml', () => {
   });
 
   it('handles multiple special characters together', () => {
-    expect(escapeXml('a & b < c > d "e"')).toBe(
-      'a &amp; b &lt; c &gt; d &quot;e&quot;',
-    );
+    expect(escapeXml('a & b < c > d "e"')).toBe('a &amp; b &lt; c &gt; d &quot;e&quot;');
   });
 
   it('passes through strings with no special chars', () => {
@@ -113,13 +101,8 @@ describe('formatMessages', () => {
   });
 
   it('escapes special characters in content', () => {
-    const result = formatMessages(
-      [makeMsg({ content: '<script>alert("xss")</script>' })],
-      TZ,
-    );
-    expect(result).toContain(
-      '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;',
-    );
+    const result = formatMessages([makeMsg({ content: '<script>alert("xss")</script>' })], TZ);
+    expect(result).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
   });
 
   it('handles empty array', () => {
@@ -141,9 +124,7 @@ describe('formatMessages', () => {
       TZ,
     );
     expect(result).toContain('reply_to="42"');
-    expect(result).toContain(
-      '<quoted_message from="Bob">Are you coming tonight?</quoted_message>',
-    );
+    expect(result).toContain('<quoted_message from="Bob">Are you coming tonight?</quoted_message>');
     expect(result).toContain('Yes, on my way!</message>');
   });
 
@@ -179,17 +160,12 @@ describe('formatMessages', () => {
       TZ,
     );
     expect(result).toContain('from="A &amp; B"');
-    expect(result).toContain(
-      '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;',
-    );
+    expect(result).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
   });
 
   it('converts timestamps to local time for given timezone', () => {
     // 2024-01-01T18:30:00Z in America/New_York (EST) = 1:30 PM
-    const result = formatMessages(
-      [makeMsg({ timestamp: '2024-01-01T18:30:00.000Z' })],
-      'America/New_York',
-    );
+    const result = formatMessages([makeMsg({ timestamp: '2024-01-01T18:30:00.000Z' })], 'America/New_York');
     expect(result).toContain('1:30');
     expect(result).toContain('PM');
     expect(result).toContain('<context timezone="America/New_York" />');
@@ -260,21 +236,15 @@ describe('getTriggerPattern', () => {
 
 describe('stripInternalTags', () => {
   it('strips single-line internal tags', () => {
-    expect(stripInternalTags('hello <internal>secret</internal> world')).toBe(
-      'hello  world',
-    );
+    expect(stripInternalTags('hello <internal>secret</internal> world')).toBe('hello  world');
   });
 
   it('strips multi-line internal tags', () => {
-    expect(
-      stripInternalTags('hello <internal>\nsecret\nstuff\n</internal> world'),
-    ).toBe('hello  world');
+    expect(stripInternalTags('hello <internal>\nsecret\nstuff\n</internal> world')).toBe('hello  world');
   });
 
   it('strips multiple internal tag blocks', () => {
-    expect(
-      stripInternalTags('<internal>a</internal>hello<internal>b</internal>'),
-    ).toBe('hello');
+    expect(stripInternalTags('<internal>a</internal>hello<internal>b</internal>')).toBe('hello');
   });
 
   it('returns empty string when text is only internal tags', () => {
@@ -292,9 +262,7 @@ describe('formatOutbound', () => {
   });
 
   it('strips internal tags from remaining text', () => {
-    expect(
-      formatOutbound('<internal>thinking</internal>The answer is 42'),
-    ).toBe('The answer is 42');
+    expect(formatOutbound('<internal>thinking</internal>The answer is 42')).toBe('The answer is 42');
   });
 });
 
@@ -303,10 +271,7 @@ describe('formatOutbound', () => {
 describe('trigger gating (requiresTrigger interaction)', () => {
   // Replicates the exact logic from processGroupMessages and startMessageLoop:
   //   if (!isMainGroup && group.requiresTrigger !== false) { check group.trigger }
-  function shouldRequireTrigger(
-    isMainGroup: boolean,
-    requiresTrigger: boolean | undefined,
-  ): boolean {
+  function shouldRequireTrigger(isMainGroup: boolean, requiresTrigger: boolean | undefined): boolean {
     return !isMainGroup && requiresTrigger !== false;
   }
 
@@ -368,20 +333,14 @@ describe('decodeMessages', () => {
   it('returns same array when non-slack channel has no decodeInbound', () => {
     const ch = stubChannel();
     ch.name = 'whatsapp';
-    const messages = [
-      makeMsg({ content: 'hello <@U123>' }),
-      makeMsg({ content: '&amp; test' }),
-    ];
+    const messages = [makeMsg({ content: 'hello <@U123>' }), makeMsg({ content: '&amp; test' })];
     const result = decodeMessages(messages, ch);
     expect(result).toBe(messages);
   });
 
   it('applies decodeInbound to message content', () => {
     const decode = (text: string) => text.replace(/&amp;/g, '&');
-    const messages = [
-      makeMsg({ content: 'a &amp; b' }),
-      makeMsg({ content: 'c &amp; d' }),
-    ];
+    const messages = [makeMsg({ content: 'a &amp; b' }), makeMsg({ content: 'c &amp; d' })];
     const result = decodeMessages(messages, stubChannel(decode));
     expect(result[0].content).toBe('a & b');
     expect(result[1].content).toBe('c & d');
@@ -442,37 +401,25 @@ describe('decodeMessages fallback for slack channel without decodeInbound', () =
 
   it('decodes all three HTML entities', () => {
     const ch = slackChannelWithoutDecode();
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: '1 &lt; 2 &amp;&amp; 2 &gt; 1' })],
-      ch,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: '1 &lt; 2 &amp;&amp; 2 &gt; 1' })], ch);
     expect(decoded.content).toBe('1 < 2 && 2 > 1');
   });
 
   it('unwraps bare URLs', () => {
     const ch = slackChannelWithoutDecode();
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: '<https://example.com>' })],
-      ch,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: '<https://example.com>' })], ch);
     expect(decoded.content).toBe('https://example.com');
   });
 
   it('unwraps labelled URLs', () => {
     const ch = slackChannelWithoutDecode();
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: '<https://example.com|click here>' })],
-      ch,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: '<https://example.com|click here>' })], ch);
     expect(decoded.content).toBe('click here');
   });
 
   it('strips duplicate mention after @trigger (old slack.ts compat)', () => {
     const ch = slackChannelWithoutDecode();
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: `@${ASSISTANT_NAME} <@U0AKKG67T7X> /auth` })],
-      ch,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: `@${ASSISTANT_NAME} <@U0AKKG67T7X> /auth` })], ch);
     expect(decoded.content).toBe(`@${ASSISTANT_NAME} /auth`);
   });
 
@@ -491,19 +438,13 @@ describe('decodeMessages fallback for slack channel without decodeInbound', () =
 
   it('decodes standalone mention when no preceding @mention', () => {
     const ch = slackChannelWithoutDecode();
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: '<@U0AKKG67T7X> hello' })],
-      ch,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: '<@U0AKKG67T7X> hello' })], ch);
     expect(decoded.content).toBe('@U0AKKG67T7X hello');
   });
 
   it('decodes channel mentions', () => {
     const ch = slackChannelWithoutDecode();
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: 'see <#C01ABC|general>' })],
-      ch,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: 'see <#C01ABC|general>' })], ch);
     expect(decoded.content).toBe('see #general');
   });
 
@@ -535,9 +476,7 @@ describe('Slack decode pattern', () => {
       .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, '$2')
       .replace(/<(https?:\/\/[^>]+)>/g, '$1')
       .replace(/<#C[A-Z0-9]+\|([^>]+)>/g, '#$1')
-      .replace(/<@(U[A-Z0-9]+)>/g, (_, id) =>
-        id === BOT_USER_ID ? `@${ASSISTANT_NAME}` : `@${id}`,
-      )
+      .replace(/<@(U[A-Z0-9]+)>/g, (_, id) => (id === BOT_USER_ID ? `@${ASSISTANT_NAME}` : `@${id}`))
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>');
@@ -546,18 +485,12 @@ describe('Slack decode pattern', () => {
   const slackChannel = stubChannel(slackDecode);
 
   it('decodes bot mention to trigger text', () => {
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: '<@U0AKKG67T7X> /auth' })],
-      slackChannel,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: '<@U0AKKG67T7X> /auth' })], slackChannel);
     expect(decoded.content).toBe(`@${ASSISTANT_NAME} /auth`);
   });
 
   it('trigger pattern matches decoded bot mention', () => {
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: '<@U0AKKG67T7X> hello' })],
-      slackChannel,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: '<@U0AKKG67T7X> hello' })], slackChannel);
     expect(TRIGGER_PATTERN.test(decoded.content.trim())).toBe(true);
   });
 
@@ -570,9 +503,7 @@ describe('Slack decode pattern', () => {
       ],
       slackChannel,
     );
-    expect(decoded.content).toBe(
-      'http://localhost:9999/callback?code=abc&state=xyz',
-    );
+    expect(decoded.content).toBe('http://localhost:9999/callback?code=abc&state=xyz');
   });
 
   it('decodes user mentions with same pattern as bot mentions', () => {
@@ -580,48 +511,31 @@ describe('Slack decode pattern', () => {
       [makeMsg({ content: '<@U0AKKG67T7X> asked <@UOTHER123> something' })],
       slackChannel,
     );
-    expect(decoded.content).toBe(
-      `@${ASSISTANT_NAME} asked @UOTHER123 something`,
-    );
+    expect(decoded.content).toBe(`@${ASSISTANT_NAME} asked @UOTHER123 something`);
   });
 
   it('unwraps labelled URLs', () => {
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: 'see <https://example.com|this link>' })],
-      slackChannel,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: 'see <https://example.com|this link>' })], slackChannel);
     expect(decoded.content).toBe('see this link');
   });
 
   it('unwraps bare URLs', () => {
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: 'visit <https://example.com>' })],
-      slackChannel,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: 'visit <https://example.com>' })], slackChannel);
     expect(decoded.content).toBe('visit https://example.com');
   });
 
   it('decodes channel mentions', () => {
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: 'posted in <#C01ABC|general>' })],
-      slackChannel,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: 'posted in <#C01ABC|general>' })], slackChannel);
     expect(decoded.content).toBe('posted in #general');
   });
 
   it('decodes all three HTML entities', () => {
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: '1 &lt; 2 &amp;&amp; 2 &gt; 1' })],
-      slackChannel,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: '1 &lt; 2 &amp;&amp; 2 &gt; 1' })], slackChannel);
     expect(decoded.content).toBe('1 < 2 && 2 > 1');
   });
 
   it('passes plain text through unchanged', () => {
-    const [decoded] = decodeMessages(
-      [makeMsg({ content: 'just a normal message' })],
-      slackChannel,
-    );
+    const [decoded] = decodeMessages([makeMsg({ content: 'just a normal message' })], slackChannel);
     expect(decoded.content).toBe('just a normal message');
   });
 });

@@ -6,11 +6,7 @@ vi.mock('./container-runner.js', () => ({
 }));
 
 import { _initTestDatabase, createTask, getTaskById } from './db.js';
-import {
-  _resetSchedulerLoopForTests,
-  computeNextRun,
-  startSchedulerLoop,
-} from './task-scheduler.js';
+import { _resetSchedulerLoopForTests, computeNextRun, startSchedulerLoop } from './task-scheduler.js';
 
 describe('task scheduler', () => {
   beforeEach(() => {
@@ -37,11 +33,9 @@ describe('task scheduler', () => {
       created_at: '2026-02-22T00:00:00.000Z',
     });
 
-    const enqueueTask = vi.fn(
-      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
-        void fn();
-      },
-    );
+    const enqueueTask = vi.fn((_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+      void fn();
+    });
 
     startSchedulerLoop({
       getGroupByFolder: () => undefined,
@@ -185,8 +179,7 @@ describe('task scheduler', () => {
     // Must be in the future
     expect(new Date(nextRun!).getTime()).toBeGreaterThan(Date.now());
     // Must be aligned to the original schedule grid
-    const offset =
-      (new Date(nextRun!).getTime() - new Date(scheduledTime).getTime()) % ms;
+    const offset = (new Date(nextRun!).getTime() - new Date(scheduledTime).getTime()) % ms;
     expect(offset).toBe(0);
   });
 });

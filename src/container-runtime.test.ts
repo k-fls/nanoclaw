@@ -49,35 +49,23 @@ describe('stopContainerArgs', () => {
   });
 
   it('rejects names with shell metacharacters', () => {
-    expect(() => stopContainerArgs('foo; rm -rf /')).toThrow(
-      'Invalid container name',
-    );
-    expect(() => stopContainerArgs('foo$(whoami)')).toThrow(
-      'Invalid container name',
-    );
-    expect(() => stopContainerArgs('foo`id`')).toThrow(
-      'Invalid container name',
-    );
+    expect(() => stopContainerArgs('foo; rm -rf /')).toThrow('Invalid container name');
+    expect(() => stopContainerArgs('foo$(whoami)')).toThrow('Invalid container name');
+    expect(() => stopContainerArgs('foo`id`')).toThrow('Invalid container name');
   });
 });
 
 describe('stopContainer', () => {
   it('calls execFileSync with validated args', () => {
     stopContainer('nanoclaw-test-123');
-    expect(mockExecFileSync).toHaveBeenCalledWith(
-      CONTAINER_RUNTIME_BIN,
-      ['stop', '-t', '1', 'nanoclaw-test-123'],
-      { stdio: 'pipe' },
-    );
+    expect(mockExecFileSync).toHaveBeenCalledWith(CONTAINER_RUNTIME_BIN, ['stop', '-t', '1', 'nanoclaw-test-123'], {
+      stdio: 'pipe',
+    });
   });
 
   it('rejects names with shell metacharacters', () => {
-    expect(() => stopContainer('foo; rm -rf /')).toThrow(
-      'Invalid container name',
-    );
-    expect(() => stopContainer('foo$(whoami)')).toThrow(
-      'Invalid container name',
-    );
+    expect(() => stopContainer('foo; rm -rf /')).toThrow('Invalid container name');
+    expect(() => stopContainer('foo$(whoami)')).toThrow('Invalid container name');
     expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
     expect(mockExecFileSync).not.toHaveBeenCalled();
   });
@@ -96,9 +84,7 @@ describe('ensureContainerRuntimeRunning', () => {
       stdio: 'pipe',
       timeout: 10000,
     });
-    expect(logger.debug).toHaveBeenCalledWith(
-      'Container runtime already running',
-    );
+    expect(logger.debug).toHaveBeenCalledWith('Container runtime already running');
   });
 
   it('throws when docker info fails', () => {
@@ -106,9 +92,7 @@ describe('ensureContainerRuntimeRunning', () => {
       throw new Error('Cannot connect to the Docker daemon');
     });
 
-    expect(() => ensureContainerRuntimeRunning()).toThrow(
-      'Container runtime is required but failed to start',
-    );
+    expect(() => ensureContainerRuntimeRunning()).toThrow('Container runtime is required but failed to start');
     expect(logger.error).toHaveBeenCalled();
   });
 });
@@ -118,9 +102,7 @@ describe('ensureContainerRuntimeRunning', () => {
 describe('cleanupOrphans', () => {
   it('stops orphaned nanoclaw containers', () => {
     // docker ps returns container names, one per line
-    mockExecSync.mockReturnValueOnce(
-      'nanoclaw-group1-111\nnanoclaw-group2-222\n',
-    );
+    mockExecSync.mockReturnValueOnce('nanoclaw-group1-111\nnanoclaw-group2-222\n');
 
     cleanupOrphans();
 
