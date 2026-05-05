@@ -38,10 +38,7 @@ const otherGroup: RegisteredGroup = {
   added_at: '',
 };
 
-function runCtx(
-  hasActiveContainer: boolean,
-  group: RegisteredGroup = mainGroup,
-) {
+function runCtx(hasActiveContainer: boolean, group: RegisteredGroup = mainGroup) {
   return {
     containerName: hasActiveContainer ? 'nanoclaw-test-1234567890' : null,
     group,
@@ -53,20 +50,14 @@ function runCtx(
 function mockIO(): ChatIO {
   return {
     send: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
-    sendRaw: vi
-      .fn<(text: string) => Promise<void>>()
-      .mockResolvedValue(undefined),
-    receive: vi
-      .fn<(timeoutMs?: number) => Promise<string | null>>()
-      .mockResolvedValue(null),
+    sendRaw: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
+    receive: vi.fn<(timeoutMs?: number) => Promise<string | null>>().mockResolvedValue(null),
     hideMessage: vi.fn(),
     advanceCursor: vi.fn(),
   };
 }
 
-async function replyText(result: {
-  asyncAction?: (io: ChatIO) => Promise<void>;
-}): Promise<string | undefined> {
+async function replyText(result: { asyncAction?: (io: ChatIO) => Promise<void> }): Promise<string | undefined> {
   if (!result.asyncAction) return undefined;
   const io = mockIO();
   await result.asyncAction(io);
@@ -231,11 +222,7 @@ describe('handleCommand', () => {
     });
 
     it('rejects from non-main group', async () => {
-      const result = handleCommand(
-        'remote-control',
-        '',
-        runCtx(false, otherGroup),
-      );
+      const result = handleCommand('remote-control', '', runCtx(false, otherGroup));
       const text = await replyText(result);
       expect(text).toMatch(/main group/i);
     });
@@ -259,9 +246,7 @@ describe('handleCommand', () => {
       const result = handleCommand('remote-control', '', runCtx(false));
       const io = mockIO();
       await result.asyncAction!(io);
-      expect(io.send).toHaveBeenCalledWith(
-        expect.stringContaining('spawn failed'),
-      );
+      expect(io.send).toHaveBeenCalledWith(expect.stringContaining('spawn failed'));
     });
   });
 
@@ -275,11 +260,7 @@ describe('handleCommand', () => {
     });
 
     it('rejects from non-main group', async () => {
-      const result = handleCommand(
-        'remote-control-end',
-        '',
-        runCtx(false, otherGroup),
-      );
+      const result = handleCommand('remote-control-end', '', runCtx(false, otherGroup));
       const text = await replyText(result);
       expect(text).toMatch(/main group/i);
     });

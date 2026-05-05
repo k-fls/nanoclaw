@@ -49,26 +49,18 @@ function ctx(group: RegisteredGroup = mainGroup) {
 function mockIO(): ChatIO {
   return {
     send: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
-    sendRaw: vi
-      .fn<(text: string) => Promise<void>>()
-      .mockResolvedValue(undefined),
-    receive: vi
-      .fn<(timeoutMs?: number) => Promise<string | null>>()
-      .mockResolvedValue(null),
+    sendRaw: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
+    receive: vi.fn<(timeoutMs?: number) => Promise<string | null>>().mockResolvedValue(null),
     hideMessage: vi.fn(),
     advanceCursor: vi.fn(),
   };
 }
 
-async function runAsync(result: {
-  asyncAction?: (io: ChatIO) => Promise<void>;
-}): Promise<string[]> {
+async function runAsync(result: { asyncAction?: (io: ChatIO) => Promise<void> }): Promise<string[]> {
   if (!result.asyncAction) return [];
   const io = mockIO();
   await result.asyncAction(io);
-  return (io.send as ReturnType<typeof vi.fn>).mock.calls.map(
-    (c) => c[0] as string,
-  );
+  return (io.send as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
 }
 
 beforeEach(() => {

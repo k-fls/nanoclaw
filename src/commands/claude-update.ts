@@ -10,12 +10,7 @@
  *   /claude-version set 2.1.92        — pin and install specific version
  */
 import { parseClaudeCliUpdate } from '../config.js';
-import {
-  getActiveSetting,
-  installedVersion,
-  reconfigure,
-  runUpdate,
-} from '../claude-updater/updater.js';
+import { getActiveSetting, installedVersion, reconfigure, runUpdate } from '../claude-updater/updater.js';
 import { reply } from './helpers.js';
 import { registerCommand } from './registry.js';
 
@@ -41,15 +36,11 @@ function formatStatus(): string {
   return lines.join('\n');
 }
 
-const USAGE =
-  'Usage: /claude-version [update [now | [every] <period>] | set <version>]';
+const USAGE = 'Usage: /claude-version [update [now | [every] <period>] | set <version>]';
 
 registerCommand('claude-version', {
   description: 'Show Claude CLI version and manage updates',
-  access: (ctx) =>
-    ctx.group.isMain
-      ? null
-      : '/claude-version is only available in the main group.',
+  access: (ctx) => (ctx.group.isMain ? null : '/claude-version is only available in the main group.'),
   run(args) {
     const trimmed = args.trim();
 
@@ -63,9 +54,7 @@ registerCommand('claude-version', {
       const version = trimmed.slice(4).trim();
       const parsed = parseClaudeCliUpdate(version);
       if (parsed.mode !== 'pinned') {
-        return reply(
-          `Invalid version: ${version}\nExpected a version number like 2.1.92.`,
-        );
+        return reply(`Invalid version: ${version}\nExpected a version number like 2.1.92.`);
       }
       reconfigure(version);
       return {
@@ -73,11 +62,7 @@ registerCommand('claude-version', {
           await io.send(`Installing Claude CLI ${version}...`);
           const ok = await runUpdate();
           const installed = installedVersion();
-          await io.send(
-            ok
-              ? `Installed. Version: ${installed}`
-              : 'Install failed. Check logs for details.',
-          );
+          await io.send(ok ? `Installed. Version: ${installed}` : 'Install failed. Check logs for details.');
         },
       };
     }
@@ -96,11 +81,7 @@ registerCommand('claude-version', {
           await io.send('Updating Claude CLI...');
           const ok = await runUpdate(true);
           const version = installedVersion();
-          await io.send(
-            ok
-              ? `Update complete. Version: ${version}`
-              : 'Update failed. Check logs for details.',
-          );
+          await io.send(ok ? `Update complete. Version: ${version}` : 'Update failed. Check logs for details.');
         },
       };
     }
@@ -109,13 +90,9 @@ registerCommand('claude-version', {
     const period = updateArgs.replace(/^every\s+/, '');
     const parsed = parseClaudeCliUpdate(period);
     if (parsed.mode !== 'latest') {
-      return reply(
-        `Invalid period: ${period}\nExpected a duration like 24h, 1d, or 30m.`,
-      );
+      return reply(`Invalid period: ${period}\nExpected a duration like 24h, 1d, or 30m.`);
     }
     reconfigure(period);
-    return reply(
-      `Update setting changed to: every ${period}\n\n${formatStatus()}`,
-    );
+    return reply(`Update setting changed to: every ${period}\n\n${formatStatus()}`);
   },
 });

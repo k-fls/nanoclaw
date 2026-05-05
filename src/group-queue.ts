@@ -2,13 +2,7 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import {
-  DATA_DIR,
-  EVICTION_TIMEOUT,
-  GRACE_TIMEOUT,
-  IDLE_BEFORE_EVICT,
-  MAX_CONCURRENT_CONTAINERS,
-} from './config.js';
+import { DATA_DIR, EVICTION_TIMEOUT, GRACE_TIMEOUT, IDLE_BEFORE_EVICT, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { stopContainer } from './container-runtime.js';
 import { logger } from './logger.js';
 
@@ -46,11 +40,8 @@ export class GroupQueue {
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
   private waitingGroups: string[] = [];
-  private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
-    null;
-  private onGroupQueuedFn:
-    | ((groupJid: string, position: number) => void)
-    | null = null;
+  private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null = null;
+  private onGroupQueuedFn: ((groupJid: string, position: number) => void) | null = null;
   private shuttingDown = false;
 
   private getGroup(groupJid: string): GroupState {
@@ -106,10 +97,7 @@ export class GroupQueue {
         this.waitingGroups.push(groupJid);
         this.onGroupQueuedFn?.(groupJid, this.waitingGroups.length);
       }
-      logger.debug(
-        { groupJid, activeCount: this.activeCount },
-        'At concurrency limit, message queued',
-      );
+      logger.debug({ groupJid, activeCount: this.activeCount }, 'At concurrency limit, message queued');
       this.evictOldest();
       return;
     }
@@ -149,10 +137,7 @@ export class GroupQueue {
       if (!this.waitingGroups.includes(groupJid)) {
         this.waitingGroups.push(groupJid);
       }
-      logger.debug(
-        { groupJid, taskId, activeCount: this.activeCount },
-        'At concurrency limit, task queued',
-      );
+      logger.debug({ groupJid, taskId, activeCount: this.activeCount }, 'At concurrency limit, task queued');
       this.evictOldest();
       return;
     }
@@ -211,10 +196,7 @@ export class GroupQueue {
       // Start EVICTION_TIMEOUT
       state.evictionTimer = setTimeout(() => {
         // EVICTION_TIMEOUT expired — stop container
-        logger.info(
-          { groupJid },
-          'Eviction timeout expired, stopping container',
-        );
+        logger.info({ groupJid }, 'Eviction timeout expired, stopping container');
         this.softStop(groupJid);
       }, EVICTION_TIMEOUT);
     }, IDLE_BEFORE_EVICT);
@@ -241,8 +223,7 @@ export class GroupQueue {
    */
   sendMessage(groupJid: string, text: string): boolean {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder || state.isTaskContainer)
-      return false;
+    if (!state.active || !state.groupFolder || state.isTaskContainer) return false;
     if (state.stopping) return false;
 
     // If idle or evictable, reactivate before sending
@@ -286,10 +267,7 @@ export class GroupQueue {
 
     // Start grace timer → hard stop if container doesn't exit
     state.graceTimer = setTimeout(() => {
-      logger.warn(
-        { groupJid },
-        'Grace timeout expired, hard-stopping container',
-      );
+      logger.warn({ groupJid }, 'Grace timeout expired, hard-stopping container');
       this.hardStop(groupJid);
     }, GRACE_TIMEOUT);
   }
@@ -304,10 +282,7 @@ export class GroupQueue {
     state.stopping = true;
 
     if (state.containerName) {
-      logger.info(
-        { groupJid, containerName: state.containerName },
-        'Hard-stopping container',
-      );
+      logger.info({ groupJid, containerName: state.containerName }, 'Hard-stopping container');
       try {
         stopContainer(state.containerName);
       } catch (err) {
@@ -347,11 +322,7 @@ export class GroupQueue {
     let oldestAt = Infinity;
 
     for (const [jid, state] of this.groups) {
-      if (
-        state.evictable &&
-        state.evictableAt != null &&
-        state.evictableAt < oldestAt
-      ) {
+      if (state.evictable && state.evictableAt != null && state.evictableAt < oldestAt) {
         oldestAt = state.evictableAt;
         oldestJid = jid;
       }
@@ -359,10 +330,7 @@ export class GroupQueue {
 
     if (!oldestJid) return false;
 
-    logger.info(
-      { groupJid: oldestJid },
-      'Evicting oldest idle container for queue pressure',
-    );
+    logger.info({ groupJid: oldestJid }, 'Evicting oldest idle container for queue pressure');
     this.softStop(oldestJid);
     return true;
   }
@@ -417,10 +385,7 @@ export class GroupQueue {
     state.resetIdleTimeout = null;
   }
 
-  private async runForGroup(
-    groupJid: string,
-    reason: 'messages' | 'drain',
-  ): Promise<void> {
+  private async runForGroup(groupJid: string, reason: 'messages' | 'drain'): Promise<void> {
     const state = this.getGroup(groupJid);
     state.active = true;
     state.idleWaiting = false;
@@ -428,10 +393,7 @@ export class GroupQueue {
     state.pendingMessages = false;
     this.activeCount++;
 
-    logger.debug(
-      { groupJid, reason, activeCount: this.activeCount },
-      'Starting container for group',
-    );
+    logger.debug({ groupJid, reason, activeCount: this.activeCount }, 'Starting container for group');
 
     try {
       if (this.processMessagesFn) {
@@ -464,10 +426,7 @@ export class GroupQueue {
     state.runningTaskId = task.id;
     this.activeCount++;
 
-    logger.debug(
-      { groupJid, taskId: task.id, activeCount: this.activeCount },
-      'Running queued task',
-    );
+    logger.debug({ groupJid, taskId: task.id, activeCount: this.activeCount }, 'Running queued task');
 
     try {
       await task.fn();
@@ -498,10 +457,7 @@ export class GroupQueue {
     }
 
     const delayMs = BASE_RETRY_MS * Math.pow(2, state.retryCount - 1);
-    logger.info(
-      { groupJid, retryCount: state.retryCount, delayMs },
-      'Scheduling retry with backoff',
-    );
+    logger.info({ groupJid, retryCount: state.retryCount, delayMs }, 'Scheduling retry with backoff');
     setTimeout(() => {
       if (!this.shuttingDown) {
         this.enqueueMessageCheck(groupJid);
@@ -518,10 +474,7 @@ export class GroupQueue {
     if (state.pendingTasks.length > 0) {
       const task = state.pendingTasks.shift()!;
       this.runTask(groupJid, task).catch((err) =>
-        logger.error(
-          { groupJid, taskId: task.id, err },
-          'Unhandled error in runTask (drain)',
-        ),
+        logger.error({ groupJid, taskId: task.id, err }, 'Unhandled error in runTask (drain)'),
       );
       return;
     }
@@ -529,10 +482,7 @@ export class GroupQueue {
     // Then pending messages
     if (state.pendingMessages) {
       this.runForGroup(groupJid, 'drain').catch((err) =>
-        logger.error(
-          { groupJid, err },
-          'Unhandled error in runForGroup (drain)',
-        ),
+        logger.error({ groupJid, err }, 'Unhandled error in runForGroup (drain)'),
       );
       return;
     }
@@ -542,10 +492,7 @@ export class GroupQueue {
   }
 
   private drainWaiting(): void {
-    while (
-      this.waitingGroups.length > 0 &&
-      this.activeCount < MAX_CONCURRENT_CONTAINERS
-    ) {
+    while (this.waitingGroups.length > 0 && this.activeCount < MAX_CONCURRENT_CONTAINERS) {
       const nextJid = this.waitingGroups.shift()!;
       const state = this.getGroup(nextJid);
 
@@ -553,17 +500,11 @@ export class GroupQueue {
       if (state.pendingTasks.length > 0) {
         const task = state.pendingTasks.shift()!;
         this.runTask(nextJid, task).catch((err) =>
-          logger.error(
-            { groupJid: nextJid, taskId: task.id, err },
-            'Unhandled error in runTask (waiting)',
-          ),
+          logger.error({ groupJid: nextJid, taskId: task.id, err }, 'Unhandled error in runTask (waiting)'),
         );
       } else if (state.pendingMessages) {
         this.runForGroup(nextJid, 'drain').catch((err) =>
-          logger.error(
-            { groupJid: nextJid, err },
-            'Unhandled error in runForGroup (waiting)',
-          ),
+          logger.error({ groupJid: nextJid, err }, 'Unhandled error in runForGroup (waiting)'),
         );
       }
       // If neither pending, skip this group
@@ -600,10 +541,7 @@ export class GroupQueue {
             const [bin, args] = stopContainerArgs(name);
             execFile(bin, args, { timeout: gracePeriodMs }, (err) => {
               if (err) {
-                logger.warn(
-                  { container: name, err },
-                  'Failed to stop container on shutdown',
-                );
+                logger.warn({ container: name, err }, 'Failed to stop container on shutdown');
               }
               resolve();
             });

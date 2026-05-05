@@ -155,9 +155,7 @@ describe('reply context', () => {
     const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z');
     expect(messages).toHaveLength(1);
     expect(messages[0].reply_to_message_id).toBe('42');
-    expect(messages[0].reply_to_message_content).toBe(
-      'Are you coming tonight?',
-    );
+    expect(messages[0].reply_to_message_content).toBe('Are you coming tonight?');
     expect(messages[0].reply_to_sender_name).toBe('Bob');
   });
 
@@ -195,10 +193,7 @@ describe('reply context', () => {
       reply_to_sender_name: 'Dave',
     });
 
-    const { messages } = getNewMessages(
-      ['group@g.us'],
-      '2024-01-01T00:00:00.000Z',
-    );
+    const { messages } = getNewMessages(['group@g.us'], '2024-01-01T00:00:00.000Z');
     expect(messages).toHaveLength(1);
     expect(messages[0].reply_to_message_id).toBe('99');
     expect(messages[0].reply_to_sender_name).toBe('Dave');
@@ -409,20 +404,14 @@ describe('getNewMessages', () => {
   });
 
   it('returns new messages across multiple groups', () => {
-    const { messages, newTimestamp } = getNewMessages(
-      ['group1@g.us', 'group2@g.us'],
-      '2024-01-01T00:00:00.000Z',
-    );
+    const { messages, newTimestamp } = getNewMessages(['group1@g.us', 'group2@g.us'], '2024-01-01T00:00:00.000Z');
     // Excludes bot message, returns 3 user messages
     expect(messages).toHaveLength(3);
     expect(newTimestamp).toBe('2024-01-01T00:00:04.000Z');
   });
 
   it('filters by timestamp', () => {
-    const { messages } = getNewMessages(
-      ['group1@g.us', 'group2@g.us'],
-      '2024-01-01T00:00:02.000Z',
-    );
+    const { messages } = getNewMessages(['group1@g.us', 'group2@g.us'], '2024-01-01T00:00:02.000Z');
     // Only g1 msg2 (after ts, not bot)
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe('g1 msg2');
@@ -547,11 +536,7 @@ describe('message query LIMIT', () => {
   });
 
   it('getNewMessages caps to limit and returns most recent in chronological order', () => {
-    const { messages, newTimestamp } = getNewMessages(
-      ['group@g.us'],
-      '2024-01-01T00:00:00.000Z',
-      3,
-    );
+    const { messages, newTimestamp } = getNewMessages(['group@g.us'], '2024-01-01T00:00:00.000Z', 3);
     expect(messages).toHaveLength(3);
     expect(messages[0].content).toBe('message 8');
     expect(messages[2].content).toBe('message 10');
@@ -562,11 +547,7 @@ describe('message query LIMIT', () => {
   });
 
   it('getMessagesSince caps to limit and returns most recent in chronological order', () => {
-    const messages = getMessagesSince(
-      'group@g.us',
-      '2024-01-01T00:00:00.000Z',
-      3,
-    );
+    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z', 3);
     expect(messages).toHaveLength(3);
     expect(messages[0].content).toBe('message 8');
     expect(messages[2].content).toBe('message 10');
@@ -574,11 +555,7 @@ describe('message query LIMIT', () => {
   });
 
   it('returns all messages when count is under the limit', () => {
-    const { messages } = getNewMessages(
-      ['group@g.us'],
-      '2024-01-01T00:00:00.000Z',
-      50,
-    );
+    const { messages } = getNewMessages(['group@g.us'], '2024-01-01T00:00:00.000Z', 50);
     expect(messages).toHaveLength(10);
   });
 });
