@@ -47,6 +47,7 @@ function runCtx(
     group,
     chatJid: 'test@g.us',
     sender: 'user@s.whatsapp.net',
+    sendMessageToAgent: () => false,
   };
 }
 

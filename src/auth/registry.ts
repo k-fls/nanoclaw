@@ -215,7 +215,10 @@ export function registerDiscoveryProviders(
   // Check for collisions with builtin providers
   for (const [id] of providers) {
     if (registry.has(id)) {
-      logger.warn({ providerId: id }, 'Discovery provider conflicts with builtin, skipping');
+      logger.warn(
+        { providerId: id },
+        'Discovery provider conflicts with builtin, skipping',
+      );
       providers.delete(id);
     }
   }
@@ -290,7 +293,10 @@ function publishProviderInfo(): void {
         lines.join('\n') + '\n',
       );
     } catch (err) {
-      logger.warn({ err, providerId: provider.id }, 'Provider info write failed');
+      logger.warn(
+        { err, providerId: provider.id },
+        'Provider info write failed',
+      );
     }
   }
 }

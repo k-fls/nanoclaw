@@ -19,7 +19,10 @@ const mockBuiltinProviders: Array<{
   provision: () => { env: Partial<Record<DockerEnvName, string>> };
 }> = [];
 const mockDiscoveryIds: string[] = [];
-const mockDiscoveryProviders = new Map<string, { id: string; envVars?: Record<string, string>; substituteConfig: any }>();
+const mockDiscoveryProviders = new Map<
+  string,
+  { id: string; envVars?: Record<string, string>; substituteConfig: any }
+>();
 
 vi.mock('./registry.js', () => ({
   getAllProviders: () => mockBuiltinProviders,
@@ -44,7 +47,12 @@ const { injectSubstituteCredentials } = await import('./container-args.js');
 const { logger } = await import('../logger.js');
 
 function makeGroup(folder: string): RegisteredGroup {
-  return { name: folder, folder, trigger: '@test', added_at: new Date().toISOString() };
+  return {
+    name: folder,
+    folder,
+    trigger: '@test',
+    added_at: new Date().toISOString(),
+  };
 }
 
 describe('injectSubstituteCredentials', () => {

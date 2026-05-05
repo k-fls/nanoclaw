@@ -5,10 +5,7 @@ import path from 'path';
 
 import type { ChatIO, CredentialProvider, FlowResult } from './types.js';
 import { RESELECT } from './types.js';
-import {
-  asGroupScope,
-  asCredentialScope,
-} from './oauth-types.js';
+import { asGroupScope, asCredentialScope } from './oauth-types.js';
 import { setInteractionPrefix } from '../interaction/types.js';
 import { brandChat } from '../interaction/chat-io.js';
 import { AUTH_PREFIX } from './chat-prompts.js';

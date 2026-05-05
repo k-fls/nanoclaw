@@ -38,7 +38,12 @@ import {
   type BrowserOpenEvent,
 } from './browser-open-handler.js';
 import type { OAuthProvider, SubstituteConfig } from './oauth-types.js';
-import { asGroupScope, asCredentialScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
+import {
+  asGroupScope,
+  asCredentialScope,
+  CRED_OAUTH,
+  CRED_OAUTH_REFRESH,
+} from './oauth-types.js';
 import type { TokenRole } from './token-substitute.js';
 import {
   buildContainerArgs,
@@ -415,7 +420,10 @@ export class OAuthE2EHarness {
     // Store credential in the group's own scope
     const credScope = asCredentialScope(scope);
     const { id, nested } = credentialPath.includes('/')
-      ? { id: credentialPath.split('/')[0], nested: credentialPath.split('/')[1] }
+      ? {
+          id: credentialPath.split('/')[0],
+          nested: credentialPath.split('/')[1],
+        }
       : { id: credentialPath, nested: undefined };
 
     if (nested) {
@@ -425,12 +433,16 @@ export class OAuthE2EHarness {
         ? { ...existing }
         : { value: '', expires_ts: 0, updated_ts: Date.now() };
       (cred as Record<string, unknown>)[nested] = {
-        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+        value: realToken,
+        expires_ts: 0,
+        updated_ts: Date.now(),
       };
       this.resolver.store(providerId, credScope, id, cred);
     } else {
       this.resolver.store(providerId, credScope, id, {
-        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+        value: realToken,
+        expires_ts: 0,
+        updated_ts: Date.now(),
       });
     }
 

@@ -159,5 +159,7 @@ export async function handleBrowserOpen(
   }
 
   res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({ exit_code: 0, ...(interactionId && { interactionId }) }));
+  res.end(
+    JSON.stringify({ exit_code: 0, ...(interactionId && { interactionId }) }),
+  );
 }

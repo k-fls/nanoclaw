@@ -23,10 +23,16 @@ import { readKeysFile } from './token-substitute.js';
  * Custom manifest builder — returns JSONL lines for a provider's credentials.
  * Return [] to suppress manifest generation for this provider.
  */
-export type ManifestBuilder = (credentialScope: CredentialScope, providerId: string) => string[];
+export type ManifestBuilder = (
+  credentialScope: CredentialScope,
+  providerId: string,
+) => string[];
 
 /** Lifecycle hook called after a source manifest is written or deleted. */
-export type ManifestHandler = (credentialScope: CredentialScope, providerId: string) => void;
+export type ManifestHandler = (
+  credentialScope: CredentialScope,
+  providerId: string,
+) => void;
 
 export interface ManifestRegistration {
   builder: ManifestBuilder;
@@ -101,7 +107,10 @@ function writeManifest(
   const lines = buildManifestLines(credentialScope, providerId);
   const dir = manifestDir(credentialScope);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(manifestPath(credentialScope, providerId), lines.join('\n') + '\n');
+  fs.writeFileSync(
+    manifestPath(credentialScope, providerId),
+    lines.join('\n') + '\n',
+  );
 }
 
 function deleteManifest(
@@ -209,7 +218,10 @@ export function onKeysFileWritten(
   try {
     writeManifest(credentialScope, providerId);
   } catch (err) {
-    logger.warn({ err, credentialScope, providerId }, 'Manifest generation failed');
+    logger.warn(
+      { err, credentialScope, providerId },
+      'Manifest generation failed',
+    );
     return;
   }
 
@@ -309,7 +321,10 @@ export function revokeGranteeManifests(
     const groupDir = resolveGroupFolderPath(granteeFolder);
     const borrowedLink = path.join(groupDir, 'credentials', 'borrowed');
     const target = fs.readlinkSync(borrowedLink);
-    if (target === `granted/${grantorFolder}` || target === `granted/${grantorFolder}/`) {
+    if (
+      target === `granted/${grantorFolder}` ||
+      target === `granted/${grantorFolder}/`
+    ) {
       fs.unlinkSync(borrowedLink);
     }
   } catch {

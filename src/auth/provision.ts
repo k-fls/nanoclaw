@@ -17,10 +17,7 @@ import type {
   GroupScope,
   CredentialScope,
 } from './oauth-types.js';
-import {
-  asGroupScope,
-  asCredentialScope,
-} from './oauth-types.js';
+import { asGroupScope, asCredentialScope } from './oauth-types.js';
 import type {
   TokenSubstituteEngine,
   GroupResolver,

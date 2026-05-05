@@ -9,6 +9,7 @@
 import './builtins.js';
 import './auth-commands.js';
 import './creds-commands.js';
+import './ssh-commands.js';
 import './claude-update.js';
 
 export type {

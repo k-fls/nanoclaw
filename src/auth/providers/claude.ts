@@ -749,7 +749,9 @@ export const claudeProvider: CredentialProvider = {
 
     // Write .credentials.json with substitute tokens + real expiresAt
     // Engine resolves the source scope (own or borrowed from default)
-    const expiresAt = tokenEngine.resolveCredential(scope, PROVIDER_ID, CRED_OAUTH)?.expires_ts ?? 0;
+    const expiresAt =
+      tokenEngine.resolveCredential(scope, PROVIDER_ID, CRED_OAUTH)
+        ?.expires_ts ?? 0;
     const credentialsJson = JSON.stringify({
       claudeAiOauth: {
         accessToken: subAccess,

@@ -75,13 +75,25 @@ export function routeInteractionRequest(
   req: IncomingMessage,
   res: ServerResponse,
 ): boolean {
-  if (url.startsWith('/interaction/') && url.endsWith('/status') && method === 'GET') {
-    const id = decodeURIComponent(url.slice('/interaction/'.length, -'/status'.length));
+  if (
+    url.startsWith('/interaction/') &&
+    url.endsWith('/status') &&
+    method === 'GET'
+  ) {
+    const id = decodeURIComponent(
+      url.slice('/interaction/'.length, -'/status'.length),
+    );
     handleStatus(registry, id, req, res);
     return true;
   }
-  if (url.startsWith('/interaction/') && url.endsWith('/events') && method === 'GET') {
-    const id = decodeURIComponent(url.slice('/interaction/'.length, -'/events'.length));
+  if (
+    url.startsWith('/interaction/') &&
+    url.endsWith('/events') &&
+    method === 'GET'
+  ) {
+    const id = decodeURIComponent(
+      url.slice('/interaction/'.length, -'/events'.length),
+    );
     registry.handleSSE(id, req, res);
     return true;
   }

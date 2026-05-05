@@ -40,10 +40,15 @@ describe('createSessionContext', () => {
   });
 
   it('onAuthError records request ID when extractable', () => {
-    const ctx = createSessionContext('test-scope', (body) => {
-      const m = body.match(/"request_id":\s*"(\w+)"/);
-      return m ? m[1] : null;
-    }, makeQueue(), makeRegistry());
+    const ctx = createSessionContext(
+      'test-scope',
+      (body) => {
+        const m = body.match(/"request_id":\s*"(\w+)"/);
+        return m ? m[1] : null;
+      },
+      makeQueue(),
+      makeRegistry(),
+    );
 
     ctx.onAuthError('{"request_id": "req123", "error": "unauthorized"}', 401);
 
@@ -51,7 +56,12 @@ describe('createSessionContext', () => {
   });
 
   it('onAuthError does not record when request ID is not extractable', () => {
-    const ctx = createSessionContext('test-scope', () => null, makeQueue(), makeRegistry());
+    const ctx = createSessionContext(
+      'test-scope',
+      () => null,
+      makeQueue(),
+      makeRegistry(),
+    );
 
     ctx.onAuthError('no request id here', 401);
 
@@ -59,8 +69,18 @@ describe('createSessionContext', () => {
   });
 
   it('creates independent pendingErrors per call', () => {
-    const ctx1 = createSessionContext('scope-1', () => null, makeQueue(), makeRegistry());
-    const ctx2 = createSessionContext('scope-2', () => null, makeQueue(), makeRegistry());
+    const ctx1 = createSessionContext(
+      'scope-1',
+      () => null,
+      makeQueue(),
+      makeRegistry(),
+    );
+    const ctx2 = createSessionContext(
+      'scope-2',
+      () => null,
+      makeQueue(),
+      makeRegistry(),
+    );
 
     expect(ctx1.scope).toBe('scope-1');
     expect(ctx2.scope).toBe('scope-2');

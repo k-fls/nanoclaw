@@ -4,7 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockInstalledVersion = vi.fn(() => '2.1.74');
 const mockGetActiveSetting = vi.fn(() => '24h');
 const mockReconfigure = vi.fn();
-const mockRunUpdate = vi.fn<(updateNow?: boolean) => Promise<boolean>>(async () => true);
+const mockRunUpdate = vi.fn<(updateNow?: boolean) => Promise<boolean>>(
+  async () => true,
+);
 
 vi.mock('../claude-updater/updater.js', () => ({
   installedVersion: () => mockInstalledVersion(),
@@ -43,6 +45,7 @@ function ctx(group: RegisteredGroup = mainGroup) {
     group,
     chatJid: 'test@g.us',
     sender: 'user@s.whatsapp.net',
+    sendMessageToAgent: () => false,
   };
 }
 

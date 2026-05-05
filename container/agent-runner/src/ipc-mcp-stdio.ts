@@ -640,6 +640,97 @@ Examples:
   },
 );
 
+// ── SSH tools ────────────────────────────────────────────────────
+
+const proxyHost = process.env.PROXY_HOST || 'host.docker.internal';
+const proxyPort = process.env.PROXY_PORT || '3001';
+const proxyBase = `http://${proxyHost}:${proxyPort}`;
+
+async function sshProxyCall(endpoint: string, body: object): Promise<any> {
+  const res = await fetch(`${proxyBase}${endpoint}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+server.tool(
+  'ssh_request_credential',
+  `Request SSH credentials from the user. Two modes:
+• "generate": Generate an ed25519 keypair on the host. Returns the public key for the user to add to authorized_keys.
+• "ask": Notify the user to provide credentials via /ssh add. Returns "pending" — you'll receive an IPC message when fulfilled.
+
+If the credential already exists, returns { status: "ok" } regardless of mode.`,
+  {
+    alias: z.string().describe('Credential alias (e.g., "prod-db", "staging")'),
+    mode: z.enum(['generate', 'ask']).describe('generate=create keypair, ask=request from user'),
+    connection_host: z.string().describe('Remote host to connect to'),
+    connection_port: z.number().optional().describe('SSH port (default 22)'),
+    connection_username: z.string().optional().describe('SSH username (required for generate mode)'),
+  },
+  async (args) => {
+    const result = await sshProxyCall('/ssh/request-credential', {
+      alias: args.alias,
+      mode: args.mode,
+      connection_host: args.connection_host,
+      connection_port: args.connection_port,
+      connection_username: args.connection_username,
+    });
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+      isError: result.status === 'error',
+    };
+  },
+);
+
+server.tool(
+  'ssh_connect',
+  `Establish an SSH connection to a remote server using stored credentials.
+The connection is multiplexed via ControlMaster — after connecting, use standard ssh/scp/rsync commands with the provided ControlPath socket.
+Returns usage examples on success.`,
+  {
+    alias: z.string().describe('Credential alias to connect with'),
+    timeout: z.number().optional().describe('Connection timeout in seconds (default 5)'),
+  },
+  async (args) => {
+    const result = await sshProxyCall('/ssh/connect', {
+      alias: args.alias,
+      timeout: args.timeout,
+    });
+
+    if (result.status === 'ok') {
+      return {
+        content: [{ type: 'text' as const, text: result.usage }],
+      };
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+      isError: true,
+    };
+  },
+);
+
+server.tool(
+  'ssh_disconnect',
+  'Disconnect an SSH ControlMaster connection.',
+  {
+    alias: z.string().describe('Credential alias to disconnect'),
+  },
+  async (args) => {
+    const result = await sshProxyCall('/ssh/disconnect', {
+      alias: args.alias,
+    });
+
+    return {
+      content: [{ type: 'text' as const, text: result.status === 'ok' ? `Disconnected '${args.alias}'.` : JSON.stringify(result) }],
+      isError: result.status === 'error',
+    };
+  },
+);
+
 // --- Credential tools ---
 
 const ENV_VARS_PATH = path.join(process.env.HOME || '/home/node', '.env-vars');
@@ -676,23 +767,9 @@ Env vars are automatically injected into ~/.env-vars so subsequent Bash calls pi
       ),
   },
   async (args) => {
-    const proxyHost = process.env.PROXY_HOST;
-    const proxyPort = process.env.PROXY_PORT;
-    if (!proxyHost || !proxyPort) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: 'Credential proxy not configured (PROXY_HOST/PROXY_PORT not set).',
-          },
-        ],
-        isError: true,
-      };
-    }
-
     const params = new URLSearchParams({ path: args.credentialPath });
     if (args.envVar) params.set('envVar', args.envVar);
-    const url = `http://${proxyHost}:${proxyPort}/credentials/${encodeURIComponent(args.providerId)}/substitute?${params.toString()}`;
+    const url = `${proxyBase}/credentials/${encodeURIComponent(args.providerId)}/substitute?${params.toString()}`;
 
     try {
       const resp = await fetch(url);

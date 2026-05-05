@@ -7,6 +7,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
+import { socketDir as sshSocketDir } from './auth/ssh/index.js';
+
 import {
   CLAUDE_CLI_DIR,
   CONTAINER_IMAGE,
@@ -117,7 +119,11 @@ export function snapshotContainerFiles(): void {
   _snapshotDir = path.join(DATA_DIR, 'snapshot', 'container');
   const src = path.join(process.cwd(), 'container');
   if (!fs.existsSync(src)) return;
-  fs.cpSync(src, _snapshotDir, { recursive: true, preserveTimestamps: true });
+  fs.cpSync(src, _snapshotDir, {
+    recursive: true,
+    preserveTimestamps: true,
+    filter: (s) => !path.relative(src, s).split(path.sep).includes('node_modules'),
+  });
   logger.info({ dir: _snapshotDir }, 'Container directory snapshotted');
 }
 
@@ -292,6 +298,18 @@ export function buildVolumeMounts(
     containerPath: '/workspace/media',
     readonly: false,
   });
+
+  // SSH socket directory — pre-mounted at container start (initially empty).
+  // Sockets appear as ssh_connect creates ControlMaster connections on the host.
+  {
+    const sshSockDir = sshSocketDir(scopeOf(group));
+    fs.mkdirSync(sshSockDir, { recursive: true, mode: 0o700 });
+    mounts.push({
+      hostPath: sshSockDir,
+      containerPath: '/ssh-sockets',
+      readonly: true,
+    });
+  }
 
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other

@@ -25,13 +25,8 @@ vi.mock('../logger.js', () => ({
 }));
 
 const { AesSecretBackend } = await import('./aes.js');
-const {
-  initEncryption,
-  getSecretBackend,
-  encrypt,
-  decrypt,
-  reEncrypt,
-} = await import('./index.js');
+const { initEncryption, getSecretBackend, encrypt, decrypt, reEncrypt } =
+  await import('./index.js');
 
 // ---------------------------------------------------------------------------
 // AesSecretBackend class

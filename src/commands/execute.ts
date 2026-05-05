@@ -25,6 +25,7 @@ export async function executeCommand(
     group: ctx.group,
     chatJid: ctx.chatJid,
     sender: lastMsg.sender,
+    sendMessageToAgent: ctx.sendMessageToAgent,
   });
 
   if (result.stopContainer) ctx.stopContainer();

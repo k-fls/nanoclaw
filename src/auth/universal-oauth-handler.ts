@@ -16,7 +16,11 @@ import { gunzipSync } from 'zlib';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import type { InterceptRule, OAuthProvider, Credential } from './oauth-types.js';
+import type {
+  InterceptRule,
+  OAuthProvider,
+  Credential,
+} from './oauth-types.js';
 import { CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
 import type { GroupScope, CredentialScope } from './oauth-types.js';
 import type { TokenSubstituteEngine } from './token-substitute.js';
@@ -178,7 +182,11 @@ async function refreshViaTokenEndpoint(
   if (!realRefreshToken) return false;
 
   // Read captured authFields (client_id, scope, etc.) from the oauth credential
-  const oauthCred = tokenEngine.resolveCredential(groupScope, provider.id, CRED_OAUTH);
+  const oauthCred = tokenEngine.resolveCredential(
+    groupScope,
+    provider.id,
+    CRED_OAUTH,
+  );
   const authFields = oauthCred?.authFields ?? {};
 
   try {
@@ -447,19 +455,26 @@ function createBearerSwapHandler(
         seen.add(swap.credentialId);
         scopeByCredential.set(swap.credentialId, swap.credentialScope);
         const cred = tokenEngine.resolveCredential(
-          groupScope, provider.id, swap.credentialId,
+          groupScope,
+          provider.id,
+          swap.credentialId,
         );
         if (!cred?.refresh) continue;
         refreshable.add(swap.credentialId);
-        if (REFRESH_AHEAD_MS > 0 && cred.expires_ts > 0
-            && cred.expires_ts < Date.now() + REFRESH_AHEAD_MS) {
+        if (
+          REFRESH_AHEAD_MS > 0 &&
+          cred.expires_ts > 0 &&
+          cred.expires_ts < Date.now() + REFRESH_AHEAD_MS
+        ) {
           nearExpiry.push(swap.credentialId);
         }
       }
     }
 
     /** Refresh a set of credentials in parallel. Returns which ones succeeded. */
-    const refreshCredentials = async (paths: string[]): Promise<{ succeeded: string[]; failed: string[] }> => {
+    const refreshCredentials = async (
+      paths: string[],
+    ): Promise<{ succeeded: string[]; failed: string[] }> => {
       const results = await Promise.all(
         paths.map((cp) =>
           tokenEngine.sharedOp(
