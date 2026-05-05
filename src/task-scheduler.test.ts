@@ -243,7 +243,8 @@ describe('task scheduler', () => {
       added_at: '2024-01-01T00:00:00.000Z',
     };
     startSchedulerLoop({
-      getGroupByFolder: (f) => f === 'whatsapp_success-test' ? successGroup as any : undefined,
+      getGroupByFolder: (f) =>
+        f === 'whatsapp_success-test' ? (successGroup as any) : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
@@ -290,7 +291,8 @@ describe('task scheduler', () => {
       added_at: '2024-01-01T00:00:00.000Z',
     };
     startSchedulerLoop({
-      getGroupByFolder: (f) => f === 'whatsapp_error-test' ? errorGroup as any : undefined,
+      getGroupByFolder: (f) =>
+        f === 'whatsapp_error-test' ? (errorGroup as any) : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
@@ -349,7 +351,8 @@ describe('task scheduler', () => {
       added_at: '2024-01-01T00:00:00.000Z',
     };
     startSchedulerLoop({
-      getGroupByFolder: (f) => f === 'whatsapp_stream-test' ? streamGroup as any : undefined,
+      getGroupByFolder: (f) =>
+        f === 'whatsapp_stream-test' ? (streamGroup as any) : undefined,
       getSessions: () => ({}),
       queue: { enqueueTask, softStop: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},

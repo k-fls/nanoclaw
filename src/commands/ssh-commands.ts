@@ -635,9 +635,7 @@ function handleSshResetHost(args: string, scope: GroupScope) {
 
 function handleSshClearPending(scope: GroupScope) {
   const count = clearAllPending(scope);
-  return reply(
-    `Cleared ${count} pending SSH credential request(s).`,
-  );
+  return reply(`Cleared ${count} pending SSH credential request(s).`);
 }
 
 // ── /pem command ──────────────────────────────────────────────────

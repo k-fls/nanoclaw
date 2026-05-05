@@ -95,7 +95,10 @@ export function injectSubstituteCredentials(
 ): Record<string, string> {
   const claimed = new Map<string, string>(); // env var name → provider id
 
-  function injectDocker(env: Partial<Record<DockerEnvName, string>>, providerId: string): void {
+  function injectDocker(
+    env: Partial<Record<DockerEnvName, string>>,
+    providerId: string,
+  ): void {
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) continue;
       const owner = claimed.get(key);
@@ -132,7 +135,12 @@ export function injectSubstituteCredentials(
       const owner = claimed.get(key);
       if (owner) {
         logger.warn(
-          { envVar: key, provider: id, existingProvider: owner, group: group.folder },
+          {
+            envVar: key,
+            provider: id,
+            existingProvider: owner,
+            group: group.folder,
+          },
           'Env var already claimed by another provider, skipping',
         );
         continue;
@@ -176,7 +184,11 @@ export function applyTransparentProxyArgs(args: string[]): void {
     `${caCertPath}:/usr/local/share/ca-certificates/nanoclaw-mitm.crt:ro`,
   );
   // Also set NODE_EXTRA_CA_CERTS for Node.js apps that don't use system store
-  pushEnv(args, 'NODE_EXTRA_CA_CERTS', '/usr/local/share/ca-certificates/nanoclaw-mitm.crt');
+  pushEnv(
+    args,
+    'NODE_EXTRA_CA_CERTS',
+    '/usr/local/share/ca-certificates/nanoclaw-mitm.crt',
+  );
 
   // Transparent proxy: entrypoint starts as root for iptables, then drops
   // privileges via setpriv. Pass host uid/gid so it drops to the right user.

@@ -43,7 +43,9 @@ const scope = asGroupScope('test-group');
 const credScope = asCredentialScope('test-group');
 const sourceScope = asCredentialScope('source-group');
 
-function makeMeta(overrides: Partial<SSHCredentialMeta> = {}): SSHCredentialMeta {
+function makeMeta(
+  overrides: Partial<SSHCredentialMeta> = {},
+): SSHCredentialMeta {
   return {
     host: 'prod.example.com',
     port: 22,
@@ -95,9 +97,7 @@ describe('socket path helpers', () => {
   });
 
   it('different scopes produce different hashes', () => {
-    expect(scopeHash(asGroupScope('a'))).not.toBe(
-      scopeHash(asGroupScope('b')),
-    );
+    expect(scopeHash(asGroupScope('a'))).not.toBe(scopeHash(asGroupScope('b')));
   });
 
   it('socketDir builds correct path', () => {
@@ -167,7 +167,8 @@ describe('verifyHostKey', () => {
     const meta = makeMeta({ hostKey: storedFp });
 
     mockExecFileSync.mockImplementation((cmd: string) => {
-      if (cmd === 'ssh-keyscan') return 'prod.example.com ssh-ed25519 BBBB...\n';
+      if (cmd === 'ssh-keyscan')
+        return 'prod.example.com ssh-ed25519 BBBB...\n';
       if (cmd === 'ssh-keygen') return `256 ${scannedFp} (ED25519)\n`;
       return '';
     });
@@ -183,7 +184,8 @@ describe('verifyHostKey', () => {
 
     // ssh-keyscan returns same key type + data
     mockExecFileSync.mockImplementation((cmd: string) => {
-      if (cmd === 'ssh-keyscan') return 'prod.example.com ssh-ed25519 AAAA1234 base64data\n';
+      if (cmd === 'ssh-keyscan')
+        return 'prod.example.com ssh-ed25519 AAAA1234 base64data\n';
       if (cmd === 'ssh-keygen') return '256 SHA256:xxxx (ED25519)\n';
       return '';
     });
@@ -260,10 +262,12 @@ describe('verifyHostKey', () => {
     mockExecFileSync.mockImplementation((cmd: string, args?: string[]) => {
       if (cmd === 'ssh-keyscan') {
         // Return both key types — RSA first (simulates non-deterministic order)
-        return [
-          'prod.example.com ssh-rsa AAAARSA...',
-          'prod.example.com ssh-ed25519 AAAAEd...',
-        ].join('\n') + '\n';
+        return (
+          [
+            'prod.example.com ssh-rsa AAAARSA...',
+            'prod.example.com ssh-ed25519 AAAAEd...',
+          ].join('\n') + '\n'
+        );
       }
       if (cmd === 'ssh-keygen') {
         // Read the temp file to determine which key we're fingerprinting
@@ -271,7 +275,8 @@ describe('verifyHostKey', () => {
         if (filePath) {
           const content = fs.readFileSync(filePath, 'utf-8');
           if (content.includes('ssh-rsa')) return `2048 ${rsaFp} (RSA)\n`;
-          if (content.includes('ssh-ed25519')) return `256 ${ed25519Fp} (ED25519)\n`;
+          if (content.includes('ssh-ed25519'))
+            return `256 ${ed25519Fp} (ED25519)\n`;
         }
         return `256 ${rsaFp} (UNKNOWN)\n`;
       }
@@ -289,10 +294,12 @@ describe('verifyHostKey', () => {
 
     mockExecFileSync.mockImplementation((cmd: string) => {
       if (cmd === 'ssh-keyscan') {
-        return [
-          'prod.example.com ssh-rsa AAAARSA base64rsa',
-          'prod.example.com ssh-ed25519 AAAAEd base64ed',
-        ].join('\n') + '\n';
+        return (
+          [
+            'prod.example.com ssh-rsa AAAARSA base64rsa',
+            'prod.example.com ssh-ed25519 AAAAEd base64ed',
+          ].join('\n') + '\n'
+        );
       }
       if (cmd === 'ssh-keygen') return '256 SHA256:xxxx (ED25519)\n';
       return '';
@@ -308,10 +315,12 @@ describe('verifyHostKey', () => {
 
     mockExecFileSync.mockImplementation((cmd: string) => {
       if (cmd === 'ssh-keyscan') {
-        return [
-          'prod.example.com ssh-rsa AAAARSA...',
-          'prod.example.com ssh-ed25519 AAAAEd...',
-        ].join('\n') + '\n';
+        return (
+          [
+            'prod.example.com ssh-rsa AAAARSA...',
+            'prod.example.com ssh-ed25519 AAAAEd...',
+          ].join('\n') + '\n'
+        );
       }
       if (cmd === 'ssh-keygen') return '256 SHA256:pinnedfp (ED25519)\n';
       return '';
@@ -338,12 +347,15 @@ describe('verifyHostKey', () => {
 
     mockExecFileSync.mockImplementation((cmd: string) => {
       if (cmd === 'ssh-keyscan') {
-        return [
-          'prod.example.com ssh-rsa AAAARSA...',
-          'prod.example.com ssh-ed25519 AAAAEd...',
-        ].join('\n') + '\n';
+        return (
+          [
+            'prod.example.com ssh-rsa AAAARSA...',
+            'prod.example.com ssh-ed25519 AAAAEd...',
+          ].join('\n') + '\n'
+        );
       }
-      if (cmd === 'ssh-keygen') return '256 SHA256:nope_doesnt_match_anything_at_all (KEY)\n';
+      if (cmd === 'ssh-keygen')
+        return '256 SHA256:nope_doesnt_match_anything_at_all (KEY)\n';
       return '';
     });
 
@@ -393,7 +405,10 @@ describe('scope resolution (via connect)', () => {
     ).rejects.toThrow(SSHError);
 
     try {
-      await manager.connect(scope, 'missing', { timeout: 1, pinAllowed: false });
+      await manager.connect(scope, 'missing', {
+        timeout: 1,
+        pinAllowed: false,
+      });
     } catch (err) {
       expect((err as SSHError).code).toBe('credential_not_found');
     }
@@ -564,10 +579,7 @@ describe('startupSweep', () => {
 
   it('removes stale socket directory', () => {
     fs.mkdirSync(path.join(sweepDir, 'stale-hash'), { recursive: true });
-    fs.writeFileSync(
-      path.join(sweepDir, 'stale-hash', 'old.sock'),
-      '',
-    );
+    fs.writeFileSync(path.join(sweepDir, 'stale-hash', 'old.sock'), '');
 
     SSHManager.startupSweep();
     expect(fs.existsSync(sweepDir)).toBe(false);

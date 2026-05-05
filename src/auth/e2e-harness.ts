@@ -50,7 +50,11 @@ import {
   buildVolumeMounts,
   snapshotContainerFiles,
 } from '../container-runner.js';
-import { allocateContainerIP, applyCredentialProxyArgs, ensureNetwork } from './container-args.js';
+import {
+  allocateContainerIP,
+  applyCredentialProxyArgs,
+  ensureNetwork,
+} from './container-args.js';
 import { CONTAINER_RUNTIME_BIN } from '../container-runtime.js';
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from '../config.js';
 import {
@@ -500,7 +504,11 @@ export class OAuthE2EHarness {
       containerName,
       containerIP,
     );
-    const envFileVars = applyCredentialProxyArgs(containerArgs, group, this.tokenEngine);
+    const envFileVars = applyCredentialProxyArgs(
+      containerArgs,
+      group,
+      this.tokenEngine,
+    );
     // In e2e tests, inject env-file vars as Docker -e (no persistent home dir)
     for (const [k, v] of Object.entries(envFileVars)) {
       containerArgs.push('-e', `${k}=${v}`);
@@ -541,8 +549,10 @@ export class OAuthE2EHarness {
     fs.writeFileSync(noopTsc, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
     containerArgs.push(
-      '-v', `${testScript}:/tmp/dist/index.js`,
-      '-v', `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
+      '-v',
+      `${testScript}:/tmp/dist/index.js`,
+      '-v',
+      `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
     );
 
     // Inject extra env vars from test
@@ -632,7 +642,11 @@ export class OAuthE2EHarness {
       containerName,
       containerIP,
     );
-    const envFileVars = applyCredentialProxyArgs(containerArgs, group, this.tokenEngine);
+    const envFileVars = applyCredentialProxyArgs(
+      containerArgs,
+      group,
+      this.tokenEngine,
+    );
     // In e2e tests, inject env-file vars as Docker -e (no persistent home dir)
     for (const [k, v] of Object.entries(envFileVars)) {
       containerArgs.push('-e', `${k}=${v}`);
@@ -659,8 +673,10 @@ export class OAuthE2EHarness {
     fs.writeFileSync(noopTsc, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
     containerArgs.push(
-      '-v', `${testScript}:/tmp/dist/index.js`,
-      '-v', `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
+      '-v',
+      `${testScript}:/tmp/dist/index.js`,
+      '-v',
+      `${noopTsc}:/app/node_modules/.bin/tsc:ro`,
     );
 
     // Image name must come last

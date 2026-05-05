@@ -32,7 +32,8 @@ registerCommand('creds', {
       // Show status
       const group = ctx.group;
       const source = group.containerConfig?.credentialSource;
-      const grantees = group.containerConfig?.credentialGrantees ?? new Set<string>();
+      const grantees =
+        group.containerConfig?.credentialGrantees ?? new Set<string>();
 
       const lines: string[] = [`*Credentials for ${group.folder}*`, ''];
 
@@ -43,7 +44,9 @@ registerCommand('creds', {
       }
 
       if (grantees.size > 0) {
-        lines.push(`Sharing with: ${[...grantees].map((g) => `*${g}*`).join(', ')}`);
+        lines.push(
+          `Sharing with: ${[...grantees].map((g) => `*${g}*`).join(', ')}`,
+        );
       } else {
         lines.push('Sharing with: (none)');
       }

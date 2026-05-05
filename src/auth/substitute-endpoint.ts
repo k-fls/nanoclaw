@@ -34,9 +34,17 @@ export function handleSubstituteRequest(
   const url = new URL(req.url || '/', 'http://localhost');
   const segments = url.pathname.split('/').filter(Boolean);
   // Expected: ['credentials', '<providerId>', 'substitute']
-  if (segments.length !== 3 || segments[0] !== 'credentials' || segments[2] !== 'substitute') {
+  if (
+    segments.length !== 3 ||
+    segments[0] !== 'credentials' ||
+    segments[2] !== 'substitute'
+  ) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Expected /credentials/<providerId>/substitute' }));
+    res.end(
+      JSON.stringify({
+        error: 'Expected /credentials/<providerId>/substitute',
+      }),
+    );
     return;
   }
 
@@ -44,7 +52,12 @@ export function handleSubstituteRequest(
   const credentialPath = url.searchParams.get('path');
   if (!credentialPath) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Missing required query parameter: path (e.g. ?path=oauth or ?path=api_key)' }));
+    res.end(
+      JSON.stringify({
+        error:
+          'Missing required query parameter: path (e.g. ?path=oauth or ?path=api_key)',
+      }),
+    );
     return;
   }
 
@@ -62,7 +75,8 @@ export function handleSubstituteRequest(
   // Look up provider config to get substituteConfig and envVars
   const discovery = getDiscoveryProvider(providerId);
   const builtin = getProvider(providerId);
-  const substituteConfig = discovery?.substituteConfig ?? DEFAULT_SUBSTITUTE_CONFIG;
+  const substituteConfig =
+    discovery?.substituteConfig ?? DEFAULT_SUBSTITUTE_CONFIG;
 
   if (!discovery && !builtin) {
     res.writeHead(404, { 'content-type': 'application/json' });
@@ -85,15 +99,21 @@ export function handleSubstituteRequest(
 
   const engine = getTokenEngine();
   const substitute = engine.getOrCreateSubstitute(
-    providerId, {}, scope, substituteConfig, credentialPath,
+    providerId,
+    {},
+    scope,
+    substituteConfig,
+    credentialPath,
     envNames.length > 0 ? envNames : undefined,
   );
 
   if (!substitute) {
     res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({
-      error: `No credentials found for provider '${providerId}' (path: ${credentialPath}) in scope '${scope}'`,
-    }));
+    res.end(
+      JSON.stringify({
+        error: `No credentials found for provider '${providerId}' (path: ${credentialPath}) in scope '${scope}'`,
+      }),
+    );
     return;
   }
 
@@ -108,10 +128,12 @@ export function handleSubstituteRequest(
   );
 
   res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({
-    substitute,
-    providerId,
-    credentialPath,
-    envNames,
-  }));
+  res.end(
+    JSON.stringify({
+      substitute,
+      providerId,
+      credentialPath,
+      envNames,
+    }),
+  );
 }

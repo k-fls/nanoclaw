@@ -320,7 +320,12 @@ interface RefsFileV4 {
   v: 4;
   substitutes: Record<
     string,
-    { credentialPath: string; scopeAttrs: Record<string, string>; sourceScope?: string; envNames?: string[] }
+    {
+      credentialPath: string;
+      scopeAttrs: Record<string, string>;
+      sourceScope?: string;
+      envNames?: string[];
+    }
   >;
 }
 
@@ -785,7 +790,10 @@ export class TokenSubstituteEngine {
 
     const toRemove: string[] = [];
     for (const [sub, entry] of ps.substitutes) {
-      if (entry.sourceScope && (entry.sourceScope as string) === (sourceScope as string)) {
+      if (
+        entry.sourceScope &&
+        (entry.sourceScope as string) === (sourceScope as string)
+      ) {
         toRemove.push(sub);
       }
     }
@@ -797,7 +805,8 @@ export class TokenSubstituteEngine {
 
     if (ps.substitutes.size === 0) {
       this.scopes.get(groupScope)?.delete(providerId);
-      if (this.scopes.get(groupScope)?.size === 0) this.scopes.delete(groupScope);
+      if (this.scopes.get(groupScope)?.size === 0)
+        this.scopes.delete(groupScope);
       this.deleteRefs(groupScope, providerId);
     } else {
       this.persistRefs(groupScope, providerId);
@@ -850,7 +859,11 @@ export class TokenSubstituteEngine {
     }
 
     // Per-key scope resolution with bilateral access check
-    const credScope = this.resolveCredentialScope(groupScope, providerId, credentialPath);
+    const credScope = this.resolveCredentialScope(
+      groupScope,
+      providerId,
+      credentialPath,
+    );
     const ownCredScope = toCredentialScope(groupScope);
     const sourceScope = credScope !== ownCredScope ? credScope : undefined;
 
@@ -930,12 +943,13 @@ export class TokenSubstituteEngine {
       if (this.subToProvider.has(substitute)) continue;
 
       // Store in the engine — nested paths inherit parent's sourceScope
-      const effectiveSource = sourceScope ?? this.findParentSourceScope(
-        groupScope, providerId, credentialPath,
-      );
+      const effectiveSource =
+        sourceScope ??
+        this.findParentSourceScope(groupScope, providerId, credentialPath);
       const entry: SubstituteEntry = { credentialPath, scopeAttrs };
       if (effectiveSource) entry.sourceScope = effectiveSource;
-      if (envNames && envNames.length > 0) entry.envNames = [...new Set(envNames)];
+      if (envNames && envNames.length > 0)
+        entry.envNames = [...new Set(envNames)];
       this.insertSub(groupScope, providerId, substitute, entry);
 
       // Persist substitute → role mapping (no secrets)
@@ -970,7 +984,11 @@ export class TokenSubstituteEngine {
     // Per-entry access check for borrowed credentials
     if (entry.sourceScope && this.accessCheck) {
       if (!this.accessCheck(groupScope, entry.sourceScope)) {
-        this.revokeBorrowedFromScope(groupScope, ref.providerId, entry.sourceScope);
+        this.revokeBorrowedFromScope(
+          groupScope,
+          ref.providerId,
+          entry.sourceScope,
+        );
         return null;
       }
     }
@@ -1033,9 +1051,16 @@ export class TokenSubstituteEngine {
     providerId: string,
     credentialPath: string,
   ): string | null {
-    const credScope = this.resolveCredentialScope(groupScope, providerId, credentialPath);
+    const credScope = this.resolveCredentialScope(
+      groupScope,
+      providerId,
+      credentialPath,
+    );
     return resolveCredentialPathToRealToken(
-      this.resolver, credScope, providerId, credentialPath,
+      this.resolver,
+      credScope,
+      providerId,
+      credentialPath,
     );
   }
 
@@ -1048,7 +1073,11 @@ export class TokenSubstituteEngine {
     providerId: string,
     credentialId: string,
   ): Credential | null {
-    const credScope = this.resolveCredentialScope(groupScope, providerId, credentialId);
+    const credScope = this.resolveCredentialScope(
+      groupScope,
+      providerId,
+      credentialId,
+    );
     return this.resolver.resolve(credScope, providerId, credentialId);
   }
 
@@ -1071,7 +1100,10 @@ export class TokenSubstituteEngine {
     let targetScope: CredentialScope;
     if (!entry?.sourceScope) {
       targetScope = ownScope;
-    } else if (this.accessCheck && !this.accessCheck(groupScope, entry.sourceScope)) {
+    } else if (
+      this.accessCheck &&
+      !this.accessCheck(groupScope, entry.sourceScope)
+    ) {
       targetScope = ownScope;
       entry.sourceScope = undefined;
       this.persistRefs(groupScope, providerId);
@@ -1200,7 +1232,9 @@ export class TokenSubstituteEngine {
     providerId: string,
     credentialId: string,
   ): boolean {
-    return this.resolver.resolve(credentialScope, providerId, credentialId) !== null;
+    return (
+      this.resolver.resolve(credentialScope, providerId, credentialId) !== null
+    );
   }
 
   // ── Revocation ───────────────────────────────────────────────────
@@ -1376,10 +1410,13 @@ export class TokenSubstituteEngine {
         credentialPath: entry.credentialPath,
         scopeAttrs: entry.scopeAttrs,
       };
-      if (entry.sourceScope && (entry.sourceScope as string) !== (groupScope as string)) {
+      if (
+        entry.sourceScope &&
+        (entry.sourceScope as string) !== (groupScope as string)
+      ) {
         ref.sourceScope = entry.sourceScope as string;
       } else {
-        ref.sourceScope = undefined
+        ref.sourceScope = undefined;
       }
       if (entry.envNames && entry.envNames.length > 0) {
         ref.envNames = entry.envNames;
@@ -1444,11 +1481,17 @@ export class TokenSubstituteEngine {
       return;
     }
 
-    const byCredential = new Map<string, { subs: string[]; borrowed: boolean }>();
+    const byCredential = new Map<
+      string,
+      { subs: string[]; borrowed: boolean }
+    >();
     for (const [sub, entry] of ps.substitutes) {
       const topLevel = entry.credentialPath.split('/')[0];
       let bucket = byCredential.get(topLevel);
-      if (!bucket) { bucket = { subs: [], borrowed: !!entry.sourceScope }; byCredential.set(topLevel, bucket); }
+      if (!bucket) {
+        bucket = { subs: [], borrowed: !!entry.sourceScope };
+        byCredential.set(topLevel, bucket);
+      }
       bucket.subs.push(sub);
     }
 
@@ -1512,7 +1555,8 @@ export class TokenSubstituteEngine {
 
     const version = raw.v as number | undefined;
     // V3 provider-level sourceScope — promote into each entry during migration
-    const rawProviderSource = version === 3 ? (raw.sourceScope as string | undefined) : undefined;
+    const rawProviderSource =
+      version === 3 ? (raw.sourceScope as string | undefined) : undefined;
     const providerSourceScope =
       rawProviderSource && rawProviderSource !== (groupScope as string)
         ? asCredentialScope(rawProviderSource)
@@ -1530,9 +1574,10 @@ export class TokenSubstituteEngine {
       if (version === 4) {
         credentialPath = entryRaw.credentialPath as string;
         const rawSource = entryRaw.sourceScope as string | undefined;
-        entrySourceScope = rawSource && rawSource !== (groupScope as string)
-          ? asCredentialScope(rawSource)
-          : undefined;
+        entrySourceScope =
+          rawSource && rawSource !== (groupScope as string)
+            ? asCredentialScope(rawSource)
+            : undefined;
       } else if (version === 3) {
         credentialPath = entryRaw.credentialPath as string;
         entrySourceScope = providerSourceScope;
@@ -1552,7 +1597,8 @@ export class TokenSubstituteEngine {
       };
       if (entrySourceScope) entry.sourceScope = entrySourceScope;
       const rawEnvNames = entryRaw.envNames as string[] | undefined;
-      if (rawEnvNames && rawEnvNames.length > 0) entry.envNames = [...new Set(rawEnvNames)];
+      if (rawEnvNames && rawEnvNames.length > 0)
+        entry.envNames = [...new Set(rawEnvNames)];
       this.insertSub(groupScope, providerId, substitute, entry);
     }
 

@@ -7,7 +7,10 @@ vi.mock('../../logger.js', () => ({
 }));
 
 // Mock pending module
-const mockAddPending = vi.fn((..._args: any[]) => ({ accepted: true, capReached: false }));
+const mockAddPending = vi.fn((..._args: any[]) => ({
+  accepted: true,
+  capReached: false,
+}));
 vi.mock('./pending.js', () => ({
   addPendingRequest: (...args: any[]) => mockAddPending(...args),
 }));
@@ -34,7 +37,13 @@ vi.mock('./manager.js', () => ({
     port: number;
     storedFingerprint: string;
     scannedFingerprint: string;
-    constructor(alias: string, host: string, port: number, stored: string, scanned: string) {
+    constructor(
+      alias: string,
+      host: string,
+      port: number,
+      stored: string,
+      scanned: string,
+    ) {
       super(`Host key mismatch for '${alias}'`);
       this.alias = alias;
       this.host = host;
@@ -113,9 +122,7 @@ function request(
         port,
         method,
         path: url,
-        headers: body
-          ? { 'content-type': 'application/json' }
-          : undefined,
+        headers: body ? { 'content-type': 'application/json' } : undefined,
       };
       const req = http.request(opts, (res) => {
         const chunks: Buffer[] = [];
@@ -150,7 +157,9 @@ describe('routeSSHRequest', () => {
     mockConnect.mockReset();
     mockDisconnect.mockReset();
     mockListConnections.mockReset().mockReturnValue([]);
-    mockAddPending.mockReset().mockReturnValue({ accepted: true, capReached: false });
+    mockAddPending
+      .mockReset()
+      .mockReturnValue({ accepted: true, capReached: false });
   });
 
   // ── /ssh/request-credential ──────────────────────────────────
@@ -158,8 +167,12 @@ describe('routeSSHRequest', () => {
   describe('POST /ssh/request-credential', () => {
     it('returns ok when credential already exists', async () => {
       const meta: SSHCredentialMeta = {
-        host: 'h', port: 22, username: 'u', authType: 'key',
-        publicKey: 'ssh-ed25519 AAAA', hostKey: null,
+        host: 'h',
+        port: 22,
+        username: 'u',
+        authType: 'key',
+        publicKey: 'ssh-ed25519 AAAA',
+        hostKey: null,
       };
       const store: Record<string, Credential | null> = {};
       const resolver = makeResolver(store);
@@ -168,7 +181,9 @@ describe('routeSSHRequest', () => {
       const deps = makeDeps({ resolver });
 
       const res = await request(deps, 'POST', '/ssh/request-credential', {
-        alias: 'db', mode: 'ask', connection_host: 'h',
+        alias: 'db',
+        mode: 'ask',
+        connection_host: 'h',
       });
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('ok');
@@ -178,7 +193,9 @@ describe('routeSSHRequest', () => {
     it('returns pending for mode=ask when credential does not exist', async () => {
       const deps = makeDeps();
       const res = await request(deps, 'POST', '/ssh/request-credential', {
-        alias: 'db', mode: 'ask', connection_host: 'h',
+        alias: 'db',
+        mode: 'ask',
+        connection_host: 'h',
         connection_username: 'u',
       });
       expect(res.status).toBe(200);
@@ -190,7 +207,9 @@ describe('routeSSHRequest', () => {
       mockAddPending.mockReturnValue({ accepted: false, capReached: false });
       const deps = makeDeps();
       const res = await request(deps, 'POST', '/ssh/request-credential', {
-        alias: 'db', mode: 'ask', connection_host: 'h',
+        alias: 'db',
+        mode: 'ask',
+        connection_host: 'h',
       });
       expect(res.body.status).toBe('suppressed');
     });
@@ -198,7 +217,9 @@ describe('routeSSHRequest', () => {
     it('rejects invalid alias', async () => {
       const deps = makeDeps();
       const res = await request(deps, 'POST', '/ssh/request-credential', {
-        alias: '', mode: 'ask', connection_host: 'h',
+        alias: '',
+        mode: 'ask',
+        connection_host: 'h',
       });
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('invalid_alias');
@@ -207,7 +228,9 @@ describe('routeSSHRequest', () => {
     it('rejects invalid mode', async () => {
       const deps = makeDeps();
       const res = await request(deps, 'POST', '/ssh/request-credential', {
-        alias: 'db', mode: 'bad', connection_host: 'h',
+        alias: 'db',
+        mode: 'bad',
+        connection_host: 'h',
       });
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('invalid_mode');
@@ -216,7 +239,8 @@ describe('routeSSHRequest', () => {
     it('rejects generate mode without required params', async () => {
       const deps = makeDeps();
       const res = await request(deps, 'POST', '/ssh/request-credential', {
-        alias: 'db', mode: 'generate',
+        alias: 'db',
+        mode: 'generate',
       });
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('missing_params');
@@ -247,8 +271,12 @@ describe('routeSSHRequest', () => {
 
     it('notifies user when host key pinned via TOFU', async () => {
       mockConnect.mockResolvedValue({
-        alias: 'db', host: 'h', port: 22, username: 'u',
-        socketPath: '/tmp/x.sock', scope,
+        alias: 'db',
+        host: 'h',
+        port: 22,
+        username: 'u',
+        socketPath: '/tmp/x.sock',
+        scope,
         hostKeyAction: 'pinned',
         hostKeyFingerprint: 'SHA256:pinned-fp',
       });
@@ -263,7 +291,8 @@ describe('routeSSHRequest', () => {
     });
 
     it('returns error on host key mismatch and notifies user', async () => {
-      const { SSHHostKeyMismatchError: MockMismatch } = await import('./manager.js');
+      const { SSHHostKeyMismatchError: MockMismatch } =
+        await import('./manager.js');
       mockConnect.mockRejectedValue(
         new MockMismatch('db', 'h', 22, 'SHA256:stored', 'SHA256:scanned'),
       );
@@ -296,7 +325,9 @@ describe('routeSSHRequest', () => {
     it('disconnects and returns ok', async () => {
       mockDisconnect.mockResolvedValue(undefined);
       const deps = makeDeps();
-      const res = await request(deps, 'POST', '/ssh/disconnect', { alias: 'db' });
+      const res = await request(deps, 'POST', '/ssh/disconnect', {
+        alias: 'db',
+      });
       expect(res.body.status).toBe('ok');
       expect(mockDisconnect).toHaveBeenCalledWith(scope, 'db');
     });
@@ -313,7 +344,15 @@ describe('routeSSHRequest', () => {
   describe('GET /ssh/connections', () => {
     it('returns active connections', async () => {
       mockListConnections.mockReturnValue([
-        { alias: 'db', host: 'h', port: 22, username: 'u', socketPath: '/tmp/s', scope: 'test' as any, hostKeyAction: 'accepted' },
+        {
+          alias: 'db',
+          host: 'h',
+          port: 22,
+          username: 'u',
+          socketPath: '/tmp/s',
+          scope: 'test' as any,
+          hostKeyAction: 'accepted',
+        },
       ]);
       const deps = makeDeps();
       const res = await request(deps, 'GET', '/ssh/connections');

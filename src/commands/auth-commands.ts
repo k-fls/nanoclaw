@@ -19,7 +19,11 @@ import {
   hasSubscriptionCredential,
   PROVIDER_ID as CLAUDE_PROVIDER_ID,
 } from '../auth/providers/claude.js';
-import { handleSetKey, handleDeleteKeys, handleImport } from '../auth/key-management.js';
+import {
+  handleSetKey,
+  handleDeleteKeys,
+  handleImport,
+} from '../auth/key-management.js';
 import { isGpgAvailable, ensureGpgKey, exportPublicKey } from '../auth/gpg.js';
 import { runReauth } from '../auth/reauth.js';
 import { getTokenEngine } from '../auth/registry.js';

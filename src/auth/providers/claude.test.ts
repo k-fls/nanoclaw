@@ -122,7 +122,9 @@ describe('claudeProvider', () => {
       });
 
       expect(result.env.ANTHROPIC_API_KEY).toBeDefined();
-      expect(result.env.ANTHROPIC_API_KEY!.slice(0, 14)).toBe(real.slice(0, 14));
+      expect(result.env.ANTHROPIC_API_KEY!.slice(0, 14)).toBe(
+        real.slice(0, 14),
+      );
       expect(result.env.ANTHROPIC_API_KEY).not.toBe(real);
     });
 
@@ -202,7 +204,9 @@ describe('claudeProvider', () => {
         realAccess.slice(0, 14),
       );
       // Refresh token is NOT in env — only in .credentials.json
-      expect((result.env as Record<string, unknown>).CLAUDE_REFRESH_TOKEN).toBeUndefined();
+      expect(
+        (result.env as Record<string, unknown>).CLAUDE_REFRESH_TOKEN,
+      ).toBeUndefined();
     });
   });
 
@@ -242,7 +246,9 @@ describe('claudeProvider', () => {
           'sk-ant-api03-from-env-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
 
-      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const engine = new TokenSubstituteEngine(
+        new PersistentCredentialResolver(),
+      );
       claudeProvider.importEnv!(TEST_CRED_SCOPE, engine);
     });
 
@@ -271,7 +277,9 @@ describe('claudeProvider', () => {
       vi.mocked(readEnvFile).mockReset();
       vi.mocked(readEnvFile).mockReturnValue({});
 
-      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const engine = new TokenSubstituteEngine(
+        new PersistentCredentialResolver(),
+      );
       claudeProvider.importEnv!(asCredentialScope('empty-env-scope'), engine);
     });
   });

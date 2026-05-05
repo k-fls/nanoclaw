@@ -166,9 +166,14 @@ export async function runInteractiveKeySetup(
   }
 
   // GPG prompt — sends key, instructions, loops until valid input or cancel
-  const plaintext = await promptGpgEncrypt(groupScope, chat, AUTH_PROMPT_TIMEOUT, {
-    hint: `key for ${providerId} (${credentialId})`,
-  });
+  const plaintext = await promptGpgEncrypt(
+    groupScope,
+    chat,
+    AUTH_PROMPT_TIMEOUT,
+    {
+      hint: `key for ${providerId} (${credentialId})`,
+    },
+  );
   if (!plaintext) return false;
 
   const { needsRestart } = storeProviderKey(
@@ -210,7 +215,10 @@ export async function handleSetKey(
 
   // Parse optional credential ID and expiry from tokens before the PGP block.
   const pgpIdx = argsAfterSetKey.indexOf(PGP_BEGIN);
-  const prefix = pgpIdx >= 0 ? argsAfterSetKey.slice(0, pgpIdx).trim() : argsAfterSetKey.trim();
+  const prefix =
+    pgpIdx >= 0
+      ? argsAfterSetKey.slice(0, pgpIdx).trim()
+      : argsAfterSetKey.trim();
   const tokens = prefix.split(/\s+/).filter(Boolean);
   let credentialId: string | undefined;
   let expiry = 0;
@@ -251,9 +259,14 @@ export async function handleSetKey(
     }
   } else {
     // No PGP block — fall through to interactive GPG prompt
-    const result = await promptGpgEncrypt(groupScope, chat, AUTH_PROMPT_TIMEOUT, {
-      hint: `your ${providerId} key`,
-    });
+    const result = await promptGpgEncrypt(
+      groupScope,
+      chat,
+      AUTH_PROMPT_TIMEOUT,
+      {
+        hint: `your ${providerId} key`,
+      },
+    );
     if (!result) return null;
     plaintext = result;
   }
@@ -272,7 +285,10 @@ export async function handleSetKey(
     msg +=
       '\n⚠️ Container restart may be needed for the new key to take effect.';
   }
-  logger.info({ groupScope, providerId, credentialId }, 'Key stored via set-key');
+  logger.info(
+    { groupScope, providerId, credentialId },
+    'Key stored via set-key',
+  );
   return msg;
 }
 
@@ -355,10 +371,22 @@ export function applyProviderEntries(
 ): ApplyResult {
   const provider = getDiscoveryProvider(providerId);
   if (!provider) {
-    return { providerId, count: 0, envVars: [], warnings: ['unknown provider'], needsRestart: false };
+    return {
+      providerId,
+      count: 0,
+      envVars: [],
+      warnings: ['unknown provider'],
+      needsRestart: false,
+    };
   }
   if (!isKeyEligibleProvider(providerId)) {
-    return { providerId, count: 0, envVars: [], warnings: ['no bearer-swap rules'], needsRestart: false };
+    return {
+      providerId,
+      count: 0,
+      envVars: [],
+      warnings: ['no bearer-swap rules'],
+      needsRestart: false,
+    };
   }
 
   // Reverse map: envVarName → credentialPath (e.g. GH_TOKEN → oauth)
@@ -371,7 +399,14 @@ export function applyProviderEntries(
 
   for (const [key, value] of entries) {
     const credentialPath = envToCredPath.get(key) ?? key;
-    const r = storeProviderKey(providerId, groupScope, credentialPath, value, 0, tokenEngine);
+    const r = storeProviderKey(
+      providerId,
+      groupScope,
+      credentialPath,
+      value,
+      0,
+      tokenEngine,
+    );
     if (r.needsRestart) needsRestart = true;
     count++;
 
@@ -382,7 +417,12 @@ export function applyProviderEntries(
       continue;
     }
     tokenEngine.getOrCreateSubstitute(
-      providerId, {}, groupScope, provider.substituteConfig, credentialPath, [key],
+      providerId,
+      {},
+      groupScope,
+      provider.substituteConfig,
+      credentialPath,
+      [key],
     );
     envVars.push(key);
   }
@@ -396,35 +436,43 @@ export function renderSummary(
   lineWarnings: string[],
 ): string {
   const parts: string[] = [];
-  const needsRestart = results.some(r => r.needsRestart);
+  const needsRestart = results.some((r) => r.needsRestart);
 
   if (isBulk) {
     const total = results.reduce((s, r) => s + r.count, 0);
-    const ok = results.filter(r => r.count > 0).length;
+    const ok = results.filter((r) => r.count > 0).length;
     parts.push(
       `Imported ${total} credential${total !== 1 ? 's' : ''} ` +
         `across ${ok} provider${ok !== 1 ? 's' : ''}.`,
     );
     for (const r of results) {
-      const segs = [`*${r.providerId}*: ${r.count} key${r.count !== 1 ? 's' : ''}`];
+      const segs = [
+        `*${r.providerId}*: ${r.count} key${r.count !== 1 ? 's' : ''}`,
+      ];
       if (r.envVars.length) segs.push(`env: ${r.envVars.join(', ')}`);
       if (r.warnings.length) segs.push(`warn: ${r.warnings.join('; ')}`);
       parts.push('  - ' + segs.join(' | '));
     }
   } else {
     const r = results[0];
-    parts.push(`Imported ${r.count} credential${r.count !== 1 ? 's' : ''} for *${r.providerId}*.`);
+    parts.push(
+      `Imported ${r.count} credential${r.count !== 1 ? 's' : ''} for *${r.providerId}*.`,
+    );
     if (r.envVars.length) parts.push(`Env vars: ${r.envVars.join(', ')}`);
     if (r.warnings.length) {
-      parts.push(`Warnings:\n${r.warnings.map(w => `  - ${w}`).join('\n')}`);
+      parts.push(`Warnings:\n${r.warnings.map((w) => `  - ${w}`).join('\n')}`);
     }
   }
 
   if (lineWarnings.length) {
-    parts.push(`Skipped lines:\n${lineWarnings.map(w => `  - ${w}`).join('\n')}`);
+    parts.push(
+      `Skipped lines:\n${lineWarnings.map((w) => `  - ${w}`).join('\n')}`,
+    );
   }
   if (needsRestart) {
-    parts.push('⚠️ Container restart may be needed for new keys to take effect.');
+    parts.push(
+      '⚠️ Container restart may be needed for new keys to take effect.',
+    );
   }
   return parts.join('\n');
 }
@@ -454,17 +502,25 @@ export async function handleImport(
     if (!isGpgAvailable()) return 'GPG is not available. Install gnupg first.';
     ensureGpgKey(groupScope);
     try {
-      plaintext = gpgDecrypt(groupScope, normalizeArmoredBlock(argsAfterImport.slice(pgpIdx)));
+      plaintext = gpgDecrypt(
+        groupScope,
+        normalizeArmoredBlock(argsAfterImport.slice(pgpIdx)),
+      );
     } catch (err) {
       logger.error({ groupScope, err }, 'GPG decrypt failed in import');
       return 'Failed to decrypt PGP message. Make sure you encrypted with the correct public key.';
     }
   } else {
-    const result = await promptGpgEncrypt(groupScope, chat, AUTH_PROMPT_TIMEOUT, {
-      hint: defaultProviderId
-        ? `key=value pairs for ${defaultProviderId}`
-        : 'provider:key=value pairs',
-    });
+    const result = await promptGpgEncrypt(
+      groupScope,
+      chat,
+      AUTH_PROMPT_TIMEOUT,
+      {
+        hint: defaultProviderId
+          ? `key=value pairs for ${defaultProviderId}`
+          : 'provider:key=value pairs',
+      },
+    );
     if (!result) return null;
     plaintext = result;
   }
@@ -476,10 +532,16 @@ export async function handleImport(
 
   for (const [prefix, entries] of tokenized) {
     // Single-provider mode: ignore lines that target a different provider.
-    if (defaultProviderId !== null && prefix !== null && prefix !== defaultProviderId) {
+    if (
+      defaultProviderId !== null &&
+      prefix !== null &&
+      prefix !== defaultProviderId
+    ) {
       for (const [key, value] of entries) {
         const label = value === null ? key : `${key}=${value}`;
-        lineWarnings.push(`ignored (${prefix} ≠ ${defaultProviderId}): ${label}`);
+        lineWarnings.push(
+          `ignored (${prefix} ≠ ${defaultProviderId}): ${label}`,
+        );
       }
       continue;
     }
@@ -515,7 +577,7 @@ export async function handleImport(
       ? 'No valid provider:key=value pairs found in decrypted message.'
       : 'No valid KEY=VALUE pairs found in decrypted message.';
     return lineWarnings.length
-      ? `${base}\nSkipped lines:\n${lineWarnings.map(w => `  - ${w}`).join('\n')}`
+      ? `${base}\nSkipped lines:\n${lineWarnings.map((w) => `  - ${w}`).join('\n')}`
       : base;
   }
 
@@ -527,7 +589,7 @@ export async function handleImport(
     {
       groupScope,
       defaultProviderId,
-      results: results.map(r => ({ id: r.providerId, count: r.count })),
+      results: results.map((r) => ({ id: r.providerId, count: r.count })),
     },
     'Credentials imported',
   );

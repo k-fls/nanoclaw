@@ -10,7 +10,11 @@ import fs from 'fs';
 import path from 'path';
 
 import { readKeysFile } from '../token-substitute.js';
-import { asGroupScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from '../oauth-types.js';
+import {
+  asGroupScope,
+  CRED_OAUTH,
+  CRED_OAUTH_REFRESH,
+} from '../oauth-types.js';
 import { scopeOf } from '../../types.js';
 import type { CredentialScope } from '../oauth-types.js';
 import { authSessionDir, scopeClaudeDir } from '../exec.js';
@@ -163,7 +167,6 @@ const CLAUDE_ENV_VARS: Record<string, string> = {
 
 /** Credential paths that satisfy auth for Claude. At least one must have a usable credential. */
 const AUTH_CREDS = ['api_key', CRED_OAUTH] as const;
-
 
 /** Claude CLI session dir mount — provider-specific. */
 function claudeExecOpts(sessionDir: string): AuthExecOpts {
@@ -686,14 +689,25 @@ export const claudeProvider: CredentialProvider = {
   hasAuthCredentials(groupScope, tokenEngine) {
     let found = false;
     for (const cp of AUTH_CREDS) {
-      if (tokenEngine.getOrCreateSubstitute(PROVIDER_ID, {}, groupScope, CLAUDE_SUBSTITUTE_CONFIG, cp) !== null) {
+      if (
+        tokenEngine.getOrCreateSubstitute(
+          PROVIDER_ID,
+          {},
+          groupScope,
+          CLAUDE_SUBSTITUTE_CONFIG,
+          cp,
+        ) !== null
+      ) {
         found = true;
       }
     }
     return found;
   },
 
-  importEnv(scope: CredentialScope, engine: import('../token-substitute.js').TokenSubstituteEngine): void {
+  importEnv(
+    scope: CredentialScope,
+    engine: import('../token-substitute.js').TokenSubstituteEngine,
+  ): void {
     importEnvCredentials(
       CLAUDE_ENV_VARS,
       PROVIDER_ID,
@@ -703,7 +717,9 @@ export const claudeProvider: CredentialProvider = {
         value: _value,
         expires_ts: 0,
         updated_ts: Date.now(),
-        ...(credentialPath === CRED_OAUTH && { authFields: CLAUDE_DEFAULT_AUTH_FIELDS }),
+        ...(credentialPath === CRED_OAUTH && {
+          authFields: CLAUDE_DEFAULT_AUTH_FIELDS,
+        }),
       }),
     );
   },

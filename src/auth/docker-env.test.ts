@@ -3,7 +3,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { parseEnvCustomJsonl, validateEnvVarName, writeEnvVarsFile } from './docker-env.js';
+import {
+  parseEnvCustomJsonl,
+  validateEnvVarName,
+  writeEnvVarsFile,
+} from './docker-env.js';
 
 describe('validateEnvVarName', () => {
   it('accepts valid names', () => {
@@ -154,7 +158,7 @@ describe('parseEnvCustomJsonl', () => {
   it('handles broken append (truncated JSON at end of file)', () => {
     const content = [
       '{"name":"BEFORE","value":"ok"}',
-      '{"name":"TRUNCA',  // simulates partial write / crash mid-append
+      '{"name":"TRUNCA', // simulates partial write / crash mid-append
     ].join('\n');
 
     expect(parseEnvCustomJsonl(content, noClaimed)).toEqual({ BEFORE: 'ok' });
@@ -170,7 +174,8 @@ describe('parseEnvCustomJsonl', () => {
   });
 
   it('preserves values containing special characters', () => {
-    const content = '{"name":"MY_URL","value":"https://example.com/path?q=1&x=2"}';
+    const content =
+      '{"name":"MY_URL","value":"https://example.com/path?q=1&x=2"}';
     expect(parseEnvCustomJsonl(content, noClaimed)).toEqual({
       MY_URL: 'https://example.com/path?q=1&x=2',
     });
@@ -212,9 +217,7 @@ describe('writeEnvVarsFile', () => {
   });
 
   it('merges custom env vars after credential vars', () => {
-    writeCustomJsonl([
-      '{"name":"MY_API_URL","value":"https://example.com"}',
-    ]);
+    writeCustomJsonl(['{"name":"MY_API_URL","value":"https://example.com"}']);
 
     writeEnvVarsFile(
       { GH_TOKEN: 'ghp_sub' },

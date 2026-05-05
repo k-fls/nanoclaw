@@ -29,10 +29,14 @@ export const DOCKER_ENV_NAMES = [
   'BASH_ENV',
 ] as const;
 
-export type DockerEnvName = typeof DOCKER_ENV_NAMES[number];
+export type DockerEnvName = (typeof DOCKER_ENV_NAMES)[number];
 
 /** Type-safe Docker `-e` push. Only names in DOCKER_ENV_NAMES are accepted. */
-export function pushEnv(args: string[], key: DockerEnvName, value: string): void {
+export function pushEnv(
+  args: string[],
+  key: DockerEnvName,
+  value: string,
+): void {
   args.push('-e', `${key}=${value}`);
 }
 
@@ -43,8 +47,18 @@ export const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]{0,127}$/;
 
 /** Dangerous Linux/bash/Node vars that aren't in DOCKER_ENV_NAMES but must never be overwritten. */
 export const DANGEROUS_ENV_NAMES = new Set([
-  'PATH', 'SHELL', 'USER', 'LOGNAME', 'PWD', 'OLDPWD', 'TERM',
-  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'IFS', 'CDPATH', 'ENV',
+  'PATH',
+  'SHELL',
+  'USER',
+  'LOGNAME',
+  'PWD',
+  'OLDPWD',
+  'TERM',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'IFS',
+  'CDPATH',
+  'ENV',
   'NODE_OPTIONS',
 ]);
 
@@ -110,7 +124,10 @@ export function writeEnvVarsFile(
 
   // 3. Agent-written custom env vars (curated: reserved/invalid/overridden excluded)
   try {
-    const customContent = fs.readFileSync(path.join(groupDir, 'env-custom.jsonl'), 'utf-8');
+    const customContent = fs.readFileSync(
+      path.join(groupDir, 'env-custom.jsonl'),
+      'utf-8',
+    );
     const customVars = parseEnvCustomJsonl(customContent, claimedNames);
     for (const [k, v] of Object.entries(customVars)) {
       lines.push(`export ${k}=${v}`);
@@ -140,7 +157,8 @@ export function parseEnvCustomJsonl(
     }
 
     if (
-      typeof parsed !== 'object' || parsed === null ||
+      typeof parsed !== 'object' ||
+      parsed === null ||
       typeof (parsed as any).name !== 'string' ||
       typeof (parsed as any).value !== 'string'
     ) {

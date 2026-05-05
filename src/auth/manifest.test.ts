@@ -257,7 +257,9 @@ describe('manifest distribution to grantees', () => {
           folder: 'grantor-g',
           trigger: '',
           added_at: '',
-          containerConfig: { credentialGrantees: new Set(['grantee-a', 'grantee-b']) },
+          containerConfig: {
+            credentialGrantees: new Set(['grantee-a', 'grantee-b']),
+          },
         };
       }
       return undefined;
@@ -267,10 +269,16 @@ describe('manifest distribution to grantees', () => {
     await flush();
 
     // Both grantees should have received the manifest
-    expect(readGrantedManifest('grantee-a', 'grantor-g', 'claude')).toHaveLength(1);
-    expect(readGrantedManifest('grantee-b', 'grantor-g', 'claude')).toHaveLength(1);
+    expect(
+      readGrantedManifest('grantee-a', 'grantor-g', 'claude'),
+    ).toHaveLength(1);
+    expect(
+      readGrantedManifest('grantee-b', 'grantor-g', 'claude'),
+    ).toHaveLength(1);
 
-    const entry = JSON.parse(readGrantedManifest('grantee-a', 'grantor-g', 'claude')[0]);
+    const entry = JSON.parse(
+      readGrantedManifest('grantee-a', 'grantor-g', 'claude')[0],
+    );
     expect(entry).toEqual({
       provider: 'claude',
       name: 'oauth',
@@ -301,12 +309,16 @@ describe('manifest distribution to grantees', () => {
     // Write first
     onKeysFileWritten(scope, 'claude');
     await flush();
-    expect(readGrantedManifest('grantee-del', 'grantor-del', 'claude')).toHaveLength(1);
+    expect(
+      readGrantedManifest('grantee-del', 'grantor-del', 'claude'),
+    ).toHaveLength(1);
 
     // Delete
     onKeysFileDeleted(scope, 'claude');
     await flush();
-    expect(readGrantedManifest('grantee-del', 'grantor-del', 'claude')).toHaveLength(0);
+    expect(
+      readGrantedManifest('grantee-del', 'grantor-del', 'claude'),
+    ).toHaveLength(0);
   });
 
   it('onKeysFileDeleted without providerId removes whole scope from grantees', async () => {
@@ -336,8 +348,12 @@ describe('manifest distribution to grantees', () => {
     onKeysFileWritten(scope, 'claude');
     onKeysFileWritten(scope, 'github');
     await flush();
-    expect(readGrantedManifest('grantee-whole', 'grantor-whole', 'claude')).toHaveLength(1);
-    expect(readGrantedManifest('grantee-whole', 'grantor-whole', 'github')).toHaveLength(1);
+    expect(
+      readGrantedManifest('grantee-whole', 'grantor-whole', 'claude'),
+    ).toHaveLength(1);
+    expect(
+      readGrantedManifest('grantee-whole', 'grantor-whole', 'github'),
+    ).toHaveLength(1);
 
     // Delete whole scope (no providerId)
     onKeysFileDeleted(scope);
@@ -400,8 +416,12 @@ describe('distributeAllManifests', () => {
     // Now distribute to a new grantee
     distributeAllManifests('dist-all', 'new-grantee');
 
-    expect(readGrantedManifest('new-grantee', 'dist-all', 'claude')).toHaveLength(1);
-    expect(readGrantedManifest('new-grantee', 'dist-all', 'github')).toHaveLength(1);
+    expect(
+      readGrantedManifest('new-grantee', 'dist-all', 'claude'),
+    ).toHaveLength(1);
+    expect(
+      readGrantedManifest('new-grantee', 'dist-all', 'github'),
+    ).toHaveLength(1);
   });
 
   it('no-op when grantor has no manifests', () => {
@@ -426,7 +446,9 @@ describe('revokeGranteeManifests', () => {
     setManifestGroupResolver(() => undefined);
     onKeysFileWritten(scope, 'claude');
     distributeAllManifests('revoke-g', 'target-grantee');
-    expect(readGrantedManifest('target-grantee', 'revoke-g', 'claude')).toHaveLength(1);
+    expect(
+      readGrantedManifest('target-grantee', 'revoke-g', 'claude'),
+    ).toHaveLength(1);
 
     revokeGranteeManifests('revoke-g', 'target-grantee');
 
@@ -453,7 +475,12 @@ describe('revokeGranteeManifests', () => {
 
     // Create borrowed symlink pointing to this grantor
     createBorrowedLink('link-grantee', 'revoke-link');
-    const borrowedLink = path.join(groupsDir, 'link-grantee', 'credentials', 'borrowed');
+    const borrowedLink = path.join(
+      groupsDir,
+      'link-grantee',
+      'credentials',
+      'borrowed',
+    );
     expect(fs.lstatSync(borrowedLink).isSymbolicLink()).toBe(true);
 
     // Revoke — should also remove the borrowed symlink
@@ -463,7 +490,12 @@ describe('revokeGranteeManifests', () => {
 
   it('keeps borrowed symlink if it points to a different grantor', () => {
     createBorrowedLink('keep-grantee', 'other-grantor');
-    const borrowedLink = path.join(groupsDir, 'keep-grantee', 'credentials', 'borrowed');
+    const borrowedLink = path.join(
+      groupsDir,
+      'keep-grantee',
+      'credentials',
+      'borrowed',
+    );
     expect(fs.lstatSync(borrowedLink).isSymbolicLink()).toBe(true);
 
     // Revoke a different grantor — symlink should survive
@@ -471,7 +503,10 @@ describe('revokeGranteeManifests', () => {
     expect(fs.lstatSync(borrowedLink).isSymbolicLink()).toBe(true);
 
     // Clean up
-    fs.rmSync(path.join(groupsDir, 'keep-grantee'), { recursive: true, force: true });
+    fs.rmSync(path.join(groupsDir, 'keep-grantee'), {
+      recursive: true,
+      force: true,
+    });
   });
 });
 
@@ -483,7 +518,12 @@ describe('createBorrowedLink / removeBorrowedLink', () => {
   it('creates a symlink at credentials/borrowed pointing to granted/{grantor}', () => {
     createBorrowedLink('borrow-grantee', 'the-grantor');
 
-    const link = path.join(groupsDir, 'borrow-grantee', 'credentials', 'borrowed');
+    const link = path.join(
+      groupsDir,
+      'borrow-grantee',
+      'credentials',
+      'borrowed',
+    );
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     expect(fs.readlinkSync(link)).toBe('granted/the-grantor');
   });
@@ -492,7 +532,12 @@ describe('createBorrowedLink / removeBorrowedLink', () => {
     createBorrowedLink('switch-grantee', 'grantor-1');
     createBorrowedLink('switch-grantee', 'grantor-2');
 
-    const link = path.join(groupsDir, 'switch-grantee', 'credentials', 'borrowed');
+    const link = path.join(
+      groupsDir,
+      'switch-grantee',
+      'credentials',
+      'borrowed',
+    );
     expect(fs.readlinkSync(link)).toBe('granted/grantor-2');
   });
 
@@ -546,17 +591,35 @@ describe('regenerateAllManifests', () => {
     // Scope A
     const scopeA = path.join(credDir, 'scope-a');
     fs.mkdirSync(scopeA, { recursive: true });
-    fs.writeFileSync(path.join(scopeA, 'claude.keys.json'), JSON.stringify({ v: 1 }));
-    fs.writeFileSync(path.join(scopeA, 'github.keys.json'), JSON.stringify({ v: 1 }));
+    fs.writeFileSync(
+      path.join(scopeA, 'claude.keys.json'),
+      JSON.stringify({ v: 1 }),
+    );
+    fs.writeFileSync(
+      path.join(scopeA, 'github.keys.json'),
+      JSON.stringify({ v: 1 }),
+    );
 
     // Scope B
     const scopeB = path.join(credDir, 'scope-b');
     fs.mkdirSync(scopeB, { recursive: true });
-    fs.writeFileSync(path.join(scopeB, 'claude.keys.json'), JSON.stringify({ v: 1 }));
+    fs.writeFileSync(
+      path.join(scopeB, 'claude.keys.json'),
+      JSON.stringify({ v: 1 }),
+    );
 
-    mockKeysData['scope-a/claude'] = { v: 1, oauth: { value: 'a', expires_ts: 0, updated_ts: 0 } };
-    mockKeysData['scope-a/github'] = { v: 1, pat: { value: 'b', expires_ts: 0, updated_ts: 0 } };
-    mockKeysData['scope-b/claude'] = { v: 1, oauth: { value: 'c', expires_ts: 0, updated_ts: 0 } };
+    mockKeysData['scope-a/claude'] = {
+      v: 1,
+      oauth: { value: 'a', expires_ts: 0, updated_ts: 0 },
+    };
+    mockKeysData['scope-a/github'] = {
+      v: 1,
+      pat: { value: 'b', expires_ts: 0, updated_ts: 0 },
+    };
+    mockKeysData['scope-b/claude'] = {
+      v: 1,
+      oauth: { value: 'c', expires_ts: 0, updated_ts: 0 },
+    };
 
     regenerateAllManifests();
 

@@ -91,7 +91,11 @@ export function provisionFromMapping(
   const env: Record<string, string> = {};
   for (const [envName, credentialPath] of Object.entries(mapping)) {
     const sub = engine.getOrCreateSubstitute(
-      providerId, {}, groupScope, config, credentialPath,
+      providerId,
+      {},
+      groupScope,
+      config,
+      credentialPath,
     );
     if (sub) env[envName] = sub;
   }
@@ -152,9 +156,8 @@ export function createAccessCheck(
     const grantor = groupResolver(asGroupScope(sourceScope as string));
     if (!grantor) return false;
     const granted =
-      grantor.containerConfig?.credentialGrantees?.has(
-        groupScope as string,
-      ) === true;
+      grantor.containerConfig?.credentialGrantees?.has(groupScope as string) ===
+      true;
 
     if (!granted) {
       logger.warn(

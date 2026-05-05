@@ -19,7 +19,11 @@ import type { ChatIO } from './types.js';
 import type { GroupScope } from './oauth-types.js';
 import { logger } from '../logger.js';
 
-export { isGpgAvailable, isPgpMessage, normalizeArmoredBlock } from '../crypto/index.js';
+export {
+  isGpgAvailable,
+  isPgpMessage,
+  normalizeArmoredBlock,
+} from '../crypto/index.js';
 import { normalizeArmoredBlock } from '../crypto/index.js';
 
 // Eagerly bind the default base dir so callers never need to pass it.
@@ -62,7 +66,10 @@ export function gpgDecrypt(scope: GroupScope, ciphertext: string): string {
  *
  * @param pgpEncryptUrl — pre-built URL with embedded key (from buildPgpEncryptUrl)
  */
-export function formatGpgInstructions(pgpEncryptUrl: string, hint?: string): string {
+export function formatGpgInstructions(
+  pgpEncryptUrl: string,
+  hint?: string,
+): string {
   const what = hint ?? 'your secret';
   return (
     `Encrypt ${what}:\n\n` +
@@ -168,7 +175,9 @@ export async function promptGpgEncrypt(
     // Optional caller validation (e.g. "must start with sk-ant-api")
     const validationError = opts?.validate?.(plaintext) ?? null;
     if (validationError) {
-      await chat.send(validationError + '\n\nTry again, or reply *0* to abort.');
+      await chat.send(
+        validationError + '\n\nTry again, or reply *0* to abort.',
+      );
       continue;
     }
 

@@ -197,11 +197,9 @@ export function exportPublicKeyBinary(baseDir: string, scope: string): Buffer {
   regenerateIfExpired(baseDir, scope);
 
   const home = gpgHome(baseDir, scope);
-  return execFileSync(
-    GPG_BIN,
-    ['--homedir', home, '--export', KEY_ID],
-    { stdio: ['pipe', 'pipe', 'pipe'] },
-  );
+  return execFileSync(GPG_BIN, ['--homedir', home, '--export', KEY_ID], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { asGroupScope, asCredentialScope, CRED_OAUTH, CRED_OAUTH_REFRESH } from './oauth-types.js';
+import {
+  asGroupScope,
+  asCredentialScope,
+  CRED_OAUTH,
+  CRED_OAUTH_REFRESH,
+} from './oauth-types.js';
 import type { ChatIO } from './types.js';
 import type { OAuthProvider } from './oauth-types.js';
 
@@ -160,8 +165,18 @@ function mockTokenEngine(opts?: {
       resolveCredentialScope: vi.fn(() => TEST_CRED_SCOPE),
       getSubstitute: vi.fn(() => opts?.existingSubstitute ?? null),
       storeGroupCredential: vi.fn(
-        (_groupScope: any, providerId: string, credentialId: string, credential: any) => {
-          stored.push({ providerId, credentialScope: String(_groupScope), credentialId, credential });
+        (
+          _groupScope: any,
+          providerId: string,
+          credentialId: string,
+          credential: any,
+        ) => {
+          stored.push({
+            providerId,
+            credentialScope: String(_groupScope),
+            credentialId,
+            credential,
+          });
         },
       ),
       clearCredentials: vi.fn(),
@@ -235,7 +250,11 @@ describe('getProviderCredentialIds', () => {
     const { engine } = mockTokenEngine({
       existingRoles: [CRED_OAUTH, 'api_key'],
     });
-    const ids = getProviderCredentialIds('test-provider', TEST_GROUP_SCOPE, engine);
+    const ids = getProviderCredentialIds(
+      'test-provider',
+      TEST_GROUP_SCOPE,
+      engine,
+    );
     expect(ids.has(CRED_OAUTH)).toBe(true);
     expect(ids.has('api_key')).toBe(true);
   });
@@ -698,15 +717,23 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('GH_TOKEN=tok1\napi_key=tok2');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Imported 2 credentials for *github*');
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'github', CRED_OAUTH, // GH_TOKEN → oauth via envVars
+      TEST_GROUP_SCOPE,
+      'github',
+      CRED_OAUTH, // GH_TOKEN → oauth via envVars
       expect.objectContaining({ value: 'tok1' }),
     );
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'github', 'api_key', // lowercase key stored under its own name
+      TEST_GROUP_SCOPE,
+      'github',
+      'api_key', // lowercase key stored under its own name
       expect.objectContaining({ value: 'tok2' }),
     );
   });
@@ -715,7 +742,11 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('GH_TOKEN=tok1\napi_key=tok2');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Env vars: GH_TOKEN');
     expect(engine.getOrCreateSubstitute).toHaveBeenCalledTimes(1);
@@ -725,11 +756,17 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('github:GH_TOKEN=tok1');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Imported 1 credential for *github*');
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'github', CRED_OAUTH,
+      TEST_GROUP_SCOPE,
+      'github',
+      CRED_OAUTH,
       expect.objectContaining({ value: 'tok1' }),
     );
   });
@@ -738,13 +775,20 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('GH_TOKEN=tok1\nslack:TOKEN=oops');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Imported 1 credential for *github*');
     expect(result).toMatch(/ignored \(slack ≠ github\)/);
     // slack credential was not written
     expect(engine.storeGroupCredential).not.toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'slack', expect.anything(), expect.anything(),
+      TEST_GROUP_SCOPE,
+      'slack',
+      expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -752,7 +796,11 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('# just a comment\n\n');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('No valid KEY=VALUE pairs');
   });
@@ -761,7 +809,11 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('GH_TOKEN=tok');
     const { engine } = mockTokenEngine({ existingSubstitute: null });
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('restart');
   });
@@ -774,17 +826,25 @@ describe('handleImport', () => {
     );
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      null, PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      null,
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Imported 2 credentials across 2 providers');
     expect(result).toContain('*github*: 1 key');
     expect(result).toContain('*slack*: 1 key');
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'github', CRED_OAUTH,
+      TEST_GROUP_SCOPE,
+      'github',
+      CRED_OAUTH,
       expect.objectContaining({ value: 'tokA' }),
     );
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'slack', CRED_OAUTH,
+      TEST_GROUP_SCOPE,
+      'slack',
+      CRED_OAUTH,
       expect.objectContaining({ value: 'tokB' }),
     );
   });
@@ -793,7 +853,11 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('github:GH_TOKEN=tok\nlonely=x');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      null, PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      null,
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Imported 1 credential across 1 provider');
     expect(result).toMatch(/no provider: lonely=x/);
@@ -803,7 +867,11 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('bogus:KEY=val\ngithub:GH_TOKEN=real');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      null, PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      null,
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('*bogus*: 0 keys');
     expect(result).toContain('unknown provider');
@@ -814,7 +882,11 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('# comment only');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      null, PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      null,
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('No valid provider:key=value pairs');
   });
@@ -822,12 +894,14 @@ describe('handleImport', () => {
   // ── tokenization edge cases surfaced via handleImport ───────────────────
 
   it('skips comments and blank lines', async () => {
-    mockGpgDecrypt.mockReturnValue(
-      '# header\n\nGH_TOKEN=tok\n# trailing\n',
-    );
+    mockGpgDecrypt.mockReturnValue('# header\n\nGH_TOKEN=tok\n# trailing\n');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Imported 1 credential');
     expect(engine.storeGroupCredential).toHaveBeenCalledTimes(1);
@@ -837,7 +911,11 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('GH_TOKEN=ok\njustwords');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Imported 1 credential');
     expect(result).toMatch(/malformed: justwords/);
@@ -847,11 +925,17 @@ describe('handleImport', () => {
     mockGpgDecrypt.mockReturnValue('GH_TOKEN=\napi_key=real');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toMatch(/empty value: GH_TOKEN/);
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'github', 'api_key',
+      TEST_GROUP_SCOPE,
+      'github',
+      'api_key',
       expect.objectContaining({ value: 'real' }),
     );
   });
@@ -859,11 +943,11 @@ describe('handleImport', () => {
   it('treats colon after = as part of the value, not a prefix', async () => {
     mockGpgDecrypt.mockReturnValue('api_key=host:port:segment');
     const { engine } = mockTokenEngine();
-    await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
-    );
+    await handleImport('github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat);
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'github', 'api_key',
+      TEST_GROUP_SCOPE,
+      'github',
+      'api_key',
       expect.objectContaining({ value: 'host:port:segment' }),
     );
   });
@@ -874,7 +958,11 @@ describe('handleImport', () => {
     mockPromptGpgEncrypt.mockResolvedValue('GH_TOKEN=tok');
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', 'no pgp here', TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      'no pgp here',
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(mockPromptGpgEncrypt).toHaveBeenCalled();
     expect(result).toContain('Imported 1 credential');
@@ -884,7 +972,11 @@ describe('handleImport', () => {
     mockPromptGpgEncrypt.mockResolvedValue(null);
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      null, 'just text', TEST_GROUP_SCOPE, engine, chat,
+      null,
+      'just text',
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toBeNull();
   });
@@ -895,7 +987,11 @@ describe('handleImport', () => {
     });
     const { engine } = mockTokenEngine();
     const result = await handleImport(
-      'github', PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+      'github',
+      PGP_ENCRYPTED,
+      TEST_GROUP_SCOPE,
+      engine,
+      chat,
     );
     expect(result).toContain('Failed to decrypt');
   });
@@ -999,7 +1095,10 @@ describe('applyProviderEntries', () => {
     const { engine } = mockTokenEngine();
     const r = applyProviderEntries(
       'github',
-      new Map([['GH_TOKEN', 'tokA'], ['api_key', 'tokB']]),
+      new Map([
+        ['GH_TOKEN', 'tokA'],
+        ['api_key', 'tokB'],
+      ]),
       TEST_GROUP_SCOPE,
       engine,
     );
@@ -1018,7 +1117,9 @@ describe('applyProviderEntries', () => {
     );
     // GH_TOKEN maps to CRED_OAUTH via envVars
     expect(engine.storeGroupCredential).toHaveBeenCalledWith(
-      TEST_GROUP_SCOPE, 'github', CRED_OAUTH,
+      TEST_GROUP_SCOPE,
+      'github',
+      CRED_OAUTH,
       expect.objectContaining({ value: 'tok' }),
     );
   });
@@ -1065,15 +1166,15 @@ describe('applyProviderEntries', () => {
 
 describe('renderSummary', () => {
   const success = (id: string, count: number, envVars: string[] = []): any => ({
-    providerId: id, count, envVars, warnings: [], needsRestart: false,
+    providerId: id,
+    count,
+    envVars,
+    warnings: [],
+    needsRestart: false,
   });
 
   it('single-provider: reports count + env vars', () => {
-    const out = renderSummary(
-      [success('github', 2, ['GH_TOKEN'])],
-      false,
-      [],
-    );
+    const out = renderSummary([success('github', 2, ['GH_TOKEN'])], false, []);
     expect(out).toContain('Imported 2 credentials for *github*');
     expect(out).toContain('Env vars: GH_TOKEN');
   });
@@ -1098,7 +1199,13 @@ describe('renderSummary', () => {
   it('bulk: excludes zero-count providers from "successful" count', () => {
     const out = renderSummary(
       [
-        { providerId: 'bogus', count: 0, envVars: [], warnings: ['unknown provider'], needsRestart: false },
+        {
+          providerId: 'bogus',
+          count: 0,
+          envVars: [],
+          warnings: ['unknown provider'],
+          needsRestart: false,
+        },
         success('github', 1),
       ],
       true,
@@ -1110,11 +1217,10 @@ describe('renderSummary', () => {
   });
 
   it('appends skipped-line section when line warnings are present', () => {
-    const out = renderSummary(
-      [success('github', 1)],
-      false,
-      ['malformed: foo', 'empty value: BAR'],
-    );
+    const out = renderSummary([success('github', 1)], false, [
+      'malformed: foo',
+      'empty value: BAR',
+    ]);
     expect(out).toContain('Skipped lines:');
     expect(out).toContain('- malformed: foo');
     expect(out).toContain('- empty value: BAR');

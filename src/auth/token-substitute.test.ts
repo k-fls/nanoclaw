@@ -940,8 +940,18 @@ describe('TokenSubstituteEngine', () => {
         resolve = () => reject(new Error('boom'));
       });
 
-      const p1 = engine.sharedOp(credScope, 'provider', 'refresh', () => blocker);
-      const p2 = engine.sharedOp(credScope, 'provider', 'refresh', () => blocker);
+      const p1 = engine.sharedOp(
+        credScope,
+        'provider',
+        'refresh',
+        () => blocker,
+      );
+      const p2 = engine.sharedOp(
+        credScope,
+        'provider',
+        'refresh',
+        () => blocker,
+      );
 
       resolve();
 
@@ -1165,9 +1175,9 @@ describe('TokenSubstituteEngine', () => {
         updated_ts: Date.now(),
       });
 
-      expect(engine.resolveCredentialScope(borrower, 'claude', CRED_OAUTH)).toBe(
-        asCredentialScope('source-grp'),
-      );
+      expect(
+        engine.resolveCredentialScope(borrower, 'claude', CRED_OAUTH),
+      ).toBe(asCredentialScope('source-grp'));
     });
 
     it('prefers own scope over credentialSource when own has the key', () => {
@@ -1290,8 +1300,13 @@ describe('TokenSubstituteEngine', () => {
 
       // Generate substitute with sourceScope (borrowed)
       engine.generateSubstitute(
-        real, 'claude', {}, borrower, DEFAULT_SUBSTITUTE_CONFIG,
-        CRED_OAUTH, sourceCredScope,
+        real,
+        'claude',
+        {},
+        borrower,
+        DEFAULT_SUBSTITUTE_CONFIG,
+        CRED_OAUTH,
+        sourceCredScope,
       );
       expect(engine.size).toBe(1);
 
@@ -1331,9 +1346,7 @@ describe('TokenSubstituteEngine', () => {
       expect(engine.size).toBe(0);
 
       // Own credentials should be deleted
-      expect(
-        resolver.resolve(ownCredScope, 'claude', CRED_OAUTH),
-      ).toBeNull();
+      expect(resolver.resolve(ownCredScope, 'claude', CRED_OAUTH)).toBeNull();
     });
   });
 
@@ -1365,7 +1378,10 @@ describe('TokenSubstituteEngine', () => {
       });
 
       const sub = engine.getOrCreateSubstitute(
-        'claude', {}, borrower, DEFAULT_SUBSTITUTE_CONFIG,
+        'claude',
+        {},
+        borrower,
+        DEFAULT_SUBSTITUTE_CONFIG,
       );
       expect(sub).not.toBeNull();
 
@@ -1387,7 +1403,10 @@ describe('TokenSubstituteEngine', () => {
       }));
 
       const sub = engine.getOrCreateSubstitute(
-        'claude', {}, empty, DEFAULT_SUBSTITUTE_CONFIG,
+        'claude',
+        {},
+        empty,
+        DEFAULT_SUBSTITUTE_CONFIG,
       );
       expect(sub).toBeNull();
     });
@@ -1398,7 +1417,11 @@ describe('TokenSubstituteEngine', () => {
   describe('envNames', () => {
     const envScope = asGroupScope('env-scope');
     const envCredScope = asCredentialScope('env-scope');
-    const envConfig: SubstituteConfig = { prefixLen: 4, suffixLen: 4, delimiters: '-' };
+    const envConfig: SubstituteConfig = {
+      prefixLen: 4,
+      suffixLen: 4,
+      delimiters: '-',
+    };
 
     function storeToken(providerId: string): void {
       resolver.store(providerId, envCredScope, CRED_OAUTH, {
@@ -1412,7 +1435,12 @@ describe('TokenSubstituteEngine', () => {
       storeToken('github');
       const sub = engine.generateSubstitute(
         'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
-        'github', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        'github',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
+        undefined,
         ['GH_TOKEN', 'GITHUB_TOKEN'],
       );
       expect(sub).not.toBeNull();
@@ -1426,20 +1454,29 @@ describe('TokenSubstituteEngine', () => {
       storeToken('dedup-gen');
       const sub = engine.generateSubstitute(
         'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
-        'dedup-gen', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        'dedup-gen',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
+        undefined,
         ['MY_TOKEN', 'MY_TOKEN', 'MY_TOKEN'],
       );
       expect(sub).not.toBeNull();
 
       const vars = engine.collectEnvVars(envScope);
       // Only one entry for MY_TOKEN
-      expect(Object.keys(vars).filter(k => k === 'MY_TOKEN')).toHaveLength(1);
+      expect(Object.keys(vars).filter((k) => k === 'MY_TOKEN')).toHaveLength(1);
     });
 
     it('getOrCreateSubstitute passes envNames to new substitutes', () => {
       storeToken('orcreate-env');
       const sub = engine.getOrCreateSubstitute(
-        'orcreate-env', {}, envScope, envConfig, CRED_OAUTH,
+        'orcreate-env',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
         ['MY_VAR'],
       );
       expect(sub).not.toBeNull();
@@ -1451,14 +1488,22 @@ describe('TokenSubstituteEngine', () => {
     it('getOrCreateSubstitute merges envNames into existing substitutes', () => {
       storeToken('merge-env');
       const sub1 = engine.getOrCreateSubstitute(
-        'merge-env', {}, envScope, envConfig, CRED_OAUTH,
+        'merge-env',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
         ['FIRST_VAR'],
       );
       expect(sub1).not.toBeNull();
 
       // Call again with different envNames — should merge
       const sub2 = engine.getOrCreateSubstitute(
-        'merge-env', {}, envScope, envConfig, CRED_OAUTH,
+        'merge-env',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
         ['SECOND_VAR'],
       );
       expect(sub2).toBe(sub1); // same substitute
@@ -1471,12 +1516,19 @@ describe('TokenSubstituteEngine', () => {
     it('mergeEnvNames adds new names without duplicating', () => {
       storeToken('merge-dedup');
       const sub = engine.getOrCreateSubstitute(
-        'merge-dedup', {}, envScope, envConfig, CRED_OAUTH,
+        'merge-dedup',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
         ['EXISTING'],
       );
       expect(sub).not.toBeNull();
 
-      engine.mergeEnvNames(envScope, 'merge-dedup', sub!, ['EXISTING', 'NEW_ONE']);
+      engine.mergeEnvNames(envScope, 'merge-dedup', sub!, [
+        'EXISTING',
+        'NEW_ONE',
+      ]);
 
       const vars = engine.collectEnvVars(envScope);
       expect(vars.EXISTING).toBe(sub);
@@ -1486,7 +1538,11 @@ describe('TokenSubstituteEngine', () => {
     it('mergeEnvNames produces sorted output regardless of insertion order', () => {
       storeToken('merge-sort');
       const sub = engine.getOrCreateSubstitute(
-        'merge-sort', {}, envScope, envConfig, CRED_OAUTH,
+        'merge-sort',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
         ['ZEBRA', 'ALPHA'],
       );
       expect(sub).not.toBeNull();
@@ -1520,12 +1576,22 @@ describe('TokenSubstituteEngine', () => {
 
       const subA = engine.generateSubstitute(
         'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
-        'provider-a', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        'provider-a',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
+        undefined,
         ['TOKEN_A'],
       );
       const subB = engine.generateSubstitute(
         'tok_env_bbbb_xxxxxxxxxxxxxxxxxxxxxxxxxx',
-        'provider-b', {}, envScope, envConfig, CRED_OAUTH, undefined,
+        'provider-b',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
+        undefined,
         ['TOKEN_B'],
       );
 
@@ -1538,7 +1604,11 @@ describe('TokenSubstituteEngine', () => {
       storeToken('no-env');
       engine.generateSubstitute(
         'tok_env_test_xxxxxxxxxxxxxxxxxxxxxxxxxx',
-        'no-env', {}, envScope, envConfig, CRED_OAUTH,
+        'no-env',
+        {},
+        envScope,
+        envConfig,
+        CRED_OAUTH,
       );
       // No envNames set
 

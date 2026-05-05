@@ -17,13 +17,7 @@
  *
  * Tests are auto-skipped if Docker or the image is unavailable.
  */
-import {
-  describe,
-  it,
-  expect,
-  beforeAll,
-  afterAll,
-} from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -48,7 +42,10 @@ import { CONTAINER_RUNTIME_BIN } from '../../container-runtime.js';
 const SCOPE = 'ssh-e2e-test';
 const ALIAS = 'e2e-sshd';
 
-function generateKeyPair(dir: string): { privateKey: string; publicKey: string } {
+function generateKeyPair(dir: string): {
+  privateKey: string;
+  publicKey: string;
+} {
   const keyPath = path.join(dir, 'key');
   execSync(`ssh-keygen -t ed25519 -f ${keyPath} -N "" -C nanoclaw-e2e`, {
     stdio: 'pipe',
@@ -112,7 +109,7 @@ function startSshdContainer(publicKey: string): {
       'set -e',
       'apk add --no-cache openssh >/dev/null',
       'adduser -D -s /bin/sh testuser',
-      'passwd -u testuser',  // unlock account — locked accounts reject pubkey auth
+      'passwd -u testuser', // unlock account — locked accounts reject pubkey auth
       'mkdir -p /home/testuser/.ssh',
       `echo '${publicKey}' > /home/testuser/.ssh/authorized_keys`,
       'chmod 755 /home/testuser',
@@ -129,13 +126,20 @@ function startSshdContainer(publicKey: string): {
   execSync(
     [
       CONTAINER_RUNTIME_BIN,
-      'run', '-d',
-      '--name', containerName,
-      '-p', `${proxyBind}:0:22`,
-      '-v', `${sshdConfig}:/etc/ssh/sshd_config:ro`,
-      '-v', `${hostKeyPath}:/etc/ssh/ssh_host_ed25519_key:ro`,
-      '-v', `${hostKeyPath}.pub:/etc/ssh/ssh_host_ed25519_key.pub:ro`,
-      '-v', `${initScript}:/init.sh:ro`,
+      'run',
+      '-d',
+      '--name',
+      containerName,
+      '-p',
+      `${proxyBind}:0:22`,
+      '-v',
+      `${sshdConfig}:/etc/ssh/sshd_config:ro`,
+      '-v',
+      `${hostKeyPath}:/etc/ssh/ssh_host_ed25519_key:ro`,
+      '-v',
+      `${hostKeyPath}.pub:/etc/ssh/ssh_host_ed25519_key.pub:ro`,
+      '-v',
+      `${initScript}:/init.sh:ro`,
       'alpine:latest',
       '/init.sh',
     ].join(' '),
@@ -152,10 +156,13 @@ function startSshdContainer(publicKey: string): {
         { encoding: 'utf-8', stdio: 'pipe' },
       ).trim();
       if (status !== 'running') {
-        const logs = execSync(`${CONTAINER_RUNTIME_BIN} logs ${containerName} 2>&1`, {
-          encoding: 'utf-8',
-          stdio: 'pipe',
-        });
+        const logs = execSync(
+          `${CONTAINER_RUNTIME_BIN} logs ${containerName} 2>&1`,
+          {
+            encoding: 'utf-8',
+            stdio: 'pipe',
+          },
+        );
         throw new Error(`sshd container exited (${status}):\n${logs}`);
       }
       // Check sshd is listening
@@ -166,7 +173,8 @@ function startSshdContainer(publicKey: string): {
       ready = true;
       break;
     } catch (err) {
-      if (err instanceof Error && err.message.includes('sshd container exited')) throw err;
+      if (err instanceof Error && err.message.includes('sshd container exited'))
+        throw err;
       execSync('sleep 0.5', { stdio: 'pipe' });
     }
   }
@@ -206,153 +214,155 @@ function startSshdContainer(publicKey: string): {
 
 const canRun = isDockerAvailable() && isImageAvailable();
 
-describe.skipIf(!canRun)('SSH e2e (Docker)', () => {
-  let h: OAuthE2EHarness;
-  let sshd: ReturnType<typeof startSshdContainer>;
-  let keyPair: { privateKey: string; publicKey: string };
-  let tmpDir: string;
+describe.skipIf(!canRun)(
+  'SSH e2e (Docker)',
+  () => {
+    let h: OAuthE2EHarness;
+    let sshd: ReturnType<typeof startSshdContainer>;
+    let keyPair: { privateKey: string; publicKey: string };
+    let tmpDir: string;
 
-  beforeAll(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-e2e-'));
+    beforeAll(async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-e2e-'));
 
-    // 1. Generate client keypair
-    keyPair = generateKeyPair(tmpDir);
+      // 1. Generate client keypair
+      keyPair = generateKeyPair(tmpDir);
 
-    // 2. Start sshd container
-    sshd = startSshdContainer(keyPair.publicKey);
+      // 2. Start sshd container
+      sshd = startSshdContainer(keyPair.publicKey);
 
-    // 3. Start the e2e harness (proxy, Docker networking, etc.)
-    h = new OAuthE2EHarness();
-    await h.start();
+      // 3. Start the e2e harness (proxy, Docker networking, etc.)
+      h = new OAuthE2EHarness();
+      await h.start();
 
-    // 4. Initialize the SSH subsystem with the harness resolver
-    initSSHSystem(
-      h.resolver,
-      () => undefined,
-      () => true,
-      h.proxy,
-    );
+      // 4. Initialize the SSH subsystem with the harness resolver
+      initSSHSystem(
+        h.resolver,
+        () => undefined,
+        () => true,
+        h.proxy,
+      );
 
-    // 5. Store the SSH credential
-    const meta: SSHCredentialMeta = {
-      host: sshd.host,
-      port: sshd.port,
-      username: sshd.username,
-      authType: 'key',
-      publicKey: keyPair.publicKey,
-      hostKey: '*', // accept-any for test (no TOFU delay)
-    };
-    h.resolver.store(
-      'ssh',
-      asCredentialScope(SCOPE),
-      ALIAS,
-      sshToCredential(keyPair.privateKey, meta),
-    );
-  }, 120_000);
+      // 5. Store the SSH credential
+      const meta: SSHCredentialMeta = {
+        host: sshd.host,
+        port: sshd.port,
+        username: sshd.username,
+        authType: 'key',
+        publicKey: keyPair.publicKey,
+        hostKey: '*', // accept-any for test (no TOFU delay)
+      };
+      h.resolver.store(
+        'ssh',
+        asCredentialScope(SCOPE),
+        ALIAS,
+        sshToCredential(keyPair.privateKey, meta),
+      );
+    }, 120_000);
 
-  afterAll(async () => {
-    // Disconnect all SSH connections
-    try {
-      const mgr = getSSHManager();
-      await mgr.disconnectAll(asGroupScope(SCOPE));
-    } catch {}
+    afterAll(async () => {
+      // Disconnect all SSH connections
+      try {
+        const mgr = getSSHManager();
+        await mgr.disconnectAll(asGroupScope(SCOPE));
+      } catch {}
 
-    sshd?.stop();
-    await h?.stop();
+      sshd?.stop();
+      await h?.stop();
 
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
-  }, 30_000);
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {}
+    }, 30_000);
 
-  it('full loop: connect → use socket → list → disconnect', async () => {
-    const proxyHost = detectProxyBind();
-    const proxyPort = h.proxyPort;
+    it('full loop: connect → use socket → list → disconnect', async () => {
+      const proxyHost = detectProxyBind();
+      const proxyPort = h.proxyPort;
 
-    // Step 1: Connect via proxy
-    const connectResult = await h.runInContainer(
-      `curl -sf -X POST -H "Content-Type: application/json" ` +
-        `-d '{"alias":"${ALIAS}"}' ` +
-        `http://${proxyHost}:${proxyPort}/ssh/connect`,
-      { scope: SCOPE, timeoutMs: 30_000 },
-    );
+      // Step 1: Connect via proxy
+      const connectResult = await h.runInContainer(
+        `curl -sf -X POST -H "Content-Type: application/json" ` +
+          `-d '{"alias":"${ALIAS}"}' ` +
+          `http://${proxyHost}:${proxyPort}/ssh/connect`,
+        { scope: SCOPE, timeoutMs: 30_000 },
+      );
 
-    expect(connectResult.exitCode).toBe(0);
-    const connectBody = JSON.parse(connectResult.stdout.trim());
-    expect(connectBody.status).toBe('ok');
-    expect(connectBody.usage).toContain(ALIAS);
+      expect(connectResult.exitCode).toBe(0);
+      const connectBody = JSON.parse(connectResult.stdout.trim());
+      expect(connectBody.status).toBe('ok');
+      expect(connectBody.usage).toContain(ALIAS);
 
-    // Step 2: Verify socket exists in container
-    const lsResult = await h.runInContainer(
-      `ls -la /ssh-sockets/`,
-      { scope: SCOPE, timeoutMs: 10_000 },
-    );
-    expect(lsResult.stdout).toContain(`${ALIAS}.sock`);
+      // Step 2: Verify socket exists in container
+      const lsResult = await h.runInContainer(`ls -la /ssh-sockets/`, {
+        scope: SCOPE,
+        timeoutMs: 10_000,
+      });
+      expect(lsResult.stdout).toContain(`${ALIAS}.sock`);
 
-    // Step 3: ssh — run a command through the ControlMaster socket
-    const dest = `${sshd.username}@${sshd.host}`;
-    const sshResult = await h.runInContainer(
-      `ssh -o ControlPath=/ssh-sockets/${ALIAS}.sock _ whoami`,
-      { scope: SCOPE, timeoutMs: 15_000 },
-    );
-    expect(sshResult.exitCode).toBe(0);
-    expect(sshResult.stdout.trim()).toBe(sshd.username);
+      // Step 3: ssh — run a command through the ControlMaster socket
+      const dest = `${sshd.username}@${sshd.host}`;
+      const sshResult = await h.runInContainer(
+        `ssh -o ControlPath=/ssh-sockets/${ALIAS}.sock _ whoami`,
+        { scope: SCOPE, timeoutMs: 15_000 },
+      );
+      expect(sshResult.exitCode).toBe(0);
+      expect(sshResult.stdout.trim()).toBe(sshd.username);
 
-    // Step 4: scp — copy a file to the remote and verify it arrived
-    const scpResult = await h.runInContainer(
-      `echo "scp-test-content" > /tmp/scp-test.txt && ` +
-        `scp -o ControlPath=/ssh-sockets/${ALIAS}.sock /tmp/scp-test.txt ${dest}:/tmp/ && ` +
-        `ssh -o ControlPath=/ssh-sockets/${ALIAS}.sock _ cat /tmp/scp-test.txt`,
-      { scope: SCOPE, timeoutMs: 15_000 },
-    );
-    expect(scpResult.exitCode).toBe(0);
-    expect(scpResult.stdout.trim()).toBe('scp-test-content');
+      // Step 4: scp — copy a file to the remote and verify it arrived
+      const scpResult = await h.runInContainer(
+        `echo "scp-test-content" > /tmp/scp-test.txt && ` +
+          `scp -o ControlPath=/ssh-sockets/${ALIAS}.sock /tmp/scp-test.txt ${dest}:/tmp/ && ` +
+          `ssh -o ControlPath=/ssh-sockets/${ALIAS}.sock _ cat /tmp/scp-test.txt`,
+        { scope: SCOPE, timeoutMs: 15_000 },
+      );
+      expect(scpResult.exitCode).toBe(0);
+      expect(scpResult.stdout.trim()).toBe('scp-test-content');
 
-    // Step 5: List connections via proxy
-    const listResult = await h.runInContainer(
-      `curl -sf http://${proxyHost}:${proxyPort}/ssh/connections`,
-      { scope: SCOPE, timeoutMs: 10_000 },
-    );
-    const listBody = JSON.parse(listResult.stdout.trim());
-    expect(listBody.status).toBe('ok');
-    expect(listBody.connections).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ alias: ALIAS }),
-      ]),
-    );
+      // Step 5: List connections via proxy
+      const listResult = await h.runInContainer(
+        `curl -sf http://${proxyHost}:${proxyPort}/ssh/connections`,
+        { scope: SCOPE, timeoutMs: 10_000 },
+      );
+      const listBody = JSON.parse(listResult.stdout.trim());
+      expect(listBody.status).toBe('ok');
+      expect(listBody.connections).toEqual(
+        expect.arrayContaining([expect.objectContaining({ alias: ALIAS })]),
+      );
 
-    // Step 6: Disconnect via proxy
-    const disconnectResult = await h.runInContainer(
-      `curl -sf -X POST -H "Content-Type: application/json" ` +
-        `-d '{"alias":"${ALIAS}"}' ` +
-        `http://${proxyHost}:${proxyPort}/ssh/disconnect`,
-      { scope: SCOPE, timeoutMs: 10_000 },
-    );
-    const disconnectBody = JSON.parse(disconnectResult.stdout.trim());
-    expect(disconnectBody.status).toBe('ok');
+      // Step 6: Disconnect via proxy
+      const disconnectResult = await h.runInContainer(
+        `curl -sf -X POST -H "Content-Type: application/json" ` +
+          `-d '{"alias":"${ALIAS}"}' ` +
+          `http://${proxyHost}:${proxyPort}/ssh/disconnect`,
+        { scope: SCOPE, timeoutMs: 10_000 },
+      );
+      const disconnectBody = JSON.parse(disconnectResult.stdout.trim());
+      expect(disconnectBody.status).toBe('ok');
 
-    // Step 7: Verify socket is gone
-    const lsAfter = await h.runInContainer(
-      `ls /ssh-sockets/ 2>&1 || echo EMPTY`,
-      { scope: SCOPE, timeoutMs: 10_000 },
-    );
-    expect(lsAfter.stdout).not.toContain(`${ALIAS}.sock`);
-  }, 90_000);
+      // Step 7: Verify socket is gone
+      const lsAfter = await h.runInContainer(
+        `ls /ssh-sockets/ 2>&1 || echo EMPTY`,
+        { scope: SCOPE, timeoutMs: 10_000 },
+      );
+      expect(lsAfter.stdout).not.toContain(`${ALIAS}.sock`);
+    }, 90_000);
 
-  it('request-credential returns existing credential', async () => {
-    const proxyHost = detectProxyBind();
-    const proxyPort = h.proxyPort;
+    it('request-credential returns existing credential', async () => {
+      const proxyHost = detectProxyBind();
+      const proxyPort = h.proxyPort;
 
-    const result = await h.runInContainer(
-      `curl -sf -X POST -H "Content-Type: application/json" ` +
-        `-d '{"alias":"${ALIAS}","mode":"ask","connection_host":"${sshd.host}"}' ` +
-        `http://${proxyHost}:${proxyPort}/ssh/request-credential`,
-      { scope: SCOPE, timeoutMs: 15_000 },
-    );
+      const result = await h.runInContainer(
+        `curl -sf -X POST -H "Content-Type: application/json" ` +
+          `-d '{"alias":"${ALIAS}","mode":"ask","connection_host":"${sshd.host}"}' ` +
+          `http://${proxyHost}:${proxyPort}/ssh/request-credential`,
+        { scope: SCOPE, timeoutMs: 15_000 },
+      );
 
-    expect(result.exitCode).toBe(0);
-    const body = JSON.parse(result.stdout.trim());
-    expect(body.status).toBe('ok');
-    expect(body.publicKey).toContain('ssh-ed25519');
-  }, 30_000);
-}, 300_000);
+      expect(result.exitCode).toBe(0);
+      const body = JSON.parse(result.stdout.trim());
+      expect(body.status).toBe('ok');
+      expect(body.publicKey).toContain('ssh-ed25519');
+    }, 30_000);
+  },
+  300_000,
+);

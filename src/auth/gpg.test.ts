@@ -49,8 +49,12 @@ function createChat(replies: Array<string | null>) {
   return {
     sent,
     sentRaw,
-    send: vi.fn(async (text: string) => { sent.push(text); }),
-    sendRaw: vi.fn(async (text: string) => { sentRaw.push(text); }),
+    send: vi.fn(async (text: string) => {
+      sent.push(text);
+    }),
+    sendRaw: vi.fn(async (text: string) => {
+      sentRaw.push(text);
+    }),
     receive: vi.fn(async () => {
       const reply = replyIndex < replies.length ? replies[replyIndex] : null;
       replyIndex++;
@@ -142,7 +146,10 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
     expect(binaryKey.length).toBeGreaterThan(0);
 
     // Verify SHA-256 hash matches
-    const expectedHash = crypto.createHash('sha256').update(binaryKey).digest('hex');
+    const expectedHash = crypto
+      .createHash('sha256')
+      .update(binaryKey)
+      .digest('hex');
     expect(hashParam).toBe(expectedHash);
 
     // Import the binary key into a fresh GPG homedir — proves it's a real PGP key
@@ -158,7 +165,9 @@ describe.skipIf(!gpgAvailable)('GPG integration', () => {
       'gpg',
       ['--homedir', verifyHome, '--armor', '--export', 'nanoclaw'],
       { stdio: ['pipe', 'pipe', 'pipe'] },
-    ).toString('utf-8').trim();
+    )
+      .toString('utf-8')
+      .trim();
     const original = exportPublicKey(SCOPE_A);
     expect(reExported).toBe(original);
   });
@@ -258,7 +267,10 @@ describe('formatGpgInstructions', () => {
 
 describe.skipIf(!gpgAvailable)('promptGpgEncrypt', () => {
   /** Encrypt plaintext with the scope's public key (simulates user side). */
-  function encryptForScope(scope: import('./oauth-types.js').GroupScope, plaintext: string): string {
+  function encryptForScope(
+    scope: import('./oauth-types.js').GroupScope,
+    plaintext: string,
+  ): string {
     ensureGpgKey(scope);
     const pubKey = exportPublicKey(scope);
     const userGpgHome = path.join(tmpDir, `user-gpg-${Date.now()}`);
@@ -269,8 +281,17 @@ describe.skipIf(!gpgAvailable)('promptGpgEncrypt', () => {
     });
     return execFileSync(
       'gpg',
-      ['--homedir', userGpgHome, '--batch', '--trust-model', 'always',
-       '--encrypt', '--armor', '--recipient', 'nanoclaw'],
+      [
+        '--homedir',
+        userGpgHome,
+        '--batch',
+        '--trust-model',
+        'always',
+        '--encrypt',
+        '--armor',
+        '--recipient',
+        'nanoclaw',
+      ],
       { input: plaintext, stdio: ['pipe', 'pipe', 'pipe'] },
     ).toString('utf-8');
   }
@@ -290,7 +311,11 @@ describe.skipIf(!gpgAvailable)('promptGpgEncrypt', () => {
     const chat = createChat([encrypted]);
 
     await promptGpgEncrypt(SCOPE_A, chat, 5000);
-    expect(chat.sent.some((m) => m.includes('https://k-fls.github.io/pgp-encrypt/?key='))).toBe(true);
+    expect(
+      chat.sent.some((m) =>
+        m.includes('https://k-fls.github.io/pgp-encrypt/?key='),
+      ),
+    ).toBe(true);
   });
 
   it('sends instructions with abort hint', async () => {
@@ -325,7 +350,9 @@ describe.skipIf(!gpgAvailable)('promptGpgEncrypt', () => {
 
     const result = await promptGpgEncrypt(SCOPE_A, chat, 5000);
     expect(result).toBe('secret');
-    expect(chat.sent.some((m) => m.includes('Expected a GPG-encrypted message'))).toBe(true);
+    expect(
+      chat.sent.some((m) => m.includes('Expected a GPG-encrypted message')),
+    ).toBe(true);
     // hideMessage called for both attempts
     expect(chat.hideMessage).toHaveBeenCalledTimes(2);
   });
@@ -336,10 +363,13 @@ describe.skipIf(!gpgAvailable)('promptGpgEncrypt', () => {
     const chat = createChat([bad, good]);
 
     const result = await promptGpgEncrypt(SCOPE_A, chat, 5000, {
-      validate: (pt) => pt.startsWith('sk-ant-api') ? null : 'Must start with sk-ant-api',
+      validate: (pt) =>
+        pt.startsWith('sk-ant-api') ? null : 'Must start with sk-ant-api',
     });
     expect(result).toBe('sk-ant-api03-valid');
-    expect(chat.sent.some((m) => m.includes('Must start with sk-ant-api'))).toBe(true);
+    expect(
+      chat.sent.some((m) => m.includes('Must start with sk-ant-api')),
+    ).toBe(true);
   });
 
   it('retries on decrypt failure then accepts cancel', async () => {
@@ -358,6 +388,8 @@ describe.skipIf(!gpgAvailable)('promptGpgEncrypt', () => {
     const chat = createChat(['0']);
 
     await promptGpgEncrypt(SCOPE_A, chat, 5000, { hint: 'your API token' });
-    expect(chat.sent.some((m) => m.includes('Encrypt your API token'))).toBe(true);
+    expect(chat.sent.some((m) => m.includes('Encrypt your API token'))).toBe(
+      true,
+    );
   });
 });

@@ -80,7 +80,7 @@ export function fingerprintEqual(a: string, b: string): boolean {
   if (prefixA.startsWith('md5:')) {
     return a.toLowerCase() === b.toLowerCase();
   }
-  
+
   // SHA256: prefix is case-insensitive, base64 payload is case-sensitive
   if (prefixA === 'sha256:' && b.substring(0, 7).toLowerCase() === 'sha256:') {
     return a.slice(7) === b.slice(7);

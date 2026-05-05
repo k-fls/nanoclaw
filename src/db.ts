@@ -650,7 +650,9 @@ import type { ContainerConfig } from './types.js';
 /** Hydrate Set fields after JSON.parse (credentialGrantees: array → Set). */
 function hydrateContainerConfig(raw: ContainerConfig): ContainerConfig {
   if (Array.isArray(raw.credentialGrantees)) {
-    raw.credentialGrantees = new Set(raw.credentialGrantees as unknown as string[]);
+    raw.credentialGrantees = new Set(
+      raw.credentialGrantees as unknown as string[],
+    );
   }
   return raw;
 }
@@ -708,9 +710,11 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.folder,
     group.trigger,
     group.added_at,
-    group.containerConfig ? JSON.stringify(group.containerConfig, (_k, v) =>
-      v instanceof Set ? [...v].sort() : v,
-    ) : null,
+    group.containerConfig
+      ? JSON.stringify(group.containerConfig, (_k, v) =>
+          v instanceof Set ? [...v].sort() : v,
+        )
+      : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     group.isMain ? 1 : 0,
   );

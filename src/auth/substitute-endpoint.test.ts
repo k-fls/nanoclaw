@@ -11,9 +11,12 @@ vi.mock('./registry.js', () => ({
   getTokenEngine: vi.fn(),
 }));
 
-
 import { handleSubstituteRequest } from './substitute-endpoint.js';
-import { getDiscoveryProvider, getProvider, getTokenEngine } from './registry.js';
+import {
+  getDiscoveryProvider,
+  getProvider,
+  getTokenEngine,
+} from './registry.js';
 
 const mockGetDiscoveryProvider = vi.mocked(getDiscoveryProvider);
 const mockGetProvider = vi.mocked(getProvider);
@@ -46,9 +49,7 @@ function mockResponse(): http.ServerResponse & {
 
 const SCOPE = asGroupScope('test-group');
 
-function setupGithubProvider(
-  mockEngine?: Record<string, any>,
-) {
+function setupGithubProvider(mockEngine?: Record<string, any>) {
   mockGetDiscoveryProvider.mockReturnValue({
     id: 'github',
     rules: [],
@@ -60,7 +61,9 @@ function setupGithubProvider(
   mockGetProvider.mockReturnValue(undefined);
   mockGetTokenEngine.mockReturnValue(
     (mockEngine ?? {
-      getOrCreateSubstitute: vi.fn().mockReturnValue('ghp_FaKeSuBsTiTuTe1234567890abcdef'),
+      getOrCreateSubstitute: vi
+        .fn()
+        .mockReturnValue('ghp_FaKeSuBsTiTuTe1234567890abcdef'),
       mergeEnvNames: vi.fn(),
     }) as any,
   );
@@ -90,7 +93,9 @@ describe('substitute-endpoint', () => {
       SCOPE,
     );
     expect(res._status).toBe(400);
-    expect(JSON.parse(res._body).error).toMatch(/Missing required query parameter: path/);
+    expect(JSON.parse(res._body).error).toMatch(
+      /Missing required query parameter: path/,
+    );
   });
 
   it('returns 404 for unknown provider', () => {
@@ -174,7 +179,11 @@ describe('substitute-endpoint', () => {
     );
 
     expect(mockEngine.getOrCreateSubstitute).toHaveBeenCalledWith(
-      'todoist', {}, SCOPE, subConfig, 'api_key',
+      'todoist',
+      {},
+      SCOPE,
+      subConfig,
+      'api_key',
       ['TODOIST_API_TOKEN'],
     );
 
@@ -262,12 +271,16 @@ describe('substitute-endpoint', () => {
 
       const res = mockResponse();
       handleSubstituteRequest(
-        mockRequest('/credentials/github/substitute?path=oauth&envVar=my_token'),
+        mockRequest(
+          '/credentials/github/substitute?path=oauth&envVar=my_token',
+        ),
         res,
         SCOPE,
       );
       expect(res._status).toBe(400);
-      expect(JSON.parse(res._body).error).toMatch(/Invalid env var name format/);
+      expect(JSON.parse(res._body).error).toMatch(
+        /Invalid env var name format/,
+      );
     });
 
     it('rejects reserved Docker env var names', () => {
@@ -275,7 +288,9 @@ describe('substitute-endpoint', () => {
 
       const res = mockResponse();
       handleSubstituteRequest(
-        mockRequest('/credentials/github/substitute?path=oauth&envVar=PROXY_HOST'),
+        mockRequest(
+          '/credentials/github/substitute?path=oauth&envVar=PROXY_HOST',
+        ),
         res,
         SCOPE,
       );
@@ -289,7 +304,9 @@ describe('substitute-endpoint', () => {
       for (const name of ['PATH', 'LD_PRELOAD', 'NODE_OPTIONS']) {
         const res = mockResponse();
         handleSubstituteRequest(
-          mockRequest(`/credentials/github/substitute?path=oauth&envVar=${name}`),
+          mockRequest(
+            `/credentials/github/substitute?path=oauth&envVar=${name}`,
+          ),
           res,
           SCOPE,
         );
@@ -303,7 +320,9 @@ describe('substitute-endpoint', () => {
 
       const res = mockResponse();
       handleSubstituteRequest(
-        mockRequest('/credentials/github/substitute?path=oauth&envVar=ANTHROPIC_API_KEY'),
+        mockRequest(
+          '/credentials/github/substitute?path=oauth&envVar=ANTHROPIC_API_KEY',
+        ),
         res,
         SCOPE,
       );
@@ -320,7 +339,9 @@ describe('substitute-endpoint', () => {
 
       const res = mockResponse();
       handleSubstituteRequest(
-        mockRequest('/credentials/github/substitute?path=oauth&envVar=MY_GITHUB'),
+        mockRequest(
+          '/credentials/github/substitute?path=oauth&envVar=MY_GITHUB',
+        ),
         res,
         SCOPE,
       );
@@ -332,7 +353,10 @@ describe('substitute-endpoint', () => {
 
       // mergeEnvNames called to persist custom envVar on existing entry
       expect(mockEngine.mergeEnvNames).toHaveBeenCalledWith(
-        SCOPE, 'github', 'ghp_sub123', ['MY_GITHUB'],
+        SCOPE,
+        'github',
+        'ghp_sub123',
+        ['MY_GITHUB'],
       );
     });
 
@@ -345,7 +369,9 @@ describe('substitute-endpoint', () => {
 
       const res = mockResponse();
       handleSubstituteRequest(
-        mockRequest('/credentials/github/substitute?path=oauth&envVar=GH_TOKEN'),
+        mockRequest(
+          '/credentials/github/substitute?path=oauth&envVar=GH_TOKEN',
+        ),
         res,
         SCOPE,
       );
@@ -362,7 +388,9 @@ describe('substitute-endpoint', () => {
       for (const name of ['MY_TOKEN', 'CUSTOM_API_KEY', '_PRIVATE', 'A']) {
         const res = mockResponse();
         handleSubstituteRequest(
-          mockRequest(`/credentials/github/substitute?path=oauth&envVar=${name}`),
+          mockRequest(
+            `/credentials/github/substitute?path=oauth&envVar=${name}`,
+          ),
           res,
           SCOPE,
         );
@@ -375,12 +403,16 @@ describe('substitute-endpoint', () => {
 
       const res = mockResponse();
       handleSubstituteRequest(
-        mockRequest('/credentials/github/substitute?path=oauth&envVar=3INVALID'),
+        mockRequest(
+          '/credentials/github/substitute?path=oauth&envVar=3INVALID',
+        ),
         res,
         SCOPE,
       );
       expect(res._status).toBe(400);
-      expect(JSON.parse(res._body).error).toMatch(/Invalid env var name format/);
+      expect(JSON.parse(res._body).error).toMatch(
+        /Invalid env var name format/,
+      );
     });
   });
 });

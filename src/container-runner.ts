@@ -122,7 +122,8 @@ export function snapshotContainerFiles(): void {
   fs.cpSync(src, _snapshotDir, {
     recursive: true,
     preserveTimestamps: true,
-    filter: (s) => !path.relative(src, s).split(path.sep).includes('node_modules'),
+    filter: (s) =>
+      !path.relative(src, s).split(path.sep).includes('node_modules'),
   });
   logger.info({ dir: _snapshotDir }, 'Container directory snapshotted');
 }
@@ -455,20 +456,25 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
-  const containerArgs = buildContainerArgs(
-    mounts,
-    containerName,
-    containerIP,
-  );
+  const containerArgs = buildContainerArgs(mounts, containerName, containerIP);
 
   // Credential proxy args: MITM certs, iptables env vars, substitute tokens, user mapping.
   // Discovery providers return env vars for ~/.env-vars instead of Docker -e.
-  const envFileVars = applyCredentialProxyArgs(containerArgs, group, tokenEngine);
+  const envFileVars = applyCredentialProxyArgs(
+    containerArgs,
+    group,
+    tokenEngine,
+  );
 
   // Build ~/.env-vars: credential substitutes + refs env vars + curated agent env-custom.jsonl
   const refsEnvVars = tokenEngine.collectEnvVars(scopeOf(group));
   const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder, 'home');
-  writeEnvVarsFile(envFileVars, refsEnvVars, groupDir, path.join(groupHomeDir, '.env-vars'));
+  writeEnvVarsFile(
+    envFileVars,
+    refsEnvVars,
+    groupDir,
+    path.join(groupHomeDir, '.env-vars'),
+  );
 
   // Image name must come after all -e/-v flags
   containerArgs.push(CONTAINER_IMAGE);

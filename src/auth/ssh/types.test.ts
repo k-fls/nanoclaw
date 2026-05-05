@@ -53,7 +53,9 @@ describe('isFingerprint', () => {
   });
 
   it('accepts lowercase sha256 prefix', () => {
-    expect(isFingerprint('sha256:7+gvK8gKLrIIbMHaE0DRYN1VIoXMjMJhag0bWIpwbZs')).toBe(true);
+    expect(
+      isFingerprint('sha256:7+gvK8gKLrIIbMHaE0DRYN1VIoXMjMJhag0bWIpwbZs'),
+    ).toBe(true);
   });
 
   it('accepts valid MD5 fingerprint', () => {
@@ -61,21 +63,29 @@ describe('isFingerprint', () => {
   });
 
   it('accepts lowercase md5 prefix', () => {
-    expect(isFingerprint('md5:16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48')).toBe(true);
+    expect(
+      isFingerprint('md5:16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48'),
+    ).toBe(true);
   });
 
   it('accepts MD5 with uppercase hex', () => {
-    expect(isFingerprint('MD5:16:27:AC:A5:76:28:2D:36:63:1B:56:4D:EB:DF:A6:48')).toBe(true);
+    expect(
+      isFingerprint('MD5:16:27:AC:A5:76:28:2D:36:63:1B:56:4D:EB:DF:A6:48'),
+    ).toBe(true);
   });
 
   it('rejects SHA256 with wrong length', () => {
     expect(isFingerprint('SHA256:tooshort')).toBe(false);
-    expect(isFingerprint('SHA256:7+gvK8gKLrIIbMHaE0DRYN1VIoXMjMJhag0bWIpwbZsX')).toBe(false); // 44 chars
+    expect(
+      isFingerprint('SHA256:7+gvK8gKLrIIbMHaE0DRYN1VIoXMjMJhag0bWIpwbZsX'),
+    ).toBe(false); // 44 chars
   });
 
   it('rejects MD5 with wrong pair count', () => {
     expect(isFingerprint('MD5:16:27:ac')).toBe(false);
-    expect(isFingerprint('MD5:16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48:ff')).toBe(false); // 17 pairs
+    expect(
+      isFingerprint('MD5:16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48:ff'),
+    ).toBe(false); // 17 pairs
   });
 
   it('rejects garbage strings', () => {
@@ -90,7 +100,9 @@ describe('isFingerprint', () => {
   });
 
   it('rejects mixed-case prefix like Sha256', () => {
-    expect(isFingerprint('Sha256:7+gvK8gKLrIIbMHaE0DRYN1VIoXMjMJhag0bWIpwbZs')).toBe(false);
+    expect(
+      isFingerprint('Sha256:7+gvK8gKLrIIbMHaE0DRYN1VIoXMjMJhag0bWIpwbZs'),
+    ).toBe(false);
   });
 });
 
@@ -256,15 +268,38 @@ describe('credential conversion', () => {
   });
 
   it('returns null for missing authFields.host', () => {
-    expect(sshFromCredential({ value: 'password:x', expires_ts: 0, updated_ts: 0 })).toBeNull();
-    expect(sshFromCredential({ value: 'password:x', expires_ts: 0, updated_ts: 0, authFields: {} })).toBeNull();
+    expect(
+      sshFromCredential({ value: 'password:x', expires_ts: 0, updated_ts: 0 }),
+    ).toBeNull();
+    expect(
+      sshFromCredential({
+        value: 'password:x',
+        expires_ts: 0,
+        updated_ts: 0,
+        authFields: {},
+      }),
+    ).toBeNull();
   });
 
   it('returns null for missing colon in value', () => {
-    expect(sshFromCredential({ value: 'noprefix', expires_ts: 0, updated_ts: 0, authFields: { host: 'h' } })).toBeNull();
+    expect(
+      sshFromCredential({
+        value: 'noprefix',
+        expires_ts: 0,
+        updated_ts: 0,
+        authFields: { host: 'h' },
+      }),
+    ).toBeNull();
   });
 
   it('returns null for invalid authType prefix', () => {
-    expect(sshFromCredential({ value: 'other:x', expires_ts: 0, updated_ts: 0, authFields: { host: 'h' } })).toBeNull();
+    expect(
+      sshFromCredential({
+        value: 'other:x',
+        expires_ts: 0,
+        updated_ts: 0,
+        authFields: { host: 'h' },
+      }),
+    ).toBeNull();
   });
 });

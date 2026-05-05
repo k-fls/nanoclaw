@@ -76,7 +76,11 @@ describe('injectSubstituteCredentials', () => {
     });
 
     const args: string[] = [];
-    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+    const envFileVars = injectSubstituteCredentials(
+      args,
+      makeGroup('test'),
+      {} as any,
+    );
 
     // Builtin provider goes to Docker -e args
     expect(args).toContain('-e');
@@ -100,10 +104,16 @@ describe('injectSubstituteCredentials', () => {
     });
 
     const args: string[] = [];
-    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+    const envFileVars = injectSubstituteCredentials(
+      args,
+      makeGroup('test'),
+      {} as any,
+    );
 
     // First provider wins (builtin via Docker -e)
-    expect(args.filter(a => a.startsWith('ANTHROPIC_API_KEY='))).toEqual(['ANTHROPIC_API_KEY=sub_a']);
+    expect(args.filter((a) => a.startsWith('ANTHROPIC_API_KEY='))).toEqual([
+      'ANTHROPIC_API_KEY=sub_a',
+    ]);
     // Discovery collision not in env file vars
     expect(envFileVars).toEqual({});
 
@@ -132,7 +142,11 @@ describe('injectSubstituteCredentials', () => {
     });
 
     const args: string[] = [];
-    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+    const envFileVars = injectSubstituteCredentials(
+      args,
+      makeGroup('test'),
+      {} as any,
+    );
 
     // Both go to env file vars (discovery providers)
     expect(envFileVars).toEqual({
@@ -156,7 +170,11 @@ describe('injectSubstituteCredentials', () => {
     });
 
     const args: string[] = [];
-    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+    const envFileVars = injectSubstituteCredentials(
+      args,
+      makeGroup('test'),
+      {} as any,
+    );
 
     // First discovery provider wins
     expect(envFileVars).toEqual({ SHARED_VAR: 'sub_SHARED_VAR_provider-a' });
@@ -178,7 +196,11 @@ describe('injectSubstituteCredentials', () => {
     });
 
     const args: string[] = [];
-    const envFileVars = injectSubstituteCredentials(args, makeGroup('test'), {} as any);
+    const envFileVars = injectSubstituteCredentials(
+      args,
+      makeGroup('test'),
+      {} as any,
+    );
 
     expect(args).toContain('ANTHROPIC_API_KEY=sub_key');
     expect(envFileVars).toEqual({});

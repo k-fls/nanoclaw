@@ -33,7 +33,10 @@ import {
 } from './manifest.js';
 import { wireAuthCallbacks } from './oauth-flow.js';
 import { initSSHSystem, type SSHManager } from './ssh/index.js';
-import type { TokenSubstituteEngine, GroupResolver } from './token-substitute.js';
+import type {
+  TokenSubstituteEngine,
+  GroupResolver,
+} from './token-substitute.js';
 import { scopeOf, type RegisteredGroup } from '../types.js';
 import type { Server as NetServer } from 'net';
 import { logger } from '../logger.js';
@@ -73,7 +76,6 @@ export async function initAuthSystem(
 
   // Wire token engine with group resolver and access check.
   const tokenEngine = getTokenEngine();
-
 
   const accessCheck = createAccessCheck(resolveGroup);
 
