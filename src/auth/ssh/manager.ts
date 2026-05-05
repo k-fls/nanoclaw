@@ -181,7 +181,11 @@ export class SSHManager {
         return aEd - bEd;
       });
       return keys;
-    } catch {
+    } catch (err) {
+      logger.warn(
+        { host, port, err: err instanceof Error ? err.message : String(err) },
+        'ssh.host_keyscan_failed',
+      );
       return [];
     }
   }
@@ -296,7 +300,15 @@ export class SSHManager {
 
     // TOFU: no stored key
     if (scannedKeys.length === 0) {
-      return { keyLine: null, action: 'unverified' };
+      // Fail-closed: cannot verify host identity, refuse rather than letting
+      // OpenSSH's accept-new mode trust whatever appears on the wire.
+      // An attacker who can suppress ssh-keyscan probes (or induce a timeout)
+      // could otherwise present an attacker-controlled key on first connect.
+      throw new SSHError(
+        'connection_refused',
+        `Cannot verify host key for '${alias}': ssh-keyscan returned no keys from ${meta.host}:${meta.port}. ` +
+          `Check network reachability, or set hostKey: '*' to bypass verification.`,
+      );
     }
 
     // Prefer ed25519 (already sorted first)
@@ -410,7 +422,6 @@ export class SSHManager {
     // Prepare temp files and spawn ControlMaster
     const tp = randomBytes(20).toString('hex');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-ssh-'));
-    const cleanupFiles: string[] = [tmpDir];
 
     try {
       // Write known_hosts if we have a key
@@ -437,12 +448,10 @@ export class SSHManager {
           `#!/bin/sh\necho '${encrypted}' | openssl enc -d -aes-256-cbc -pbkdf2 -a -pass env:TP\n`,
           { mode: 0o700 },
         );
-        cleanupFiles.push(askpassPath);
       } else {
         // Key auth: re-encrypt PEM with tp as passphrase
         const pemPath = path.join(tmpDir, 'key.pem');
         fs.writeFileSync(pemPath, secret, { mode: 0o600 });
-        cleanupFiles.push(pemPath);
 
         // Re-encrypt with tp
         execFileSync('ssh-keygen', ['-p', '-f', pemPath, '-P', '', '-N', tp], {
@@ -453,7 +462,6 @@ export class SSHManager {
         fs.writeFileSync(askpassPath, '#!/bin/sh\necho "$TP"\n', {
           mode: 0o700,
         });
-        cleanupFiles.push(askpassPath);
         identityArgs = ['-i', pemPath];
       }
 
