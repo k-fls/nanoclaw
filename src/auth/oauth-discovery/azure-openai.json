@@ -1,7 +1,10 @@
 {
   "api_base_url": "https://{resource}.openai.azure.com",
+  "_api_hosts": [
+    "{resource}.services.ai.azure.com"
+  ],
   "_source": "manually researched from official docs (learn.microsoft.com/en-us/azure/ai-services/openai/reference)",
-  "_note": "Azure OpenAI Service. Two auth methods: API key via custom 'api-key' header (NOT Authorization), or Azure AD/Entra ID Bearer token. Each resource has its own subdomain ({resource}.openai.azure.com). Endpoints: /openai/deployments/{deployment-id}/chat/completions etc.",
+  "_note": "Azure OpenAI Service ({resource}.openai.azure.com) and Azure AI Foundry / AI Services ({resource}.services.ai.azure.com). Auth via custom api-key header (NOT Authorization Bearer), or Azure AD/Entra ID Bearer token. Proxy scans all header values so substitute token works in either header. _api_hosts covers the newer services.ai.azure.com domain.",
   "_auth_method": "api_key",
   "_auth_header_format": "api-key: {api_key}",
   "_env_vars": { "AZURE_OPENAI_KEY": "api_key" }
