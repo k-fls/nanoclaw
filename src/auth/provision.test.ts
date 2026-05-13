@@ -452,13 +452,25 @@ describe('provisionFromMapping', () => {
 // ---------------------------------------------------------------------------
 
 function makeOAuthProvider(envVars?: Record<string, string>): OAuthProvider {
+  const envBindings = envVars
+    ? Object.entries(envVars).map(([envName, credentialPath]) => {
+        const m = credentialPath.match(/^([^[\]]+)(?:\[(\d+)\])?$/);
+        return m
+          ? {
+              envName,
+              credentialPath: m[1],
+              ...(m[2] !== undefined && { slice: Number(m[2]) }),
+            }
+          : { envName, credentialPath };
+      })
+    : undefined;
   return {
     id: 'test-provider',
     rules: [],
     scopeKeys: [],
     substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
     refreshStrategy: 'redirect',
-    envVars,
+    ...(envBindings && { envBindings }),
   };
 }
 

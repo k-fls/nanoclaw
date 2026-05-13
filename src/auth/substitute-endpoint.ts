@@ -20,6 +20,7 @@ import type { GroupScope } from './oauth-types.js';
 import { DEFAULT_SUBSTITUTE_CONFIG } from './oauth-types.js';
 import { getTokenEngine } from './registry.js';
 import { getDiscoveryProvider, getProvider } from './registry.js';
+import { bindingsFor } from './env-bindings.js';
 import { validateEnvVarName } from './docker-env.js';
 import { logger } from '../logger.js';
 
@@ -70,13 +71,11 @@ export function handleSubstituteRequest(
     return;
   }
 
-  // Build envNames: discovery defaults + optional envVar param
+  // Build envNames: bindings referencing this credential path + optional override
   const envNames: string[] = [];
-  if (discovery?.envVars) {
-    for (const [envName, declaredPath] of Object.entries(discovery.envVars)) {
-      if (declaredPath === credentialPath) {
-        envNames.push(envName);
-      }
+  if (discovery) {
+    for (const b of bindingsFor(discovery, credentialPath)) {
+      if (!envNames.includes(b.envName)) envNames.push(b.envName);
     }
   }
   if (envVarParam && !envNames.includes(envVarParam)) {

@@ -55,7 +55,10 @@ function setupGithubProvider(
     scopeKeys: [],
     substituteConfig: { prefixLen: 4, suffixLen: 4, delimiters: '_' },
     refreshStrategy: 'redirect',
-    envVars: { GH_TOKEN: 'oauth', GITHUB_TOKEN: 'oauth' },
+    envBindings: [
+      { envName: 'GH_TOKEN', credentialPath: 'oauth' },
+      { envName: 'GITHUB_TOKEN', credentialPath: 'oauth' },
+    ],
   } as any);
   mockGetProvider.mockReturnValue(undefined);
   mockGetTokenEngine.mockReturnValue(
@@ -114,7 +117,7 @@ describe('substitute-endpoint', () => {
       scopeKeys: [],
       substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
       refreshStrategy: 'redirect',
-      envVars: { GH_TOKEN: 'oauth' },
+      envBindings: [{ envName: 'GH_TOKEN', credentialPath: 'oauth' }],
     } as any);
     mockGetProvider.mockReturnValue(undefined);
     mockGetTokenEngine.mockReturnValue({
@@ -161,7 +164,7 @@ describe('substitute-endpoint', () => {
       scopeKeys: [],
       substituteConfig: subConfig,
       refreshStrategy: 'redirect',
-      envVars: { TODOIST_API_TOKEN: 'api_key' },
+      envBindings: [{ envName: 'TODOIST_API_TOKEN', credentialPath: 'api_key' }],
     } as any);
     mockGetProvider.mockReturnValue(undefined);
     mockGetTokenEngine.mockReturnValue(mockEngine as any);
@@ -211,7 +214,10 @@ describe('substitute-endpoint', () => {
       scopeKeys: [],
       substituteConfig: DEFAULT_SUBSTITUTE_CONFIG,
       refreshStrategy: 'redirect',
-      envVars: { STRIPE_SECRET_KEY: 'api_key', STRIPE_TOKEN: 'oauth' },
+      envBindings: [
+        { envName: 'STRIPE_SECRET_KEY', credentialPath: 'api_key' },
+        { envName: 'STRIPE_TOKEN', credentialPath: 'oauth' },
+      ],
     } as any);
     mockGetProvider.mockReturnValue(undefined);
     mockGetTokenEngine.mockReturnValue({

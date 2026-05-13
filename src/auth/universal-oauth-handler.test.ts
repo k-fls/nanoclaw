@@ -311,6 +311,79 @@ describe('universal-oauth-handler', () => {
       expect(lastRequest!.headers['authorization']).toBe(`Bearer ${realToken}`);
     });
 
+    it('decodes Basic header and swaps composite substitute for real base64 blob', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider('browserstack');
+      provider.credentialFormat = {
+        access_key: { encode: 'base64', sep: ':' },
+      };
+      provider.substituteConfig = {
+        prefixLen: 4,
+        suffixLen: 4,
+        delimiters: '-._~:',
+      };
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const realComposite = 'kirill_user:sk_realKeyValue1234567890abcdef';
+      engine.storeGroupCredential(
+        asGroupScope('test-scope'),
+        'browserstack',
+        'access_key',
+        { value: realComposite, expires_ts: 0, updated_ts: Date.now() },
+      );
+      const sub = engine.generateSubstitute(
+        realComposite,
+        'browserstack',
+        {},
+        asGroupScope('test-scope'),
+        provider.substituteConfig,
+        'access_key',
+      )!;
+      expect(sub).not.toBeNull();
+      // Substitute must preserve the ':' separator (declared as delimiter)
+      expect(sub).toContain(':');
+
+      const wireSub = Buffer.from(sub, 'utf8').toString('base64');
+      const res = await executeHandler(handler, {
+        headers: { authorization: `Basic ${wireSub}` },
+      });
+
+      expect(res.status).toBe(200);
+      expect(lastRequest).not.toBeNull();
+      // Upstream gets base64 of the real composite
+      const expectedWire = Buffer.from(realComposite, 'utf8').toString('base64');
+      expect(lastRequest!.headers['authorization']).toBe(`Basic ${expectedWire}`);
+    });
+
+    it('does not decode Basic for providers without base64 credential format', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider();
+      // No credentialFormat declared
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      // Encode a string that happens to be a known substitute; without the
+      // format flag the handler must not decode it.
+      const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      });
+      const sub = engine.generateSubstitute(
+        realToken, 'test-provider', {}, asGroupScope('test-scope'),
+        DEFAULT_SUBSTITUTE_CONFIG,
+      )!;
+      const wireSub = Buffer.from(sub, 'utf8').toString('base64');
+
+      const res = await executeHandler(handler, {
+        headers: { authorization: `Basic ${wireSub}` },
+      });
+
+      expect(res.status).toBe(200);
+      // Should pass through unchanged (no swap)
+      expect(lastRequest!.headers['authorization']).toBe(`Basic ${wireSub}`);
+    });
+
     it('passes through unknown tokens (no substitution)', async () => {
       const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
       const provider = makeProvider();

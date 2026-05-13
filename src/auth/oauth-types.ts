@@ -63,11 +63,23 @@ export interface OAuthProvider {
   /** How bearer-swap handles expired tokens. */
   refreshStrategy: RefreshStrategy;
   /**
-   * Env var → token role mapping for container provisioning.
-   * E.g. { "GH_TOKEN": "access", "ANTHROPIC_API_KEY": "api_key" }
-   * During provision, each role's substitute is looked up and set as the env var.
+   * Parsed env var bindings. One entry per env var declared in `_env_vars`.
+   * Supports plain (`"GH_TOKEN": "oauth"`) and slice (`"USER": "auth[0]"`) forms.
+   * Plain → `{ envName, credentialPath }`; slice → `{ envName, credentialPath, slice }`.
+   * Sliced bindings require the credential to declare a `sep` in `credentialFormat`.
    */
-  envVars?: Record<string, string>;
+  envBindings?: EnvVarBinding[];
+  /**
+   * Per-credential format hints. Drives:
+   *   - `sep`: composite credential made of fields joined by this character.
+   *           Substitute generation preserves it; env-var slicing splits on it;
+   *           bulk import joins the slices back with it.
+   *   - `encode: "base64"`: credential value travels base64-wrapped on the wire
+   *           (typically inside `Authorization: Basic`). The bearer-swap handler
+   *           decodes Basic headers, looks up the substitute, and re-encodes the
+   *           real value before forwarding.
+   */
+  credentialFormat?: Record<string, CredentialFormatSpec>;
   /**
    * Controls which fields are captured from token-exchange requests/responses
    * and stored alongside tokens for use in refresh requests.
@@ -93,6 +105,25 @@ export interface OAuthProvider {
    * body for usage accounting or similar. Must not modify the response.
    */
   onUpstreamResponse?(ctx: UpstreamResponseContext): void;
+}
+
+/**
+ * One env var binding declared by a provider's `_env_vars` map.
+ * Produced by the discovery loader from raw `"VAR": "credId"` or `"VAR": "credId[n]"`.
+ */
+export interface EnvVarBinding {
+  envName: string;
+  credentialPath: string;
+  /** Set when the raw value was `"credId[n]"`. Index into split-by-sep of the substitute. */
+  slice?: number;
+}
+
+/** Per-credential format hint. See {@link OAuthProvider.credentialFormat}. */
+export interface CredentialFormatSpec {
+  /** Wire encoding of the credential value. Only `base64` is supported today. */
+  encode?: 'base64';
+  /** Separator joining the credential's sub-fields. Used for slicing into env vars. */
+  sep?: string;
 }
 
 export interface UpstreamResponseContext {

@@ -135,6 +135,29 @@ function extractScopeAttrs(
   return { ...match.groups };
 }
 
+/**
+ * Try to decode a base64 string. Returns the decoded UTF-8 text or null
+ * if the input isn't valid base64 or decodes to invalid bytes.
+ *
+ * Used by the bearer-swap handler to peek inside `Authorization: Basic`.
+ */
+function tryBase64Decode(candidate: string): string | null {
+  if (!/^[A-Za-z0-9+/]+=*$/.test(candidate)) return null;
+  try {
+    const buf = Buffer.from(candidate, 'base64');
+    // Round-trip check: base64 is non-unique without padding, but a clean
+    // round-trip rules out arbitrary noise.
+    if (buf.toString('base64').replace(/=+$/, '') !== candidate.replace(/=+$/, ''))
+      return null;
+    const text = buf.toString('utf8');
+    // Reject if decoded contains a replacement char (invalid utf8 input)
+    if (text.includes('�')) return null;
+    return text;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Token refresh via token endpoint (used by bearer-swap on 401)
 // ---------------------------------------------------------------------------
@@ -416,16 +439,44 @@ function createBearerSwapHandler(
         prefix = '';
       }
 
-      const entry = tokenEngine.resolveWithRestriction(
+      let entry = tokenEngine.resolveWithRestriction(
         candidate,
         groupScope,
         scopeAttrs,
       );
+
+      // Basic-auth fallback: if the credential format declares base64 encoding,
+      // the substitute travels base64-wrapped inside `Authorization: Basic`.
+      // Decode, look up the inner substitute, and re-encode the real value.
+      let wasBase64 = false;
+      if (!entry && /^basic $/i.test(prefix)) {
+        const inner = tryBase64Decode(candidate);
+        if (inner) {
+          const innerEntry = tokenEngine.resolveWithRestriction(
+            inner,
+            groupScope,
+            scopeAttrs,
+          );
+          if (
+            innerEntry &&
+            !innerEntry.mapping.credentialPath.includes('/') &&
+            provider.credentialFormat?.[innerEntry.mapping.credentialPath]
+              ?.encode === 'base64'
+          ) {
+            entry = innerEntry;
+            wasBase64 = true;
+          }
+        }
+      }
+
       // Skip nested sub-tokens (e.g. oauth/refresh) — they should not
       // appear in headers, only in token-exchange request bodies.
       if (!entry || entry.mapping.credentialPath.includes('/')) continue;
 
-      headers[name] = `${prefix}${entry.realToken}`;
+      const wireValue = wasBase64
+        ? Buffer.from(entry.realToken, 'utf8').toString('base64')
+        : entry.realToken;
+      headers[name] = `${prefix}${wireValue}`;
       swappedHeaders.push({
         headerName: name,
         substitute: candidate,

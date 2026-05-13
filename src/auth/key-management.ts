@@ -14,6 +14,11 @@ import {
   getAllDiscoveryProviderIds,
 } from './registry.js';
 import {
+  distinctCredentialPaths,
+  groupEnvEntries,
+  bindingsFor,
+} from './env-bindings.js';
+import {
   isGpgAvailable,
   ensureGpgKey,
   gpgDecrypt,
@@ -74,12 +79,11 @@ export function getProviderCredentialIds(
     }
   }
 
-  // Source 3: envVars from discovery provider
+  // Source 3: envBindings from discovery provider (deduped, composite-aware)
   const provider = getDiscoveryProvider(providerId);
-  if (provider?.envVars) {
-    for (const credPath of Object.values(provider.envVars)) {
-      // Only add top-level credential IDs (not nested paths like 'oauth/refresh')
-      if (!credPath.includes('/')) ids.add(credPath);
+  if (provider) {
+    for (const credPath of distinctCredentialPaths(provider)) {
+      ids.add(credPath);
     }
   }
 
@@ -108,18 +112,13 @@ export function storeProviderKey(
   // Check if any env var for this credential had no substitute yet
   let needsRestart = false;
   const provider = getDiscoveryProvider(providerId);
-  if (provider?.envVars) {
-    for (const [_envVar, envCredPath] of Object.entries(provider.envVars)) {
-      if (envCredPath === credentialId) {
-        const existing = tokenEngine.getSubstitute(
-          providerId,
-          groupScope,
-          credentialId,
-        );
-        if (!existing) needsRestart = true;
-        break;
-      }
-    }
+  if (provider && bindingsFor(provider, credentialId).length > 0) {
+    const existing = tokenEngine.getSubstitute(
+      providerId,
+      groupScope,
+      credentialId,
+    );
+    if (!existing) needsRestart = true;
   }
 
   // Clear → store → prune
@@ -321,14 +320,14 @@ export function buildEnvVarProviderIndex(): Map<string, string[]> {
   const index = new Map<string, string[]>();
   for (const id of getAllDiscoveryProviderIds()) {
     const provider = getDiscoveryProvider(id);
-    if (!provider?.envVars) continue;
-    for (const envName of Object.keys(provider.envVars)) {
-      let list = index.get(envName);
+    if (!provider?.envBindings) continue;
+    for (const b of provider.envBindings) {
+      let list = index.get(b.envName);
       if (!list) {
         list = [];
-        index.set(envName, list);
+        index.set(b.envName, list);
       }
-      list.push(id);
+      if (!list.includes(id)) list.push(id);
     }
   }
   return index;
@@ -382,37 +381,41 @@ export function applyProviderEntries(
     return { providerId, count: 0, envVars: [], warnings: ['no bearer-swap rules'], needsRestart: false };
   }
 
-  // Reverse map: envVarName → credentialPath (e.g. GH_TOKEN → oauth)
-  const envToCredPath = new Map(Object.entries(provider.envVars ?? {}));
-
+  // Group incoming env-name entries by credential path. Sliced bindings get
+  // joined into one composite credential value; legacy plain bindings pass
+  // through; unknown env names are treated as credential IDs themselves.
+  const { resolved, warnings: groupWarnings } = groupEnvEntries(provider, entries);
   const envVars: string[] = [];
-  const warnings: string[] = [];
+  const warnings: string[] = [...groupWarnings];
   let count = 0;
   let needsRestart = false;
 
-  for (const [key, value] of entries) {
-    const credentialPath = envToCredPath.get(key) ?? key;
+  for (const [credentialPath, { value, sourceEnvNames }] of resolved) {
     const r = storeProviderKey(providerId, groupScope, credentialPath, value, 0, tokenEngine);
     if (r.needsRestart) needsRestart = true;
     count++;
 
-    if (!ENV_NAME_RE.test(key)) continue;
-    const envErr = validateEnvVarName(key);
-    if (envErr) {
-      warnings.push(`${key}: ${envErr}`);
-      continue;
+    // Filter out non-ENV-name sources (e.g. ad-hoc credential IDs typed in chat).
+    // We register substitutes for env-name sources only.
+    const envNames = sourceEnvNames.filter((n) => ENV_NAME_RE.test(n) && !validateEnvVarName(n));
+    for (const n of sourceEnvNames) {
+      if (!ENV_NAME_RE.test(n)) continue;
+      const err = validateEnvVarName(n);
+      if (err) warnings.push(`${n}: ${err}`);
     }
+    if (envNames.length === 0) continue;
+
     const sub = tokenEngine.getOrCreateSubstitute(
-      providerId, {}, groupScope, provider.substituteConfig, credentialPath, [key],
+      providerId, {}, groupScope, provider.substituteConfig, credentialPath, envNames,
     );
     if (sub === null) {
       warnings.push(
-        `${key}: token too short to substitute safely (len=${value.length}); ` +
+        `${envNames.join(', ')}: token too short to substitute safely (len=${value.length}); ` +
           `credential stored but not available to containers. Set _token_format in discovery JSON.`,
       );
       continue;
     }
-    envVars.push(key);
+    envVars.push(...envNames);
   }
 
   return { providerId, count, envVars, warnings, needsRestart };

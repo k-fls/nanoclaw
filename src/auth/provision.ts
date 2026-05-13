@@ -25,6 +25,7 @@ import type {
   TokenSubstituteEngine,
   GroupResolver,
 } from './token-substitute.js';
+import { materializeEnv, formatFor } from './env-bindings.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 
@@ -119,22 +120,39 @@ export function importEnvToMainGroup(
 }
 
 /**
- * Provision env vars from an OAuthProvider's envVars mapping.
- * Thin wrapper over provisionFromMapping for discovery providers.
+ * Provision env vars from an OAuthProvider's envBindings.
+ * Handles plain bindings and slice (composite-credential) bindings.
  */
 export function provisionEnvVars(
   oauthProvider: OAuthProvider,
   group: RegisteredGroup,
   tokenEngine: TokenSubstituteEngine,
 ): Record<string, string> {
-  if (!oauthProvider.envVars) return {};
-  return provisionFromMapping(
-    oauthProvider.envVars,
-    oauthProvider.id,
-    scopeOf(group),
-    oauthProvider.substituteConfig,
-    tokenEngine,
-  );
+  const bindings = oauthProvider.envBindings;
+  if (!bindings || bindings.length === 0) return {};
+  const groupScope = scopeOf(group);
+  const env: Record<string, string> = {};
+
+  // Cache substitute per credentialPath so composite credentials with multiple
+  // bindings share one underlying substitute.
+  const subCache = new Map<string, string | null>();
+  for (const b of bindings) {
+    let sub = subCache.get(b.credentialPath);
+    if (sub === undefined) {
+      sub = tokenEngine.getOrCreateSubstitute(
+        oauthProvider.id,
+        {},
+        groupScope,
+        oauthProvider.substituteConfig,
+        b.credentialPath,
+      );
+      subCache.set(b.credentialPath, sub);
+    }
+    if (!sub) continue;
+    const value = materializeEnv(b, sub, formatFor(oauthProvider, b.credentialPath));
+    if (value !== null) env[b.envName] = value;
+  }
+  return env;
 }
 
 export function createAccessCheck(

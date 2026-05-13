@@ -18,12 +18,15 @@ import fs from 'fs';
 import path from 'path';
 
 import type {
+  CredentialFormatSpec,
+  EnvVarBinding,
   InterceptRule,
   OAuthProvider,
   RefreshStrategy,
   SubstituteConfig,
 } from './oauth-types.js';
 import { DEFAULT_SUBSTITUTE_CONFIG } from './oauth-types.js';
+import { parseEnvVarValue } from './env-bindings.js';
 import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
@@ -181,6 +184,7 @@ export interface DiscoveryFile {
   };
   _refresh_strategy?: RefreshStrategy;
   _env_vars?: Record<string, string>;
+  _credential_format?: Record<string, CredentialFormatSpec>;
   _well_known_url?: string | false;
   _host_patterns?: string[];
   _token_field_capture?: {
@@ -310,6 +314,60 @@ export function parseDiscoveryFile(
     };
   }
 
+  // Parse _env_vars into typed bindings. Also auto-extend the substitute
+  // config's delimiters so any sep character used by composite credentials
+  // is preserved by the substitute engine.
+  let envBindings: EnvVarBinding[] | undefined;
+  if (data._env_vars) {
+    envBindings = [];
+    for (const [envName, raw] of Object.entries(data._env_vars)) {
+      const b = parseEnvVarValue(envName, raw);
+      if (!b) {
+        logger.warn(
+          { id, envName, raw },
+          'Discovery: could not parse _env_vars entry',
+        );
+        continue;
+      }
+      envBindings.push(b);
+    }
+  }
+
+  let credentialFormat: Record<string, CredentialFormatSpec> | undefined;
+  if (data._credential_format) {
+    credentialFormat = data._credential_format;
+    // Auto-extend delimiters with any sep declared in credential formats.
+    const extra = new Set<string>();
+    for (const spec of Object.values(credentialFormat)) {
+      if (spec.sep) for (const ch of spec.sep) extra.add(ch);
+    }
+    if (extra.size > 0) {
+      const existing = new Set(substituteConfig.delimiters);
+      for (const ch of extra) existing.add(ch);
+      substituteConfig = {
+        ...substituteConfig,
+        delimiters: [...existing].join(''),
+      };
+    }
+
+    // Validate: any sliced binding requires a credentialFormat entry with sep.
+    for (const b of envBindings ?? []) {
+      if (b.slice === undefined) continue;
+      const sep = credentialFormat[b.credentialPath]?.sep;
+      if (!sep) {
+        logger.warn(
+          { id, envName: b.envName, credentialPath: b.credentialPath },
+          'Discovery: sliced env var has no _credential_format.sep — ignoring',
+        );
+      }
+    }
+  } else if (envBindings?.some((b) => b.slice !== undefined)) {
+    logger.warn(
+      { id },
+      'Discovery: sliced env vars present but no _credential_format declared',
+    );
+  }
+
   let tokenFieldCapture: OAuthProvider['tokenFieldCapture'];
   if (data._token_field_capture) {
     const c = data._token_field_capture;
@@ -329,7 +387,8 @@ export function parseDiscoveryFile(
     scopeKeys: [...allScopeKeys],
     substituteConfig,
     refreshStrategy,
-    ...(data._env_vars && { envVars: data._env_vars }),
+    ...(envBindings && envBindings.length > 0 && { envBindings }),
+    ...(credentialFormat && { credentialFormat }),
     ...(tokenFieldCapture && { tokenFieldCapture }),
   };
 }

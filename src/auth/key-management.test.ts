@@ -93,13 +93,25 @@ function makeProvider(
             mode: 'token-exchange' as const,
           },
         ];
+  const envBindings = opts?.envVars
+    ? Object.entries(opts.envVars).map(([envName, raw]) => {
+        const m = raw.match(/^([^[\]]+)(?:\[(\d+)\])?$/);
+        return m
+          ? {
+              envName,
+              credentialPath: m[1],
+              ...(m[2] !== undefined && { slice: Number(m[2]) }),
+            }
+          : { envName, credentialPath: raw };
+      })
+    : undefined;
   return {
     id,
     rules,
     scopeKeys: [],
     substituteConfig: { prefixLen: 4, suffixLen: 4, delimiters: '' },
     refreshStrategy: 'redirect',
-    ...(opts?.envVars && { envVars: opts.envVars }),
+    ...(envBindings && { envBindings }),
   };
 }
 
