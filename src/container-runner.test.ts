@@ -279,9 +279,10 @@ describe('snapshotContainerFiles', () => {
   it('copies with preserveTimestamps so agent-runner mtime check works', () => {
     snapshotContainerFiles();
 
-    expect(fs.cpSync).toHaveBeenCalledWith(expect.stringContaining('container'), expect.stringContaining('snapshot'), {
-      recursive: true,
-      preserveTimestamps: true,
-    });
+    expect(fs.cpSync).toHaveBeenCalledWith(
+      expect.stringContaining('container'),
+      expect.stringContaining('snapshot'),
+      expect.objectContaining({ recursive: true, preserveTimestamps: true }),
+    );
   });
 });
