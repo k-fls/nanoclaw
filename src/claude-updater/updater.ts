@@ -10,16 +10,8 @@ import { execFileSync, execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import {
-  CLAUDE_CLI_DIR,
-  CLAUDE_CLI_UPDATE,
-  CONTAINER_IMAGE,
-  parseClaudeCliUpdate,
-} from '../config.js';
-import {
-  CONTAINER_RUNTIME_BIN,
-  hostGatewayArgs,
-} from '../container-runtime.js';
+import { CLAUDE_CLI_DIR, CLAUDE_CLI_UPDATE, CONTAINER_IMAGE, parseClaudeCliUpdate } from '../config.js';
+import { CONTAINER_RUNTIME_BIN, hostGatewayArgs } from '../container-runtime.js';
 import { logger } from '../logger.js';
 import { AsyncRWLock } from './async-rw-lock.js';
 
@@ -39,12 +31,7 @@ export function getClaudeCliPackageDir(): string | null {
 
 /** Read installed version from package.json, or null if not installed. */
 export function installedVersion(): string | null {
-  const pkgJson = path.join(
-    CLAUDE_CLI_DIR,
-    'node_modules',
-    CLI_PACKAGE,
-    'package.json',
-  );
+  const pkgJson = path.join(CLAUDE_CLI_DIR, 'node_modules', CLI_PACKAGE, 'package.json');
   if (!fs.existsSync(pkgJson)) return null;
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgJson, 'utf-8'));
@@ -122,15 +109,9 @@ export async function runUpdate(updateNow = false): Promise<boolean> {
     // Pinned: exclusive lock before install (deterministic target)
     await cliLock.acquireExclusive();
     try {
-      const ok = runInstallContainer(
-        CLAUDE_CLI_DIR,
-        `${CLI_PACKAGE}@${config.version}`,
-      );
+      const ok = runInstallContainer(CLAUDE_CLI_DIR, `${CLI_PACKAGE}@${config.version}`);
       if (ok) {
-        logger.info(
-          { version: config.version },
-          'Claude CLI pinned version installed',
-        );
+        logger.info({ version: config.version }, 'Claude CLI pinned version installed');
       }
       return ok;
     } finally {
@@ -141,9 +122,7 @@ export async function runUpdate(updateNow = false): Promise<boolean> {
   // mode === 'latest'
   const latest = latestVersion();
   if (!latest) {
-    logger.warn(
-      'Could not determine latest Claude CLI version, skipping update',
-    );
+    logger.warn('Could not determine latest Claude CLI version, skipping update');
     return current !== null;
   }
   if (current === latest) {

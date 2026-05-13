@@ -23,10 +23,7 @@ export function parseCommand(content: string): ParsedCommand | null {
  * For non-main groups: finds the trigger message, strips trigger, checks for command.
  * For main group: checks the last message directly.
  */
-export function extractCommand(
-  messages: NewMessage[],
-  group: RegisteredGroup,
-): ExtractedCommand | null {
+export function extractCommand(messages: NewMessage[], group: RegisteredGroup): ExtractedCommand | null {
   if (messages.length === 0) return null;
 
   if (group.isMain) {
@@ -38,15 +35,10 @@ export function extractCommand(
 
   // Non-main: find the trigger message and strip the trigger prefix
   const triggerPattern = getTriggerPattern(group.trigger);
-  const triggerMsg = messages.find((m) =>
-    triggerPattern.test(m.content.trim()),
-  );
+  const triggerMsg = messages.find((m) => triggerPattern.test(m.content.trim()));
   if (!triggerMsg) return null;
 
-  const afterTrigger = triggerMsg.content
-    .trim()
-    .replace(triggerPattern, '')
-    .trim();
+  const afterTrigger = triggerMsg.content.trim().replace(triggerPattern, '').trim();
   const cmd = parseCommand(afterTrigger);
   if (cmd) return { cmd, message: triggerMsg };
   return null;

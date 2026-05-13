@@ -14,12 +14,7 @@ import { logger } from '../logger.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export type InteractionState =
-  | 'queued'
-  | 'active'
-  | 'completed'
-  | 'failed'
-  | 'removed';
+export type InteractionState = 'queued' | 'active' | 'completed' | 'failed' | 'removed';
 
 export interface InteractionEvent {
   state: InteractionState;
@@ -39,12 +34,7 @@ export class InteractionStatusRegistry {
   private interactions = new Map<string, InteractionRecord>();
 
   /** Emit an event for an interaction. Creates state if it doesn't exist. */
-  emit(
-    interactionId: string,
-    eventType: InteractionEventKind,
-    state: InteractionState,
-    explanation: string,
-  ): void {
+  emit(interactionId: string, eventType: InteractionEventKind, state: InteractionState, explanation: string): void {
     let record = this.interactions.get(interactionId);
     if (!record) {
       record = { events: [], subscribers: new Set() };
@@ -69,10 +59,7 @@ export class InteractionStatusRegistry {
       }
     }
 
-    logger.debug(
-      { interactionId, state, eventType, explanation },
-      'Interaction status event',
-    );
+    logger.debug({ interactionId, state, eventType, explanation }, 'Interaction status event');
   }
 
   /** Get current state for an interaction (latest event state). */
@@ -116,11 +103,7 @@ export class InteractionStatusRegistry {
    *
    * Replays current state on connect, then streams live events.
    */
-  handleSSE(
-    interactionId: string,
-    _req: IncomingMessage,
-    res: ServerResponse,
-  ): void {
+  handleSSE(interactionId: string, _req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',

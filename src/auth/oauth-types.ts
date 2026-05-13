@@ -62,11 +62,23 @@ export interface OAuthProvider {
   /** How bearer-swap handles expired tokens. */
   refreshStrategy: RefreshStrategy;
   /**
-   * Env var → token role mapping for container provisioning.
-   * E.g. { "GH_TOKEN": "access", "ANTHROPIC_API_KEY": "api_key" }
-   * During provision, each role's substitute is looked up and set as the env var.
+   * Parsed env var bindings. One entry per env var declared in `_env_vars`.
+   * Supports plain (`"GH_TOKEN": "oauth"`) and slice (`"USER": "auth[0]"`) forms.
+   * Plain → `{ envName, credentialPath }`; slice → `{ envName, credentialPath, slice }`.
+   * Sliced bindings require the credential to declare a `sep` in `credentialFormat`.
    */
-  envVars?: Record<string, string>;
+  envBindings?: EnvVarBinding[];
+  /**
+   * Per-credential format hints. Drives:
+   *   - `sep`: composite credential made of fields joined by this character.
+   *           Substitute generation preserves it; env-var slicing splits on it;
+   *           bulk import joins the slices back with it.
+   *   - `encode: "base64"`: credential value travels base64-wrapped on the wire
+   *           (typically inside `Authorization: Basic`). The bearer-swap handler
+   *           decodes Basic headers, looks up the substitute, and re-encodes the
+   *           real value before forwarding.
+   */
+  credentialFormat?: Record<string, CredentialFormatSpec>;
   /**
    * Controls which fields are captured from token-exchange requests/responses
    * and stored alongside tokens for use in refresh requests.
@@ -85,6 +97,38 @@ export interface OAuthProvider {
     scopeExclude?: string[];
     scopeInclude?: string[];
   };
+  /**
+   * Optional hook invoked on the bearer-swap happy path (non-401 responses)
+   * just before the upstream response is piped to the client. Consumers can
+   * attach their own tee (e.g. via a PassThrough) to observe the response
+   * body for usage accounting or similar. Must not modify the response.
+   */
+  onUpstreamResponse?(ctx: UpstreamResponseContext): void;
+}
+
+/**
+ * One env var binding declared by a provider's `_env_vars` map.
+ * Produced by the discovery loader from raw `"VAR": "credId"` or `"VAR": "credId[n]"`.
+ */
+export interface EnvVarBinding {
+  envName: string;
+  credentialPath: string;
+  /** Set when the raw value was `"credId[n]"`. Index into split-by-sep of the substitute. */
+  slice?: number;
+}
+
+/** Per-credential format hint. See {@link OAuthProvider.credentialFormat}. */
+export interface CredentialFormatSpec {
+  /** Wire encoding of the credential value. Only `base64` is supported today. */
+  encode?: 'base64';
+  /** Separator joining the credential's sub-fields. Used for slicing into env vars. */
+  sep?: string;
+}
+
+export interface UpstreamResponseContext {
+  clientReq: import('http').IncomingMessage;
+  upRes: import('http').IncomingMessage;
+  scope: GroupScope;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,12 +142,25 @@ export interface SubstituteConfig {
   suffixLen: number;
   /** Delimiter chars to preserve in-place (e.g. "-._"). */
   delimiters: string;
+  /** Minimum randomized chars required in the middle. Defaults to MIN_RANDOM_CHARS. */
+  minRandomChars?: number;
 }
 
 export const DEFAULT_SUBSTITUTE_CONFIG: SubstituteConfig = {
   prefixLen: 10,
   suffixLen: 4,
   delimiters: '-._~',
+};
+
+/**
+ * Config used when a token is pure alphanumeric (no `-._~`). Shorter prefix
+ * and lower random-char floor so typical API keys (24+ chars) fit.
+ */
+export const DEFAULT_ALNUM_SUBSTITUTE_CONFIG: SubstituteConfig = {
+  prefixLen: 4,
+  suffixLen: 4,
+  delimiters: '',
+  minRandomChars: 8,
 };
 
 /** Minimum randomized characters in the middle section (safety floor). */

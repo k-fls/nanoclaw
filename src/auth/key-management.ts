@@ -14,6 +14,11 @@ import {
   getAllDiscoveryProviderIds,
 } from './registry.js';
 import {
+  distinctCredentialPaths,
+  groupEnvEntries,
+  bindingsFor,
+} from './env-bindings.js';
+import {
   isGpgAvailable,
   ensureGpgKey,
   gpgDecrypt,
@@ -74,12 +79,11 @@ export function getProviderCredentialIds(
     }
   }
 
-  // Source 3: envVars from discovery provider
+  // Source 3: envBindings from discovery provider (deduped, composite-aware)
   const provider = getDiscoveryProvider(providerId);
-  if (provider?.envVars) {
-    for (const credPath of Object.values(provider.envVars)) {
-      // Only add top-level credential IDs (not nested paths like 'oauth/refresh')
-      if (!credPath.includes('/')) ids.add(credPath);
+  if (provider) {
+    for (const credPath of distinctCredentialPaths(provider)) {
+      ids.add(credPath);
     }
   }
 
@@ -108,18 +112,13 @@ export function storeProviderKey(
   // Check if any env var for this credential had no substitute yet
   let needsRestart = false;
   const provider = getDiscoveryProvider(providerId);
-  if (provider?.envVars) {
-    for (const [_envVar, envCredPath] of Object.entries(provider.envVars)) {
-      if (envCredPath === credentialId) {
-        const existing = tokenEngine.getSubstitute(
-          providerId,
-          groupScope,
-          credentialId,
-        );
-        if (!existing) needsRestart = true;
-        break;
-      }
-    }
+  if (provider && bindingsFor(provider, credentialId).length > 0) {
+    const existing = tokenEngine.getSubstitute(
+      providerId,
+      groupScope,
+      credentialId,
+    );
+    if (!existing) needsRestart = true;
   }
 
   // Clear → store → prune
@@ -299,35 +298,185 @@ export function handleDeleteKeys(
 }
 
 // ---------------------------------------------------------------------------
-// Import (multi-key PGP block)
+// Import (multi-key PGP block, optional per-line provider prefix)
 // ---------------------------------------------------------------------------
 
+export type ProviderEntries = Map<string, Map<string, string>>;
+export type TokenizedEntries = Map<string | null, Map<string, string | null>>;
+
+export type ApplyResult = {
+  providerId: string;
+  count: number;
+  envVars: string[];
+  warnings: string[];
+  needsRestart: boolean;
+};
+
 /**
- * Parse a PGP-encrypted block of KEY=VALUE lines and store each credential.
+ * Build a reverse index mapping envVarName → list of providers that declare it.
+ * Used in bulk import to auto-resolve the provider for un-prefixed ALL_CAPS lines.
+ */
+export function buildEnvVarProviderIndex(): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  for (const id of getAllDiscoveryProviderIds()) {
+    const provider = getDiscoveryProvider(id);
+    if (!provider?.envBindings) continue;
+    for (const b of provider.envBindings) {
+      let list = index.get(b.envName);
+      if (!list) {
+        list = [];
+        index.set(b.envName, list);
+      }
+      if (!list.includes(id)) list.push(id);
+    }
+  }
+  return index;
+}
+
+/**
+ * Tokenize `[provider:]key=value` lines and group entries by provider prefix.
+ * Pure syntactic split — no validation. Lines without a prefix land under the
+ * `null` key; lines with no `=` are stored with a null value.
+ *
+ * A provider prefix is only recognized when ':' appears before the first '='.
+ */
+export function tokenizeImportLines(plaintext: string): TokenizedEntries {
+  const tokenized: TokenizedEntries = new Map();
+  for (const raw of plaintext.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    const eqIdx = line.indexOf('=');
+    const colonIdx = line.indexOf(':');
+    const hasPrefix = colonIdx > 0 && (eqIdx < 0 || colonIdx < eqIdx);
+    const providerPrefix = hasPrefix ? line.slice(0, colonIdx).trim() : null;
+    const rest = hasPrefix ? line.slice(colonIdx + 1).trim() : line;
+
+    const restEq = rest.indexOf('=');
+    const key = restEq >= 0 ? rest.slice(0, restEq).trim() : rest;
+    const value = restEq >= 0 ? rest.slice(restEq + 1).trim() : null;
+
+    let entries = tokenized.get(providerPrefix);
+    if (!entries) {
+      entries = new Map();
+      tokenized.set(providerPrefix, entries);
+    }
+    entries.set(key, value); // last-write-wins for duplicates
+  }
+  return tokenized;
+}
+
+/** Store entries for one provider and register env vars where applicable. */
+export function applyProviderEntries(
+  providerId: string,
+  entries: Map<string, string>,
+  groupScope: GroupScope,
+  tokenEngine: TokenSubstituteEngine,
+): ApplyResult {
+  const provider = getDiscoveryProvider(providerId);
+  if (!provider) {
+    return { providerId, count: 0, envVars: [], warnings: ['unknown provider'], needsRestart: false };
+  }
+  if (!isKeyEligibleProvider(providerId)) {
+    return { providerId, count: 0, envVars: [], warnings: ['no bearer-swap rules'], needsRestart: false };
+  }
+
+  // Group incoming env-name entries by credential path. Sliced bindings get
+  // joined into one composite credential value; legacy plain bindings pass
+  // through; unknown env names are treated as credential IDs themselves.
+  const { resolved, warnings: groupWarnings } = groupEnvEntries(provider, entries);
+  const envVars: string[] = [];
+  const warnings: string[] = [...groupWarnings];
+  let count = 0;
+  let needsRestart = false;
+
+  for (const [credentialPath, { value, sourceEnvNames }] of resolved) {
+    const r = storeProviderKey(providerId, groupScope, credentialPath, value, 0, tokenEngine);
+    if (r.needsRestart) needsRestart = true;
+    count++;
+
+    // Filter out non-ENV-name sources (e.g. ad-hoc credential IDs typed in chat).
+    // We register substitutes for env-name sources only.
+    const envNames = sourceEnvNames.filter((n) => ENV_NAME_RE.test(n) && !validateEnvVarName(n));
+    for (const n of sourceEnvNames) {
+      if (!ENV_NAME_RE.test(n)) continue;
+      const err = validateEnvVarName(n);
+      if (err) warnings.push(`${n}: ${err}`);
+    }
+    if (envNames.length === 0) continue;
+
+    const sub = tokenEngine.getOrCreateSubstitute(
+      providerId, {}, groupScope, provider.substituteConfig, credentialPath, envNames,
+    );
+    if (sub === null) {
+      warnings.push(
+        `${envNames.join(', ')}: token too short to substitute safely (len=${value.length}); ` +
+          `credential stored but not available to containers. Set _token_format in discovery JSON.`,
+      );
+      continue;
+    }
+    envVars.push(...envNames);
+  }
+
+  return { providerId, count, envVars, warnings, needsRestart };
+}
+
+export function renderSummary(
+  results: ApplyResult[],
+  isBulk: boolean,
+  lineWarnings: string[],
+): string {
+  const parts: string[] = [];
+  const needsRestart = results.some(r => r.needsRestart);
+
+  if (isBulk) {
+    const total = results.reduce((s, r) => s + r.count, 0);
+    const ok = results.filter(r => r.count > 0).length;
+    parts.push(
+      `Imported ${total} credential${total !== 1 ? 's' : ''} ` +
+        `across ${ok} provider${ok !== 1 ? 's' : ''}.`,
+    );
+    for (const r of results) {
+      const segs = [`*${r.providerId}*: ${r.count} key${r.count !== 1 ? 's' : ''}`];
+      if (r.envVars.length) segs.push(`env: ${r.envVars.join(', ')}`);
+      if (r.warnings.length) segs.push(`warn: ${r.warnings.join('; ')}`);
+      parts.push('  - ' + segs.join(' | '));
+    }
+  } else {
+    const r = results[0];
+    parts.push(`Imported ${r.count} credential${r.count !== 1 ? 's' : ''} for *${r.providerId}*.`);
+    if (r.envVars.length) parts.push(`Env vars: ${r.envVars.join(', ')}`);
+    if (r.warnings.length) {
+      parts.push(`Warnings:\n${r.warnings.map(w => `  - ${w}`).join('\n')}`);
+    }
+  }
+
+  if (lineWarnings.length) {
+    parts.push(`Skipped lines:\n${lineWarnings.map(w => `  - ${w}`).join('\n')}`);
+  }
+  if (needsRestart) {
+    parts.push('⚠️ Container restart may be needed for new keys to take effect.');
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Decrypt and import a PGP block of `[provider:]key=value` lines.
+ *
+ * When `defaultProviderId` is set, lines without a prefix are attributed to it
+ * (single-provider form). When null, every line must carry a prefix (bulk
+ * form). Eligibility and existence checks are done per-provider while applying.
+ *
  * Capitalized keys that pass env-var validation are registered as container
  * env vars on the substitute entry (via envNames).
  */
 export async function handleImport(
-  providerId: string,
+  defaultProviderId: string | null,
   argsAfterImport: string,
   groupScope: GroupScope,
   tokenEngine: TokenSubstituteEngine,
   chat: ChatIO,
 ): Promise<string | null> {
-  if (!isKeyEligibleProvider(providerId)) {
-    return `Provider *${providerId}* has no bearer-swap rules — cannot import keys.`;
-  }
-
-  const provider = getDiscoveryProvider(providerId)!;
-
-  // Reverse map: envVarName → credentialPath (e.g. GH_TOKEN → oauth)
-  const envToCredPath = new Map<string, string>();
-  if (provider.envVars) {
-    for (const [envName, credPath] of Object.entries(provider.envVars)) {
-      envToCredPath.set(envName, credPath);
-    }
-  }
-
   // Decrypt — inline PGP block or interactive prompt
   const pgpIdx = argsAfterImport.indexOf(PGP_BEGIN);
   let plaintext: string;
@@ -343,79 +492,96 @@ export async function handleImport(
     }
   } else {
     const result = await promptGpgEncrypt(groupScope, chat, AUTH_PROMPT_TIMEOUT, {
-      hint: `key=value pairs for ${providerId}`,
+      hint: defaultProviderId
+        ? `key=value pairs for ${defaultProviderId}`
+        : 'provider:key=value pairs',
     });
     if (!result) return null;
     plaintext = result;
   }
 
-  // Parse KEY=VALUE lines
-  const entries = new Map<string, string>();
-  for (const line of plaintext.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx < 1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    const value = trimmed.slice(eqIdx + 1).trim();
-    if (!value) continue;
-    entries.set(key, value); // last-write-wins for duplicates
-  }
+  // Validate tokenized entries and resolve default provider.
+  const tokenized = tokenizeImportLines(plaintext);
+  const byProvider: ProviderEntries = new Map();
+  const lineWarnings: string[] = [];
 
-  if (entries.size === 0) {
-    return 'No valid KEY=VALUE pairs found in decrypted message.';
-  }
+  // Only build the reverse index when we may need it (bulk mode).
+  const envVarIndex =
+    defaultProviderId === null ? buildEnvVarProviderIndex() : null;
 
-  // Store each credential and register env vars
-  let needsRestart = false;
-  const envVarsRegistered: string[] = [];
-  const warnings: string[] = [];
-
-  for (const [key, value] of entries) {
-    // Resolve credential path: known envVar mapping wins, otherwise key itself
-    const credentialPath = envToCredPath.get(key) ?? key;
-
-    const result = storeProviderKey(
-      providerId,
-      groupScope,
-      credentialPath,
-      value,
-      0,
-      tokenEngine,
-    );
-    if (result.needsRestart) needsRestart = true;
-
-    // Register as env var if key is ALL_CAPS and valid
-    if (ENV_NAME_RE.test(key)) {
-      const envErr = validateEnvVarName(key);
-      if (envErr) {
-        warnings.push(`${key}: ${envErr}`);
-      } else {
-        tokenEngine.getOrCreateSubstitute(
-          providerId, {}, groupScope, provider.substituteConfig, credentialPath, [key],
-        );
-        envVarsRegistered.push(key);
+  for (const [prefix, entries] of tokenized) {
+    // Single-provider mode: ignore lines that target a different provider.
+    if (defaultProviderId !== null && prefix !== null && prefix !== defaultProviderId) {
+      for (const [key, value] of entries) {
+        const label = value === null ? key : `${key}=${value}`;
+        lineWarnings.push(`ignored (${prefix} ≠ ${defaultProviderId}): ${label}`);
       }
+      continue;
+    }
+
+    for (const [key, value] of entries) {
+      const label = value === null ? key : `${key}=${value}`;
+
+      // Resolve provider for this line:
+      //   1. explicit prefix wins
+      //   2. else single-provider default
+      //   3. else (bulk mode) try env-var auto-resolution on ALL_CAPS keys
+      let providerId = prefix ?? defaultProviderId;
+      if (!providerId && envVarIndex && ENV_NAME_RE.test(key)) {
+        const candidates = envVarIndex.get(key);
+        if (candidates && candidates.length === 1) {
+          providerId = candidates[0];
+        } else if (candidates && candidates.length > 1) {
+          lineWarnings.push(
+            `ambiguous env var ${key}: matches [${candidates.join(', ')}] — prefix with 'provider:'`,
+          );
+          continue;
+        }
+      }
+
+      if (!providerId) {
+        lineWarnings.push(`no provider: ${label}`);
+        continue;
+      }
+      if (!key || value === null) {
+        lineWarnings.push(`malformed: ${label}`);
+        continue;
+      }
+      if (!value) {
+        lineWarnings.push(`empty value: ${key}`);
+        continue;
+      }
+      let target = byProvider.get(providerId);
+      if (!target) {
+        target = new Map();
+        byProvider.set(providerId, target);
+      }
+      target.set(key, value);
     }
   }
 
-  // Summary
-  const parts: string[] = [
-    `Imported ${entries.size} credential${entries.size !== 1 ? 's' : ''} for *${providerId}*.`,
-  ];
-  if (envVarsRegistered.length > 0) {
-    parts.push(`Env vars: ${envVarsRegistered.join(', ')}`);
-  }
-  if (warnings.length > 0) {
-    parts.push(`Warnings:\n${warnings.map(w => `  - ${w}`).join('\n')}`);
-  }
-  if (needsRestart) {
-    parts.push('⚠️ Container restart may be needed for new keys to take effect.');
+  const isBulk = defaultProviderId === null;
+
+  if (byProvider.size === 0) {
+    const base = isBulk
+      ? 'No valid provider:key=value pairs found in decrypted message.'
+      : 'No valid KEY=VALUE pairs found in decrypted message.';
+    return lineWarnings.length
+      ? `${base}\nSkipped lines:\n${lineWarnings.map(w => `  - ${w}`).join('\n')}`
+      : base;
   }
 
+  const results = [...byProvider].map(([id, entries]) =>
+    applyProviderEntries(id, entries, groupScope, tokenEngine),
+  );
+
   logger.info(
-    { groupScope, providerId, count: entries.size, envVars: envVarsRegistered },
+    {
+      groupScope,
+      defaultProviderId,
+      results: results.map(r => ({ id: r.providerId, count: r.count })),
+    },
     'Credentials imported',
   );
-  return parts.join('\n');
+  return renderSummary(results, isBulk, lineWarnings);
 }
