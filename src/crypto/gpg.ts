@@ -146,6 +146,16 @@ function regenerateKey(baseDir: string, scope: string, maxAgeDays: number): void
 // ---------------------------------------------------------------------------
 
 /**
+ * Regenerate the key if expired.  Shared by both export variants.
+ */
+function regenerateIfExpired(baseDir: string, scope: string): void {
+  const meta = getKeyMeta(baseDir, scope);
+  if (meta && Date.now() > Date.parse(meta.createdAt) + meta.maxAgeDays * MS_PER_DAY) {
+    regenerateKey(baseDir, scope, meta.maxAgeDays);
+  }
+}
+
+/**
  * Export the ASCII-armored public key for the given scope.
  *
  * If the key has expired (createdAt + maxAgeDays < now), the keypair is
@@ -153,16 +163,28 @@ function regenerateKey(baseDir: string, scope: string, maxAgeDays: number): void
  * NOT affected — gpgDecrypt always works regardless of expiry.
  */
 export function exportPublicKey(baseDir: string, scope: string): string {
-  const meta = getKeyMeta(baseDir, scope);
-  if (meta && Date.now() > Date.parse(meta.createdAt) + meta.maxAgeDays * MS_PER_DAY) {
-    regenerateKey(baseDir, scope, meta.maxAgeDays);
-  }
+  regenerateIfExpired(baseDir, scope);
 
   const home = gpgHome(baseDir, scope);
   const result = execFileSync(GPG_BIN, ['--homedir', home, '--armor', '--export', KEY_ID], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   return result.toString('utf-8').trim();
+}
+
+/**
+ * Export the raw binary public key for the given scope.
+ * Used to build pgp-encrypt URLs with base64url-encoded key data.
+ */
+export function exportPublicKeyBinary(baseDir: string, scope: string): Buffer {
+  regenerateIfExpired(baseDir, scope);
+
+  const home = gpgHome(baseDir, scope);
+  return execFileSync(
+    GPG_BIN,
+    ['--homedir', home, '--export', KEY_ID],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +274,10 @@ export const gpg = {
   /** Export public key (regenerates if expired). */
   export(scope: string): string {
     return exportPublicKey(requireBaseDir(), scope);
+  },
+  /** Export raw binary public key (regenerates if expired). */
+  exportBinary(scope: string): Buffer {
+    return exportPublicKeyBinary(requireBaseDir(), scope);
   },
   /** Decrypt PGP message (ignores expiry). */
   decrypt(scope: string, ciphertext: string): string {

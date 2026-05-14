@@ -34,8 +34,3 @@ export interface SecretBackend {
    */
   isCurrentKey(value: string): boolean;
 }
-
-/** Check whether a string is an encrypted value. */
-export function isEncrypted(value: string): boolean {
-  return value.startsWith(ENC_PREFIX);
-}

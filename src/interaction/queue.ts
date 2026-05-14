@@ -33,7 +33,11 @@ export type ReplyFn = (reply: string) => Promise<DeliveryResult>;
  * Event category — controls consumer behavior and message formatting.
  * Extended by skill branches as new event kinds are introduced.
  */
-export type InteractionEventKind = 'notification';
+export type InteractionEventKind =
+  | 'notification'
+  | 'oauth-start'
+  | 'oauth-refresh'
+  | 'device-code';
 
 /** A pending event in the queue. */
 export interface InteractionEntry {

@@ -359,8 +359,13 @@ describe('GroupQueue', () => {
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
 
-    // Register a process so closeStdin has a groupFolder
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    // Register a process so writeCloseSentinel has a groupFolder
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     // Enqueue a task while container is active but NOT idle
     const taskFn = vi.fn(async () => {});
@@ -395,7 +400,12 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Register process and mark idle
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
     queue.notifyIdle('group1@g.us');
 
     // Clear previous writes, then enqueue a task
@@ -429,7 +439,12 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     // Container becomes idle
     queue.notifyIdle('group1@g.us');
@@ -465,7 +480,12 @@ describe('GroupQueue', () => {
     // Start a task (sets isTaskContainer = true)
     queue.enqueueTask('group1@g.us', 'task-1', taskFn);
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     // sendMessage should return false — user messages must not go to task containers
     const result = queue.sendMessage('group1@g.us', 'hello');
@@ -490,7 +510,12 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
     queue.notifyIdle('group1@g.us');
 
     // Soft-stop the container
@@ -518,7 +543,12 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
     queue.notifyIdle('group1@g.us');
 
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
@@ -533,12 +563,16 @@ describe('GroupQueue', () => {
 
     // After IDLE_BEFORE_EVICT, container transitions to EVICTABLE (not stopped yet)
     await vi.advanceTimersByTimeAsync(1);
-    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
+    closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
     expect(closeWrites).toHaveLength(0);
 
     // After EVICTION_TIMEOUT (14400000ms), container should be soft-stopped
     await vi.advanceTimersByTimeAsync(14400000);
-    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
+    closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
     expect(closeWrites).toHaveLength(1);
 
     resolveProcess!();
@@ -676,7 +710,12 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
     queue.notifyIdle('group1@g.us');
 
     // Advance partially into IDLE_BEFORE_EVICT
@@ -715,7 +754,12 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     // First idle cycle
     queue.notifyIdle('group1@g.us');
@@ -741,12 +785,16 @@ describe('GroupQueue', () => {
 
     // Advance 1ms more → now EVICTABLE (but not stopped yet — needs EVICTION_TIMEOUT)
     await vi.advanceTimersByTimeAsync(1);
-    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
+    closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
     expect(closeWrites).toHaveLength(0);
 
     // Advance EVICTION_TIMEOUT → should be soft-stopped
     await vi.advanceTimersByTimeAsync(14400000);
-    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
+    closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
     expect(closeWrites).toHaveLength(1);
 
     resolveProcess!();
@@ -771,7 +819,12 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Register process and enqueue a task (no idle yet — no preemption)
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     writeFileSync.mockClear();
@@ -788,7 +841,9 @@ describe('GroupQueue', () => {
     writeFileSync.mockClear();
     queue.notifyIdle('group1@g.us');
 
-    closeWrites = writeFileSync.mock.calls.filter((call) => typeof call[0] === 'string' && call[0].endsWith('_close'));
+    closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
     expect(closeWrites).toHaveLength(1);
 
     resolveProcess!();

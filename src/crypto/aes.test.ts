@@ -25,8 +25,13 @@ vi.mock('../logger.js', () => ({
 }));
 
 const { AesSecretBackend } = await import('./aes.js');
-const { initEncryption, getSecretBackend, encrypt, decrypt, needsReEncryption, reEncrypt, isEncrypted } =
-  await import('./index.js');
+const {
+  initEncryption,
+  getSecretBackend,
+  encrypt,
+  decrypt,
+  reEncrypt,
+} = await import('./index.js');
 
 // ---------------------------------------------------------------------------
 // AesSecretBackend class
@@ -41,7 +46,9 @@ describe('AesSecretBackend', () => {
   });
 
   it('rejects invalid key length', () => {
-    expect(() => new AesSecretBackend(Buffer.alloc(16))).toThrow('must be 32 bytes');
+    expect(() => new AesSecretBackend(Buffer.alloc(16))).toThrow(
+      'must be 32 bytes',
+    );
   });
 
   it('encrypts and decrypts round-trip', () => {
@@ -51,8 +58,8 @@ describe('AesSecretBackend', () => {
     expect(backend.decrypt(encrypted)).toBe(plaintext);
   });
 
-  it('decrypt passes through plaintext', () => {
-    expect(backend.decrypt('not-encrypted')).toBe('not-encrypted');
+  it('decrypt throws on plaintext input', () => {
+    expect(() => backend.decrypt('not-encrypted')).toThrow();
   });
 
   it('each encryption produces different ciphertext (random IV)', () => {
@@ -148,26 +155,6 @@ describe('convenience wrappers', () => {
   it('getSecretBackend returns initialized backend', () => {
     const backend = getSecretBackend();
     expect(backend.keyHash).toHaveLength(16);
-  });
-
-  it('isEncrypted detects encrypted values', () => {
-    expect(isEncrypted(encrypt('test'))).toBe(true);
-    expect(isEncrypted('plaintext')).toBe(false);
-  });
-
-  it('needsReEncryption returns false for current key', () => {
-    const encrypted = encrypt('test');
-    expect(needsReEncryption(encrypted)).toBe(false);
-  });
-
-  it('needsReEncryption returns true for different key', () => {
-    const other = new AesSecretBackend(crypto.randomBytes(32));
-    const encrypted = other.encrypt('test');
-    expect(needsReEncryption(encrypted)).toBe(true);
-  });
-
-  it('needsReEncryption returns false for plaintext', () => {
-    expect(needsReEncryption('plain')).toBe(false);
   });
 
   it('reEncrypt produces value decryptable with current key', () => {

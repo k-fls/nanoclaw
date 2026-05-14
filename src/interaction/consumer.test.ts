@@ -58,7 +58,7 @@ function handlerCtx(overrides: Partial<HandlerContext> = {}): HandlerContext {
 }
 
 beforeEach(() => {
-  setInteractionPrefix('🔑🤖 ');
+  setInteractionPrefix('🤖');
 });
 
 // ── defaultHandler ──────────────────────────────────────────────────
@@ -93,7 +93,7 @@ describe('defaultHandler', () => {
   });
 
   it('uses the global interaction prefix', async () => {
-    setInteractionPrefix('>> ');
+    setInteractionPrefix('>>');
     const chat = mockChat();
     const reg = new InteractionStatusRegistry();
     const e = entry('ssh-host', null);
@@ -105,7 +105,7 @@ describe('defaultHandler', () => {
 
   it('handles user cancellation', async () => {
     const chat = mockChat();
-    chat.replies.push('cancel');
+    chat.replies.push('0');
     const replyFn = vi.fn(async () => ({ done: true }));
     const reg = new InteractionStatusRegistry();
     const e = entry('github', replyFn);

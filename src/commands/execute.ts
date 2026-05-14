@@ -26,7 +26,13 @@ export async function executeCommand(messages: NewMessage[], ctx: CommandContext
 
   if (result.stopContainer) ctx.stopContainer();
   if (result.asyncAction) {
-    await result.asyncAction(ctx.chat);
+    try {
+      await result.asyncAction(ctx.chat);
+    } catch (err) {
+      await ctx.chat.send(
+        `Internal error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
   return true;
 }
