@@ -476,6 +476,23 @@ describe('createBorrowedLink / removeBorrowedLink', () => {
     expect(fs.readlinkSync(link)).toBe('granted/the-grantor');
   });
 
+  it('pre-creates granted/{grantor} so the symlink is not dangling', () => {
+    createBorrowedLink('eager-grantee', 'no-creds-grantor');
+
+    const target = path.join(
+      groupsDir,
+      'eager-grantee',
+      'credentials',
+      'granted',
+      'no-creds-grantor',
+    );
+    expect(fs.existsSync(target)).toBe(true);
+    expect(fs.statSync(target).isDirectory()).toBe(true);
+
+    const link = path.join(groupsDir, 'eager-grantee', 'credentials', 'borrowed');
+    expect(fs.statSync(link).isDirectory()).toBe(true);
+  });
+
   it('replaces existing symlink when grantor changes', () => {
     createBorrowedLink('switch-grantee', 'grantor-1');
     createBorrowedLink('switch-grantee', 'grantor-2');
