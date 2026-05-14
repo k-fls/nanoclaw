@@ -62,11 +62,7 @@ export class AsyncRWLock {
     }
 
     // Grant all leading shared waiters
-    while (
-      this._waiters.length > 0 &&
-      !this._waiters[0].exclusive &&
-      !this._writer
-    ) {
+    while (this._waiters.length > 0 && !this._waiters[0].exclusive && !this._writer) {
       this._readers++;
       this._waiters.shift()!.resolve();
     }

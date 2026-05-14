@@ -174,9 +174,7 @@ describe('InteractionStatusRegistry', () => {
       });
       const body = JSON.parse(chunks[0]);
       expect(body).toHaveLength(2);
-      expect(
-        body.find((i: { interactionId: string }) => i.interactionId === 'i1'),
-      ).toEqual({
+      expect(body.find((i: { interactionId: string }) => i.interactionId === 'i1')).toEqual({
         interactionId: 'i1',
         state: 'queued',
         eventType: 'notification',

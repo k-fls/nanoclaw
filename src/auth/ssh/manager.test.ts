@@ -240,15 +240,26 @@ describe('verifyHostKey', () => {
     expect(resolver.store).not.toHaveBeenCalled();
   });
 
-  it('returns unverified when no hostKey and ssh-keyscan fails', () => {
+  it('TOFU fails closed when ssh-keyscan throws (pinAllowed=true)', () => {
     const meta = makeMeta({ hostKey: null });
     mockExecFileSync.mockImplementation(() => {
       throw new Error('keyscan fail');
     });
 
-    const result = manager.verifyHostKey('db', meta, credScope, true);
-    expect(result.action).toBe('unverified');
-    expect(result.keyLine).toBeNull();
+    expect(() => manager.verifyHostKey('db', meta, credScope, true)).toThrowError(SSHError);
+    expect(resolver.store).not.toHaveBeenCalled();
+  });
+
+  it('TOFU fails closed when ssh-keyscan returns no keys (pinAllowed=false)', () => {
+    const meta = makeMeta({ hostKey: null });
+    // Empty stdout — keyscan ran but returned nothing (host filtered, etc).
+    mockExecFileSync.mockImplementation((cmd: string) => {
+      if (cmd === 'ssh-keyscan') return '';
+      return '';
+    });
+
+    expect(() => manager.verifyHostKey('db', meta, credScope, false)).toThrowError(SSHError);
+    expect(resolver.store).not.toHaveBeenCalled();
   });
 
   // ── Multi-key scanning (ed25519 + RSA oscillation fix) ──────────
@@ -535,14 +546,15 @@ describe('connect serialization', () => {
   beforeEach(() => {
     resolver = makeResolver();
     manager = new SSHManager(resolver);
-    seedResolver(resolver, credScope, 'db', 'pw', makeMeta());
+    // hostKey: '*' bypasses verification so the test exercises serialization,
+    // not TOFU/keyscan behavior.
+    seedResolver(resolver, credScope, 'db', 'pw', makeMeta({ hostKey: '*' }));
     mockExecFileSync.mockReset();
     mockSpawn.mockReset();
   });
 
   it('concurrent connects for same alias share a single promise', async () => {
     let spawnCount = 0;
-    // Mock ssh-keyscan (returns no key)
     mockExecFileSync.mockImplementation((cmd: string) => {
       if (cmd === 'openssl') return 'encrypted-base64\n';
       throw new Error(`unexpected: ${cmd}`);

@@ -647,12 +647,20 @@ const proxyPort = process.env.PROXY_PORT || '3001';
 const proxyBase = `http://${proxyHost}:${proxyPort}`;
 
 async function sshProxyCall(endpoint: string, body: object): Promise<any> {
-  const res = await fetch(`${proxyBase}${endpoint}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return res.json();
+  try {
+    const res = await fetch(`${proxyBase}${endpoint}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const parsed = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { status: 'error', error: parsed.error || res.statusText || `HTTP ${res.status}` };
+    }
+    return parsed;
+  } catch (err) {
+    return { status: 'error', error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 server.tool(

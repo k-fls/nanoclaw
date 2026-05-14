@@ -12,10 +12,7 @@ import type { CommandContext } from './types.js';
  * Returns true if a command was handled, false if no command found.
  * Caller is responsible for advancing the message cursor on true.
  */
-export async function executeCommand(
-  messages: NewMessage[],
-  ctx: CommandContext,
-): Promise<boolean> {
+export async function executeCommand(messages: NewMessage[], ctx: CommandContext): Promise<boolean> {
   const extracted = extractCommand(messages, ctx.group);
   if (!extracted) return false;
 

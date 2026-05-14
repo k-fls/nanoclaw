@@ -272,4 +272,36 @@ describe('parseDiscoveryFile', () => {
     expect(provider!.scopeKeys).toContain('region');
     expect(provider!.rules[0].anchor).toBe('amazoncognito.com');
   });
+
+  it('parses _env_vars into envBindings with slice syntax', () => {
+    const data: DiscoveryFile = {
+      api_base_url: 'https://api.browserstack.com',
+      _env_vars: {
+        BROWSERSTACK_USERNAME: 'access_key[0]',
+        BROWSERSTACK_ACCESS_KEY: 'access_key[1]',
+      },
+      _credential_format: {
+        access_key: { encode: 'base64', sep: ':' },
+      },
+    };
+    const provider = parseDiscoveryFile('browserstack', data);
+    expect(provider).not.toBeNull();
+    expect(provider!.envBindings).toEqual([
+      { envName: 'BROWSERSTACK_USERNAME', credentialPath: 'access_key', slice: 0 },
+      { envName: 'BROWSERSTACK_ACCESS_KEY', credentialPath: 'access_key', slice: 1 },
+    ]);
+    expect(provider!.credentialFormat).toEqual({
+      access_key: { encode: 'base64', sep: ':' },
+    });
+  });
+
+  it('auto-extends substituteConfig.delimiters with credential format sep', () => {
+    const data: DiscoveryFile = {
+      api_base_url: 'https://api.example.com',
+      _env_vars: { USER: 'cred[0]', KEY: 'cred[1]' },
+      _credential_format: { cred: { sep: ':' } },
+    };
+    const provider = parseDiscoveryFile('example', data);
+    expect(provider!.substituteConfig.delimiters).toContain(':');
+  });
 });

@@ -71,6 +71,7 @@ const {
   tokenizeImportLines,
   applyProviderEntries,
   renderSummary,
+  buildEnvVarProviderIndex,
 } = await import('./key-management.js');
 
 // ---------------------------------------------------------------------------
@@ -97,13 +98,25 @@ function makeProvider(
             mode: 'token-exchange' as const,
           },
         ];
+  const envBindings = opts?.envVars
+    ? Object.entries(opts.envVars).map(([envName, raw]) => {
+        const m = raw.match(/^([^[\]]+)(?:\[(\d+)\])?$/);
+        return m
+          ? {
+              envName,
+              credentialPath: m[1],
+              ...(m[2] !== undefined && { slice: Number(m[2]) }),
+            }
+          : { envName, credentialPath: raw };
+      })
+    : undefined;
   return {
     id,
     rules,
     scopeKeys: [],
     substituteConfig: { prefixLen: 4, suffixLen: 4, delimiters: '' },
     refreshStrategy: 'redirect',
-    ...(opts?.envVars && { envVars: opts.envVars }),
+    ...(envBindings && { envBindings }),
   };
 }
 
@@ -863,6 +876,69 @@ describe('handleImport', () => {
     expect(result).toMatch(/no provider: lonely=x/);
   });
 
+  it('auto-resolves provider from a unique env-var name in bulk mode', async () => {
+    // SEARCHAPI_KEY declared only by searchapi → no prefix required.
+    mockProviders.set(
+      'searchapi',
+      makeProvider('searchapi', { envVars: { SEARCHAPI_KEY: 'api_key' } }),
+    );
+    mockGpgDecrypt.mockReturnValue('SEARCHAPI_KEY=tokX');
+    const { engine } = mockTokenEngine();
+    const result = await handleImport(
+      null, PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+    );
+    expect(result).toContain('Imported 1 credential across 1 provider');
+    expect(result).toContain('*searchapi*: 1 key');
+    expect(engine.storeGroupCredential).toHaveBeenCalledWith(
+      TEST_GROUP_SCOPE, 'searchapi', 'api_key',
+      expect.objectContaining({ value: 'tokX' }),
+    );
+  });
+
+  it('warns on ambiguous env-var name (multi-provider) in bulk mode', async () => {
+    // API_KEY declared by two providers → ambiguous.
+    mockProviders.set(
+      'alpha',
+      makeProvider('alpha', { envVars: { API_KEY: 'api_key' } }),
+    );
+    mockProviders.set(
+      'beta',
+      makeProvider('beta', { envVars: { API_KEY: 'api_key' } }),
+    );
+    mockGpgDecrypt.mockReturnValue('API_KEY=tokQ\ngithub:GH_TOKEN=real');
+    const { engine } = mockTokenEngine();
+    const result = await handleImport(
+      null, PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+    );
+    // Ambiguous line was skipped with actionable warning
+    expect(result).toMatch(/ambiguous env var API_KEY: matches \[/);
+    expect(result).toMatch(/prefix with 'provider:'/);
+    // github entry still imported
+    expect(result).toContain('Imported 1 credential across 1 provider');
+    // alpha and beta never received the ambiguous credential
+    expect(engine.storeGroupCredential).not.toHaveBeenCalledWith(
+      TEST_GROUP_SCOPE, 'alpha', expect.anything(), expect.anything(),
+    );
+    expect(engine.storeGroupCredential).not.toHaveBeenCalledWith(
+      TEST_GROUP_SCOPE, 'beta', expect.anything(), expect.anything(),
+    );
+  });
+
+  it('does not auto-resolve lowercase keys (ENV_NAME_RE must pass)', async () => {
+    mockProviders.set(
+      'searchapi',
+      makeProvider('searchapi', { envVars: { SEARCHAPI_KEY: 'api_key' } }),
+    );
+    mockGpgDecrypt.mockReturnValue('api_key=tokLower');
+    const { engine } = mockTokenEngine();
+    const result = await handleImport(
+      null, PGP_ENCRYPTED, TEST_GROUP_SCOPE, engine, chat,
+    );
+    // Lowercase key falls through to "no provider" warning — not auto-resolved.
+    expect(result).toContain('No valid provider:key=value pairs');
+    expect(result).toMatch(/no provider: api_key=tokLower/);
+  });
+
   it('reports unknown provider per-bucket in bulk mode', async () => {
     mockGpgDecrypt.mockReturnValue('bogus:KEY=val\ngithub:GH_TOKEN=real');
     const { engine } = mockTokenEngine();
@@ -1148,6 +1224,25 @@ describe('applyProviderEntries', () => {
     expect(engine.getOrCreateSubstitute).not.toHaveBeenCalled();
   });
 
+  it('buildEnvVarProviderIndex groups providers by declared env-var names', () => {
+    mockProviders.set(
+      'alpha',
+      makeProvider('alpha', { envVars: { API_KEY: 'api_key', ALPHA_TOKEN: CRED_OAUTH } }),
+    );
+    mockProviders.set(
+      'beta',
+      makeProvider('beta', { envVars: { API_KEY: 'api_key' } }),
+    );
+    mockProviders.set(
+      'gamma',
+      makeProvider('gamma'), // no envVars — should be skipped
+    );
+    const index = buildEnvVarProviderIndex();
+    expect(index.get('API_KEY')?.sort()).toEqual(['alpha', 'beta']);
+    expect(index.get('ALPHA_TOKEN')).toEqual(['alpha']);
+    expect(index.has('GH_TOKEN')).toBe(true); // from the outer beforeEach
+  });
+
   it('propagates needsRestart=true when any key needs restart', () => {
     const { engine } = mockTokenEngine({ existingSubstitute: null });
     const r = applyProviderEntries(
@@ -1157,6 +1252,25 @@ describe('applyProviderEntries', () => {
       engine,
     );
     expect(r.needsRestart).toBe(true);
+  });
+
+  it('warns and does not register env var when substitute creation fails (null)', () => {
+    const { engine } = mockTokenEngine();
+    (engine.getOrCreateSubstitute as any).mockReturnValue(null);
+    const r = applyProviderEntries(
+      'github',
+      new Map([['GH_TOKEN', 'short']]),
+      TEST_GROUP_SCOPE,
+      engine,
+    );
+    // Credential was stored (import always persists the file).
+    expect(engine.storeGroupCredential).toHaveBeenCalledTimes(1);
+    // But no env var registered — access is blocked until config is fixed.
+    expect(r.envVars).toEqual([]);
+    expect(r.warnings.length).toBe(1);
+    expect(r.warnings[0]).toMatch(/GH_TOKEN/);
+    expect(r.warnings[0]).toMatch(/too short/);
+    expect(r.warnings[0]).toMatch(/_token_format/);
   });
 });
 

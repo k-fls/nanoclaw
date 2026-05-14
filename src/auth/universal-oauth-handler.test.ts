@@ -320,6 +320,79 @@ describe('universal-oauth-handler', () => {
       expect(lastRequest!.headers['authorization']).toBe(`Bearer ${realToken}`);
     });
 
+    it('decodes Basic header and swaps composite substitute for real base64 blob', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider('browserstack');
+      provider.credentialFormat = {
+        access_key: { encode: 'base64', sep: ':' },
+      };
+      provider.substituteConfig = {
+        prefixLen: 4,
+        suffixLen: 4,
+        delimiters: '-._~:',
+      };
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const realComposite = 'kirill_user:sk_realKeyValue1234567890abcdef';
+      engine.storeGroupCredential(
+        asGroupScope('test-scope'),
+        'browserstack',
+        'access_key',
+        { value: realComposite, expires_ts: 0, updated_ts: Date.now() },
+      );
+      const sub = engine.generateSubstitute(
+        realComposite,
+        'browserstack',
+        {},
+        asGroupScope('test-scope'),
+        provider.substituteConfig,
+        'access_key',
+      )!;
+      expect(sub).not.toBeNull();
+      // Substitute must preserve the ':' separator (declared as delimiter)
+      expect(sub).toContain(':');
+
+      const wireSub = Buffer.from(sub, 'utf8').toString('base64');
+      const res = await executeHandler(handler, {
+        headers: { authorization: `Basic ${wireSub}` },
+      });
+
+      expect(res.status).toBe(200);
+      expect(lastRequest).not.toBeNull();
+      // Upstream gets base64 of the real composite
+      const expectedWire = Buffer.from(realComposite, 'utf8').toString('base64');
+      expect(lastRequest!.headers['authorization']).toBe(`Basic ${expectedWire}`);
+    });
+
+    it('does not decode Basic for providers without base64 credential format', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider();
+      // No credentialFormat declared
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      // Encode a string that happens to be a known substitute; without the
+      // format flag the handler must not decode it.
+      const realToken = 'real_abcdefghijklmnopqrstuvwxyz1234567890abcdefghij';
+      engine.storeGroupCredential(asGroupScope('test-scope'), 'test-provider', CRED_OAUTH, {
+        value: realToken, expires_ts: 0, updated_ts: Date.now(),
+      });
+      const sub = engine.generateSubstitute(
+        realToken, 'test-provider', {}, asGroupScope('test-scope'),
+        DEFAULT_SUBSTITUTE_CONFIG,
+      )!;
+      const wireSub = Buffer.from(sub, 'utf8').toString('base64');
+
+      const res = await executeHandler(handler, {
+        headers: { authorization: `Basic ${wireSub}` },
+      });
+
+      expect(res.status).toBe(200);
+      // Should pass through unchanged (no swap)
+      expect(lastRequest!.headers['authorization']).toBe(`Basic ${wireSub}`);
+    });
+
     it('passes through unknown tokens (no substitution)', async () => {
       const engine = new TokenSubstituteEngine(
         new PersistentCredentialResolver(),
@@ -348,6 +421,64 @@ describe('universal-oauth-handler', () => {
 
       const res = await executeHandler(handler);
       expect(res.status).toBe(200);
+    });
+
+    it('invokes onUpstreamResponse hook on non-401 responses', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider();
+      const hookCalls: Array<{ scope: string; url: string; chunks: string[] }> = [];
+      provider.onUpstreamResponse = (ctx) => {
+        const chunks: string[] = [];
+        ctx.upRes.on('data', (c: Buffer) => chunks.push(c.toString()));
+        hookCalls.push({
+          scope: ctx.scope as unknown as string,
+          url: ctx.clientReq.url || '',
+          chunks,
+        });
+      };
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const res = await executeHandler(handler, { path: '/v1/messages' });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toBe('{"ok":true}');
+      expect(hookCalls).toHaveLength(1);
+      expect(hookCalls[0].scope).toBe('test-scope');
+      expect(hookCalls[0].url).toBe('/v1/messages');
+      // Tee must observe the same bytes the client received
+      expect(hookCalls[0].chunks.join('')).toBe('{"ok":true}');
+    });
+
+    it('does not invoke onUpstreamResponse on 401 responses', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider();
+      let hookCount = 0;
+      provider.onUpstreamResponse = () => {
+        hookCount++;
+      };
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      serverResponseOverride = { status: 401, body: '{"error":"unauthorized"}' };
+      const res = await executeHandler(handler);
+
+      expect(res.status).toBe(401);
+      expect(hookCount).toBe(0);
+    });
+
+    it('swallows hook errors and still pipes response', async () => {
+      const engine = new TokenSubstituteEngine(new PersistentCredentialResolver());
+      const provider = makeProvider();
+      provider.onUpstreamResponse = () => {
+        throw new Error('hook boom');
+      };
+      const rule = makeBearerSwapRule();
+      const handler = createHandler(provider, rule, engine);
+
+      const res = await executeHandler(handler);
+      expect(res.status).toBe(200);
+      expect(res.body).toBe('{"ok":true}');
     });
 
     it('does not resolve refresh token substitutes in headers', async () => {

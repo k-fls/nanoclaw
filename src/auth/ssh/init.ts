@@ -9,6 +9,7 @@
  * are initialized.
  */
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { logger } from '../../logger.js';
@@ -83,7 +84,7 @@ function copyManifestToGroupDir(
 ): void {
   try {
     const srcDir = path.join(
-      process.env.HOME || require('os').homedir(),
+      process.env.HOME || os.homedir(),
       '.config',
       'nanoclaw',
       'credentials',

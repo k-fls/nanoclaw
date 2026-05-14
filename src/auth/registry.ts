@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url';
 import type { CredentialProvider } from './types.js';
 import { getProxy } from './credential-proxy.js';
 import { loadDiscoveryProviders } from './discovery-loader.js';
+import { bindingsToEnvVarMap } from './env-bindings.js';
 import type { OAuthProvider } from './oauth-types.js';
 import {
   TokenSubstituteEngine,
@@ -284,7 +285,9 @@ function publishProviderInfo(): void {
       modes: [...modes].sort(),
       hosts: [...hosts].sort(),
     };
-    if (provider.envVars) obj.envVars = provider.envVars;
+    if (provider.envBindings) {
+      obj.envVars = bindingsToEnvVarMap(provider);
+    }
     lines.push(JSON.stringify(obj));
 
     try {

@@ -36,12 +36,7 @@ import { getClaudeCliPackageDir } from './updater.js';
 import { CLAUDE_CLI_DIR } from '../config.js';
 
 describe('getClaudeCliPackageDir', () => {
-  const pkgDir = path.join(
-    CLAUDE_CLI_DIR,
-    'node_modules',
-    '@anthropic-ai',
-    'claude-code',
-  );
+  const pkgDir = path.join(CLAUDE_CLI_DIR, 'node_modules', '@anthropic-ai', 'claude-code');
 
   beforeEach(() => {
     fs.mkdirSync(pkgDir, { recursive: true });

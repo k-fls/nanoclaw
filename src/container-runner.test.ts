@@ -101,17 +101,14 @@ let fakeProc: ReturnType<typeof createFakeProcess>;
 
 // Mock child_process.spawn
 vi.mock('child_process', async () => {
-  const actual =
-    await vi.importActual<typeof import('child_process')>('child_process');
+  const actual = await vi.importActual<typeof import('child_process')>('child_process');
   return {
     ...actual,
     spawn: vi.fn(() => fakeProc),
-    exec: vi.fn(
-      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
-        if (cb) cb(null);
-        return new EventEmitter();
-      },
-    ),
+    exec: vi.fn((_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+      if (cb) cb(null);
+      return new EventEmitter();
+    }),
     execFileSync: vi.fn((_bin: string, args?: string[]) => {
       const fmt = args?.[2] ?? '';
       if (fmt.includes('State.Status')) return 'running';
@@ -121,12 +118,7 @@ vi.mock('child_process', async () => {
   };
 });
 
-import {
-  runContainerAgent,
-  buildVolumeMounts,
-  snapshotContainerFiles,
-  ContainerOutput,
-} from './container-runner.js';
+import { runContainerAgent, buildVolumeMounts, snapshotContainerFiles, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 import fs from 'fs';
 
@@ -144,10 +136,7 @@ const testInput = {
   isMain: false,
 };
 
-function emitOutputMarker(
-  proc: ReturnType<typeof createFakeProcess>,
-  output: ContainerOutput,
-) {
+function emitOutputMarker(proc: ReturnType<typeof createFakeProcess>, output: ContainerOutput) {
   const json = JSON.stringify(output);
   proc.stdout.push(`${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`);
 }
@@ -165,13 +154,7 @@ describe('container-runner timeout behavior', () => {
   it('timeout after output resolves as success', async () => {
     const onOutput = vi.fn(async () => {});
     const mockEngine = { collectEnvVars: () => ({}) } as any;
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-      mockEngine,
-      onOutput,
-    );
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {}, mockEngine, onOutput);
 
     // Let IP retry loop resolve (first retry at 500ms)
     await vi.advanceTimersByTimeAsync(600);
@@ -198,21 +181,13 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-123');
-    expect(onOutput).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'Here is my response' }),
-    );
+    expect(onOutput).toHaveBeenCalledWith(expect.objectContaining({ result: 'Here is my response' }));
   });
 
   it('timeout with no output resolves as error', async () => {
     const onOutput = vi.fn(async () => {});
     const mockEngine = { collectEnvVars: () => ({}) } as any;
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-      mockEngine,
-      onOutput,
-    );
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {}, mockEngine, onOutput);
 
     // Let IP retry loop resolve
     await vi.advanceTimersByTimeAsync(600);
@@ -234,13 +209,7 @@ describe('container-runner timeout behavior', () => {
   it('normal exit after output resolves as success', async () => {
     const onOutput = vi.fn(async () => {});
     const mockEngine = { collectEnvVars: () => ({}) } as any;
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-      mockEngine,
-      onOutput,
-    );
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {}, mockEngine, onOutput);
 
     // Let IP retry loop resolve
     await vi.advanceTimersByTimeAsync(600);
@@ -289,9 +258,7 @@ describe('buildVolumeMounts home persistence', () => {
   it('/home/node is mounted before /home/node/.claude', () => {
     const mounts = buildVolumeMounts(group, false);
     const homeIdx = mounts.findIndex((m) => m.containerPath === '/home/node');
-    const claudeIdx = mounts.findIndex(
-      (m) => m.containerPath === '/home/node/.claude',
-    );
+    const claudeIdx = mounts.findIndex((m) => m.containerPath === '/home/node/.claude');
     expect(homeIdx).toBeGreaterThanOrEqual(0);
     expect(claudeIdx).toBeGreaterThan(homeIdx);
   });

@@ -28,16 +28,10 @@ export class AesSecretBackend implements SecretBackend {
   /** Construct from a raw 32-byte key buffer (useful for testing). */
   constructor(key: Buffer) {
     if (key.length !== KEY_BYTES) {
-      throw new Error(
-        `Encryption key must be ${KEY_BYTES} bytes, got ${key.length}`,
-      );
+      throw new Error(`Encryption key must be ${KEY_BYTES} bytes, got ${key.length}`);
     }
     this.key = key;
-    this.hash16 = crypto
-      .createHash('sha256')
-      .update(key)
-      .digest('hex')
-      .slice(0, 16);
+    this.hash16 = crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
   }
 
   /**
@@ -61,10 +55,7 @@ export class AesSecretBackend implements SecretBackend {
   encrypt(plaintext: string): string {
     const iv = crypto.randomBytes(IV_BYTES);
     const cipher = crypto.createCipheriv(ALGORITHM, this.key, iv);
-    const encrypted = Buffer.concat([
-      cipher.update(plaintext, 'utf-8'),
-      cipher.final(),
-    ]);
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
     const tag = cipher.getAuthTag();
     return [
       'enc',
@@ -86,9 +77,7 @@ export class AesSecretBackend implements SecretBackend {
 
     const storedHash = parts[2];
     if (storedHash && storedHash !== this.hash16) {
-      throw new Error(
-        'Encryption key mismatch — value was encrypted with a different key',
-      );
+      throw new Error('Encryption key mismatch — value was encrypted with a different key');
     }
 
     const iv = Buffer.from(parts[3], 'base64');

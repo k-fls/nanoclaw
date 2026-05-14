@@ -343,6 +343,10 @@ export function createBorrowedLink(
   const groupDir = resolveGroupFolderPath(granteeFolder);
   const credsDir = path.join(groupDir, 'credentials');
   fs.mkdirSync(credsDir, { recursive: true });
+  // Pre-create the symlink target so the borrow is never dangling, even
+  // if the grantor has no manifests yet (no credentials stored, or
+  // distributeAllManifests hasn't run).
+  fs.mkdirSync(grantedDir(granteeFolder, grantorFolder), { recursive: true });
   const link = path.join(credsDir, 'borrowed');
   // ln -sfn equivalent: remove existing, create new
   try {

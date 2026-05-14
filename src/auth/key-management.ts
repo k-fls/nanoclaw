@@ -14,6 +14,11 @@ import {
   getAllDiscoveryProviderIds,
 } from './registry.js';
 import {
+  distinctCredentialPaths,
+  groupEnvEntries,
+  bindingsFor,
+} from './env-bindings.js';
+import {
   isGpgAvailable,
   ensureGpgKey,
   gpgDecrypt,
@@ -74,12 +79,11 @@ export function getProviderCredentialIds(
     }
   }
 
-  // Source 3: envVars from discovery provider
+  // Source 3: envBindings from discovery provider (deduped, composite-aware)
   const provider = getDiscoveryProvider(providerId);
-  if (provider?.envVars) {
-    for (const credPath of Object.values(provider.envVars)) {
-      // Only add top-level credential IDs (not nested paths like 'oauth/refresh')
-      if (!credPath.includes('/')) ids.add(credPath);
+  if (provider) {
+    for (const credPath of distinctCredentialPaths(provider)) {
+      ids.add(credPath);
     }
   }
 
@@ -108,18 +112,13 @@ export function storeProviderKey(
   // Check if any env var for this credential had no substitute yet
   let needsRestart = false;
   const provider = getDiscoveryProvider(providerId);
-  if (provider?.envVars) {
-    for (const [_envVar, envCredPath] of Object.entries(provider.envVars)) {
-      if (envCredPath === credentialId) {
-        const existing = tokenEngine.getSubstitute(
-          providerId,
-          groupScope,
-          credentialId,
-        );
-        if (!existing) needsRestart = true;
-        break;
-      }
-    }
+  if (provider && bindingsFor(provider, credentialId).length > 0) {
+    const existing = tokenEngine.getSubstitute(
+      providerId,
+      groupScope,
+      credentialId,
+    );
+    if (!existing) needsRestart = true;
   }
 
   // Clear → store → prune
@@ -330,6 +329,27 @@ export type ApplyResult = {
 };
 
 /**
+ * Build a reverse index mapping envVarName → list of providers that declare it.
+ * Used in bulk import to auto-resolve the provider for un-prefixed ALL_CAPS lines.
+ */
+export function buildEnvVarProviderIndex(): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  for (const id of getAllDiscoveryProviderIds()) {
+    const provider = getDiscoveryProvider(id);
+    if (!provider?.envBindings) continue;
+    for (const b of provider.envBindings) {
+      let list = index.get(b.envName);
+      if (!list) {
+        list = [];
+        index.set(b.envName, list);
+      }
+      if (!list.includes(id)) list.push(id);
+    }
+  }
+  return index;
+}
+
+/**
  * Tokenize `[provider:]key=value` lines and group entries by provider prefix.
  * Pure syntactic split — no validation. Lines without a prefix land under the
  * `null` key; lines with no `=` are stored with a null value.
@@ -389,42 +409,41 @@ export function applyProviderEntries(
     };
   }
 
-  // Reverse map: envVarName → credentialPath (e.g. GH_TOKEN → oauth)
-  const envToCredPath = new Map(Object.entries(provider.envVars ?? {}));
-
+  // Group incoming env-name entries by credential path. Sliced bindings get
+  // joined into one composite credential value; legacy plain bindings pass
+  // through; unknown env names are treated as credential IDs themselves.
+  const { resolved, warnings: groupWarnings } = groupEnvEntries(provider, entries);
   const envVars: string[] = [];
-  const warnings: string[] = [];
+  const warnings: string[] = [...groupWarnings];
   let count = 0;
   let needsRestart = false;
 
-  for (const [key, value] of entries) {
-    const credentialPath = envToCredPath.get(key) ?? key;
-    const r = storeProviderKey(
-      providerId,
-      groupScope,
-      credentialPath,
-      value,
-      0,
-      tokenEngine,
-    );
+  for (const [credentialPath, { value, sourceEnvNames }] of resolved) {
+    const r = storeProviderKey(providerId, groupScope, credentialPath, value, 0, tokenEngine);
     if (r.needsRestart) needsRestart = true;
     count++;
 
-    if (!ENV_NAME_RE.test(key)) continue;
-    const envErr = validateEnvVarName(key);
-    if (envErr) {
-      warnings.push(`${key}: ${envErr}`);
+    // Filter out non-ENV-name sources (e.g. ad-hoc credential IDs typed in chat).
+    // We register substitutes for env-name sources only.
+    const envNames = sourceEnvNames.filter((n) => ENV_NAME_RE.test(n) && !validateEnvVarName(n));
+    for (const n of sourceEnvNames) {
+      if (!ENV_NAME_RE.test(n)) continue;
+      const err = validateEnvVarName(n);
+      if (err) warnings.push(`${n}: ${err}`);
+    }
+    if (envNames.length === 0) continue;
+
+    const sub = tokenEngine.getOrCreateSubstitute(
+      providerId, {}, groupScope, provider.substituteConfig, credentialPath, envNames,
+    );
+    if (sub === null) {
+      warnings.push(
+        `${envNames.join(', ')}: token too short to substitute safely (len=${value.length}); ` +
+          `credential stored but not available to containers. Set _token_format in discovery JSON.`,
+      );
       continue;
     }
-    tokenEngine.getOrCreateSubstitute(
-      providerId,
-      {},
-      groupScope,
-      provider.substituteConfig,
-      credentialPath,
-      [key],
-    );
-    envVars.push(key);
+    envVars.push(...envNames);
   }
 
   return { providerId, count, envVars, warnings, needsRestart };
@@ -530,6 +549,10 @@ export async function handleImport(
   const byProvider: ProviderEntries = new Map();
   const lineWarnings: string[] = [];
 
+  // Only build the reverse index when we may need it (bulk mode).
+  const envVarIndex =
+    defaultProviderId === null ? buildEnvVarProviderIndex() : null;
+
   for (const [prefix, entries] of tokenized) {
     // Single-provider mode: ignore lines that target a different provider.
     if (
@@ -546,9 +569,26 @@ export async function handleImport(
       continue;
     }
 
-    const providerId = prefix ?? defaultProviderId;
     for (const [key, value] of entries) {
       const label = value === null ? key : `${key}=${value}`;
+
+      // Resolve provider for this line:
+      //   1. explicit prefix wins
+      //   2. else single-provider default
+      //   3. else (bulk mode) try env-var auto-resolution on ALL_CAPS keys
+      let providerId = prefix ?? defaultProviderId;
+      if (!providerId && envVarIndex && ENV_NAME_RE.test(key)) {
+        const candidates = envVarIndex.get(key);
+        if (candidates && candidates.length === 1) {
+          providerId = candidates[0];
+        } else if (candidates && candidates.length > 1) {
+          lineWarnings.push(
+            `ambiguous env var ${key}: matches [${candidates.join(', ')}] — prefix with 'provider:'`,
+          );
+          continue;
+        }
+      }
+
       if (!providerId) {
         lineWarnings.push(`no provider: ${label}`);
         continue;
